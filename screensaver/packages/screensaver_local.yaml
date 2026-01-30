@@ -1,0 +1,300 @@
+# Screensaver Local Implementation Package
+# Complete local implementation for screensaver dashboard:
+# - Tap action scripts (screensaver_tap, screensaver_double_tap, screensaver_hold)
+# - Environmental sensors for display (temperature, weather, humidity, wind)
+# - Device ID transformation config (regex-based mapping)
+# - Battery management automation for tablet
+# ------------------------------------------------------------------
+
+sensor:
+  - platform: time_date
+    display_options:
+      - 'time'
+      - 'date'
+
+# Computed sensors (Template integration)
+template:
+  - sensor:
+      # Configuration for dashboard transformation logic (regex-based device ID mapping)
+      - name: "Dashboard Logic Config"
+        unique_id: dashboard_logic_config
+        state: "ready"
+        attributes:
+          alarm_id_pattern: "^(.+?)(?:_fkb)?$"
+          alarm_id_replacement: "sensor.$1_next_alarm"
+
+      # Compute a representative outdoor temperature based on dual sensors
+      # SETUP: Two temperature sensors on opposite sides (East/West)
+      # - sensor.garage_framsidan_temperature: Morning/day sun exposure (East)
+      # - sensor.relax_baksidan_temperature: Day/evening sun exposure (West)
+      #
+      # BEHAVIOR: Sensors experience significant temperature differences during:
+      # - Morning (sunrise to ~noon): First sensor warmer
+      # - Afternoon (noon to sunset): Second sensor warmer
+      # - Night/winter: Both sensors read nearly identical
+      #
+      # DISPLAY LOGIC:
+      # - If difference < 2°C: Show single value (average) for clean display
+      # - If difference ≥ 2°C: Show "min° | max°" format for awareness of sun exposure
+      #
+      # This pattern maintains a minimalist display while providing context when meaningful
+      - name: "Screensaver Display Temperature"
+        unique_id: screensaver_display_temperature
+        unit_of_measurement: '°C'
+        state: >
+          {% set f = states('sensor.garage_framsidan_temperature') | float(none) %}
+          {% set b = states('sensor.relax_baksidan_temperature') | float(none) %}
+          
+          {% if f is not none and b is not none %}
+            {% if (f - b) | abs < 2 %}
+              {{ ((f + b) / 2) | round(1) }}
+            {% else %}
+              {{ [f, b] | min | round(1) }} | {{ [f, b] | max | round(1) }}
+            {% endif %}
+          {% else %}
+            unavailable
+          {% endif %}
+
+      # Weather description from forecast entity (mapped to local language)
+      - name: "Screensaver Display Weather"
+        unique_id: screensaver_display_weather
+        state: >
+          {% set s = states('weather.forecast_love8') %}
+          {% set mapper = {
+            'clear': 'Klart',
+            'clear-night': 'Klart',
+            'cloudy': 'Mulet',
+            'fog': 'Dimma',
+            'hail': 'Hagel',
+            'lightning': 'Åska',
+            'lightning-rainy': 'Åskregn',
+            'overcast': 'Molnigt',
+            'partlycloudy': 'Halvklart',
+            'partly-cloudy': 'Halvklart',
+            'partlysunny': 'Halvsoligt',
+            'partly-sunny': 'Halvsoligt',
+            'pouring': 'Ösregn',
+            'pouring-night': 'Ösregn natt',
+            'pouring-day': 'Ösregn dag',
+            'rainy': 'Regn',
+            'snowy': 'Snö',
+            'snowy-rainy': 'Snöblandat regn',
+            'sunny': 'Soligt',
+            'windy': 'Blåsigt',
+            'windy-variant': 'Hård vind',
+            'exceptional': 'Varning'
+          } %}
+          {{ mapper.get(s, s) if s not in ['unknown', 'unavailable'] else 'unavailable' }}
+
+      - name: "Screensaver Display Humidity"
+        unique_id: screensaver_display_humidity
+        unit_of_measurement: '%'
+        state: "{{ states('sensor.relax_baksidan_humidity') }}"
+
+      - name: "Screensaver Display Wind Speed"
+        unique_id: screensaver_display_wind_speed
+        unit_of_measurement: 'm/s'
+        state: >
+          {% set w = states('sensor.relax_vindmatare_wind_speed') | float(-1) %}
+          {{ (w / 3.6) | round(1) if w > 0.1 else 'unavailable' }}
+
+# ------------------------------------------------------------------
+# SCRIPTS
+# ------------------------------------------------------------------
+# Localized tap action scripts for screensaver dashboard
+# Each tap action script defines time-period variables (is_morning, is_day, is_evening)
+# and maps browser_ids to scenarios based on time or static assignment:
+# - Static devices always map to same scenario
+# - Mobile devices do time-based selections
+#   * 05:00-10:00 (morning): godmorgon
+#   * 10:00-20:00 (day): matlagning
+#   * 20:00-05:00 (evening): godnatt
+#
+# Unknown device IDs are logged and no action is taken
+script:
+  screensaver_tap:
+    description: "Screensaver single tap - toggle scenario via browser_id"
+    sequence:
+      - variables:
+          # Calculate time periods for time-based scenario selection
+          current_hour: "{{ now().hour }}"
+          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
+          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
+          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
+          # Static device→scenario mapping (always same scenario regardless of time)
+          static_devices:
+            koksplatta: matlagning
+            koksplatta_fkb: matlagning
+            p2r-deskp3: peer
+          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          target_scenario: >
+            {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
+              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+            {% else %}
+              {{ static_devices.get(browser_id, 'unknown') }}
+            {% endif %}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ target_scenario != 'unknown' }}"
+            sequence:
+              - action: script.scenario_toggle_mc
+                data:
+                  scenario: "{{ target_scenario }}"
+        default:
+          - action: system_log.write
+            data:
+              message: "screensaver_tap called from unknown browser_id: {{ browser_id }}"
+              level: warning
+
+  screensaver_double_tap:
+    description: "Screensaver double tap - randomize scenario via browser_id"
+    # Double tap triggers randomization for the active scenario
+    # Uses same device mapping logic as single tap to determine target scenario
+    # Randomization respects per-preset lock/exclude settings
+    # Force_randomize: true overrides locked presets to force a new random selection
+    sequence:
+      - variables:
+          # Calculate time periods for time-based scenario selection
+          current_hour: "{{ now().hour }}"
+          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
+          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
+          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
+          # Static device→scenario mapping (always same scenario regardless of time)
+          static_devices:
+            koksplatta: matlagning
+            koksplatta_fkb: matlagning
+            p2r-deskp3: peer
+          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          target_scenario: >
+            {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
+              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+            {% else %}
+              {{ static_devices.get(browser_id, 'unknown') }}
+            {% endif %}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ target_scenario != 'unknown' }}"
+            sequence:
+              - action: script.scenario_mixer_mc
+                data:
+                  scenario: "{{ target_scenario }}"
+                  force_randomize: true
+        default:
+          - action: system_log.write
+            data:
+              message: "screensaver_double_tap called from unknown browser_id: {{ browser_id }}"
+              level: warning
+
+  screensaver_hold:
+    description: "Screensaver hold - volume control popup via browser_id"
+    # Long press (hold) shows a browser_mod popup with volume control for the scenario's master zone
+    # Uses same device mapping logic to determine target scenario and its master zone
+    # Popup shows:
+    #   - Title: "Volume Control - [Master Zone Name]"
+    #   - Slider for master zone volume (capped at 70% via card_mod CSS)
+    # Only shows popup if master zone is available and powered on
+    # If master zone unavailable/off, logs info message (silent failure, no error)
+    sequence:
+      - variables:
+          # Calculate time periods for time-based scenario selection
+          current_hour: "{{ now().hour }}"
+          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
+          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
+          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
+          # Static device→scenario mapping (always same scenario regardless of time)
+          static_devices:
+            koksplatta: matlagning
+            koksplatta_fkb: matlagning
+            p2r-deskp3: peer
+          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          target_scenario: >
+            {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
+              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+            {% else %}
+              {{ static_devices.get(browser_id, 'unknown') }}
+            {% endif %}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ target_scenario != 'unknown' }}"
+            sequence:
+              - variables:
+                  scenario_entity: "binary_sensor.scenario_{{ target_scenario }}"
+                  master_zone: "{{ state_attr(scenario_entity, 'master') }}"
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ master_zone not in [none, 'unknown', 'unavailable'] }}"
+                      - condition: template
+                        value_template: "{{ states(master_zone) not in ['unavailable', 'unknown'] }}"
+                      - condition: template
+                        value_template: "{{ states(master_zone) != 'off' }}"
+                    sequence:
+                      - action: browser_mod.popup
+                        data:
+                          browser_id: "{{ browser_id }}"
+                          title: "Volume Control - {{ state_attr(master_zone, 'friendly_name') }}"
+                          content:
+                            type: entities
+                            entities:
+                              - entity: "{{ master_zone }}"
+                            card_mod:
+                              style:
+                                ha-slider$: |
+                                  input {
+                                    max: 70 !important;
+                                  }
+                default:
+                  - action: system_log.write
+                    data:
+                      message: "screensaver_hold: scenario '{{ target_scenario }}' master zone unavailable or powered off ({{ master_zone }})"
+                      level: info
+        default:
+          - action: system_log.write
+            data:
+              message: "screensaver_hold called from unknown browser_id: {{ browser_id }}"
+              level: warning
+
+# ------------------------------------------------------------------
+# AUTOMATIONS
+# ------------------------------------------------------------------
+automation:
+  - alias: 'Kitchen Tablet Battery Management'
+    id: kitchen_tablet_battery_management
+    description: Maintain battery charge between 20-80% using Fully Kiosk integration and periodic checks
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.koksplatta_fkb_battery
+        above: 80
+        id: stoppa
+      - trigger: numeric_state
+        entity_id: sensor.koksplatta_fkb_battery
+        below: 20
+        id: starta
+      - trigger: time_pattern
+        minutes: "/5"
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: stoppa
+              - condition: numeric_state
+                entity_id: sensor.koksplatta_fkb_battery
+                above: 80
+            sequence:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.pp14_koksplatta
+          - conditions:
+              - condition: trigger
+                id: starta
+              - condition: numeric_state
+                entity_id: sensor.koksplatta_fkb_battery
+                below: 20
+            sequence:
+              - action: switch.turn_on
+                target:
+                  entity_id: switch.pp14_koksplatta
+    mode: restart
