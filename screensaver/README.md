@@ -66,6 +66,16 @@ The dashboard achieves a true kiosk-mode experience while preserving normal oper
 
 Both configurations use the same Home Assistant dashboard architecture with device-specific Tasker profiles.
 
+## Usage
+
+I currently use the screensaver on two devices:
+- **Kitchen tablet**  
+  Always on, but also used as a regular tablet for recipes, thermometers while cooking, and as a general Home Assistant control panel.  
+  The screensaver must be disabled while actively used (e.g. cooking), but otherwise runs regardless of charging state, since battery level is monitored and charging is externally controlled.
+- **Smartphone**  
+  Used when docked in the kitchen, by my computer, or on the bedside table at night.  
+  The screensaver must only run while charging, and the behavior ideally varies depending on which charger is used.
+ 
 ### Visual Example
 
 <img src="screensaver.jpg" width="20%" alt="Screensaver Dashboard Example">
