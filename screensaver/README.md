@@ -9,19 +9,16 @@ This project consists of two parts:
 This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 1. **Copy the dashboard**
-   - Import `dashboards/screensaver.yaml` into Home Assistant.
+   - Import `dashboards/screensaver.yaml` into Home Assistant. 
 
-2. **Copy the generic package**
-   - Copy `packages/screensaver.yaml` into your Home Assistant `packages/` directory.
-
-3. **Create your local config**
+2. **Create your local config**
    - Copy `packages/screensaver_local.yaml` and adapt:
      - sensor entities
      - weather entity
      - tap-action scripts
      - (optional) battery automation
 
-4. **Install required HACS components**
+3. **Install required HACS components**
    - `custom:button-card`
    - `card-mod`
    - `Browser Mod`
@@ -35,15 +32,15 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
-5. **Install Tasker on the Android device**
+4. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
 
-6. **Configure Fully Kiosk Remote Admin**
+5. **Configure Fully Kiosk Remote Admin**
    - Enable Remote Admin
    - Set a password
    - Allow local REST API access (`localhost:2323`)
 
-7. **Create Tasker profiles**
+6. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
