@@ -8,21 +8,35 @@ This project consists of two parts:
 
 This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
-1. **Copy the dashboard**
-   - Import `dashboards/screensaver.yaml` into Home Assistant.
+1. **Register the dashboard in Home Assistant**
+   - Add this to your `configuration.yaml`:
+     ```yaml
+     lovelace:
+       dashboards:
+         dashboard-screensaver:  # Creates URL path: https://your-ha-url/dashboard-screensaver
+           mode: yaml
+           filename: dashboards/screensaver.yaml
+           title: Screensaver
+           icon: mdi:monitor-dashboard
+           show_in_sidebar: true
+     ```
+   - This makes the dashboard accessible at `https://your-ha-url/dashboard-screensaver/home?kiosk`
+   - The `?kiosk` parameter hides the Home Assistant sidebar and header for a clean display
 
-2. **Create your local config**
+2. **Copy the dashboard**
+   - Import `dashboards/screensaver.yaml` into your `dashboards/` directory.
+
+3. **Create your local config**
    - Copy `packages/screensaver_local.yaml` and adapt:
      - sensor entities
      - weather entity
      - tap-action scripts
      - (optional) battery automation
 
-3. **Install required HACS components**
+4. **Install required HACS components**
    - `custom:button-card`
    - `card-mod`
    - `Browser Mod`
-   - `Fully Kiosk Browser` (PLUS / Pro)
 
 ➡️ At this point, the screensaver dashboard itself works.
 
@@ -32,24 +46,40 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
-4. **Install Fully Kiosk Browser**
+5. **Install additional HACS component**
+   - `kiosk-mode` (hides Home Assistant chrome for full-screen display)
+
+6. **Install Fully Kiosk Browser**
    - Required for REST API access and reliable kiosk-mode operation
    - PLUS or Pro version needed for Remote Admin functionality
 
-5. **Install Tasker on the Android device**
+7. **Configure Fully Kiosk Browser URL**
+   - In Fully Kiosk settings, set the **Start URL** to:
+     ```
+     https://your-ha-url/dashboard-screensaver/home?kiosk
+     ```
+   - Use HTTPS to let the Companion App open in normal mode for regular use
+   - The `?kiosk` parameter hides Home Assistant chrome for a pure screensaver appearance
+   - Enable **Keep Screen On** in FKB settings
+
+8. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
 
-6. **Configure Fully Kiosk Remote Admin**
+9. **Configure Fully Kiosk Remote Admin**
    - Enable Remote Admin
    - Set a password
    - Allow local REST API access (`localhost:2323`)
 
-7. **Create Tasker profiles**
+10. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
-➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display. 
+11. **Reference configuration examples** (Recommended)
+   - `www/docs/fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
+   - `www/docs/tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
+
+➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display.
 ➡️ If you are not interested in Android automation, you can still use the dashboard as a clean, always-on wall display.
 
 Everything below explains **why this architecture exists**, how the Tasker logic differs between tablets and phones, and how to run the system reliably long-term.
@@ -424,8 +454,8 @@ Together, they create a complete charging lifecycle.
 ### Fully Kiosk Configuration for Mobile
 
 **FKB Settings (OnePlus 13 as example):**
-- **Keep Screen On:** Enabled (prevents display timeout while screensaver shows)
-- **Unlock Screen:** Enabled (allows screensaver to show over lockscreen)
+- **Keep Screen On:** Enabled (essential) — Prevents display timeout while screensaver is active on the charger. Without this, the screensaver will blank the screen during inactivity.
+- **Unlock Screen:** Enabled (essential) — **Absolutely required** to display the screensaver dashboard over the phone's lockscreen. This is what allows the kiosk interface to appear without unlocking the device. Corresponds to `forceScreenUnlock: true` in FKB JSON configuration.
 - **Device Admin:** Disabled (not needed for charging-based activation)
 - **Background Restrictions:** "Begränsa bakgrund" (restricted) — Allows Android to manage FKB lifecycle naturally
 
@@ -442,6 +472,39 @@ Together, they create a complete charging lifecycle.
 ### Lock State Behavior
 
 When the screensaver is active (phone on charger), the phone **remains locked**. Users must swipe to reveal the lockscreen, then unlock to access phone functions. This maintains security while showing the dashboard.
+
+### Configuration File Examples
+
+This project includes exported configuration files to simplify setup on your devices:
+
+**1. Fully Kiosk Browser Configuration**
+- **File:** `www/docs/fully-export.json`
+- **Purpose:** Pre-configured FKB settings including Remote Admin, Keep Screen On, Unlock Screen, and start URL
+- **How to import:**
+  1. Open Fully Kiosk Browser
+  2. Navigate to **Settings → Advanced → Import/Export**
+  3. Select **Import configuration from file**
+  4. Choose `fully-export.json`
+  5. Adjust the start URL if your Home Assistant instance is at a different address
+- **What it includes:** Remote Admin enabled, Keep Screen On, Unlock Screen, Display Control, Background Restrictions
+
+**2. Tasker Profiles (Tablet and Phone)**
+- **File:** `www/docs/tasker-backup.xml`
+- **Purpose:** Ready-to-import Tasker profiles configured for phones with wireless charging. For tablets, remove the charging condition from the profiles.
+- **How to import:**
+  1. Open Tasker
+  2. Go to **Profiles tab**
+  3. Long-press anywhere, select **Import**
+  4. Choose `tasker-backup.xml`
+  5. Review all imported profiles
+- **Device-specific setup:**
+  - **Phone:** Keep profiles as-is (Display Off + Wireless Charging detection)
+  - **Tablet:** Remove the wireless charging condition from the profiles to trigger on Display Off alone
+- **Includes:**
+  - FKB launch and dashboard foreground enforcement
+  - REST API exit handling for charging removal (relevant for phones)
+
+**Important:** After importing, verify that device-specific settings (URLs, passwords, device names) match your environment before enabling. For tablets, edit the imported profiles to remove the charging state condition as described in the "Wall-Mounted Tablet Setup" section above.
 
 ### Known Issues & Workarounds
 
@@ -533,7 +596,11 @@ Open Home Assistant on the specific tablet or phone you wish to configure:
 
 1. **Open Sidebar:** Click the **Browser Mod** icon in the Home Assistant sidebar.
 2. **Identify:** Find the section labeled **"This Browser"**.
-3. **Set ID:** Click the pencil icon next to **Browser ID** and enter a unique, semantic name (e.g., `kitchen_tablet` or `phone_screensaver`).
+3. **Set ID:** Click the pencil icon next to **Browser ID** and enter a **unique, permanent, semantic name**.
+   - Recommendations:
+     - Tablets: `kitchen_tablet`, `living_room_tablet`
+     - Phones running FKB: Use the suffix `_fkb` to distinguish from the Companion App (e.g., `phone_fkb`, `bedroom_phone_fkb`)
+   - These IDs are permanent and used to identify which device is running the screensaver, enabling device-specific sensor mapping (alarm data, battery, etc.)
 4. **Register:** Toggle **"Register"** to **ON**. This creates the device and associated entities (sensor, light, media_player) in Home Assistant.
 
 **For Kiosk Mode (Phone Screensaver):**
@@ -577,6 +644,25 @@ script:
 ```
 
 The screensaver dashboard automatically passes the `browser_id` to these scripts via the `fire-dom-event` action, so the same dashboard configuration works across all your devices.
+
+**5. Dynamic Sensor Mapping — Alarm Display Example**
+
+The screensaver uses JavaScript to dynamically map the correct Home Assistant sensor based on the device's Browser ID. This is crucial for features like the next alarm display, which needs to show data specific to the device running the screensaver.
+
+**How it works:**
+1. JavaScript reads the device's Browser ID from Browser Mod's localStorage (e.g., `phone_fkb`, `kitchen_tablet`)
+2. The dashboard dynamically constructs the sensor entity name based on a pattern: `sensor.{browser_id}_next_alarm`
+3. For example:
+   - Phone with ID `phone_fkb` → queries `sensor.phone_fkb_next_alarm`
+   - Tablet with ID `kitchen_tablet` → queries `sensor.kitchen_tablet_next_alarm`
+4. This pattern allows each device to display its own alarm data without requiring separate dashboard configurations
+
+**Setup requirement:**
+- Ensure the Home Assistant Companion App on your device exposes a `next_alarm` sensor with the device's Browser ID in the entity name
+- The entity should be named: `sensor.{your_browser_id}_next_alarm`
+- Example: If your Browser ID is `bedroom_phone_fkb`, enable the "Next Alarm" sensor in Companion App settings, and it will be available as `sensor.bedroom_phone_fkb_next_alarm`
+
+This dynamic mapping pattern can be extended to other sensor types (battery level, charging state, etc.) using the same Browser ID-based naming convention.
 
 ---
 
