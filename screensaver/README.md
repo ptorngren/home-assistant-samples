@@ -9,7 +9,7 @@ This project consists of two parts:
 This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 1. **Copy the dashboard**
-   - Import `dashboards/screensaver.yaml` into Home Assistant. 
+   - Import `dashboards/screensaver.yaml` into Home Assistant.
 
 2. **Create your local config**
    - Copy `packages/screensaver_local.yaml` and adapt:
@@ -28,19 +28,23 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 ---
 
-### Full Kiosk Screensaver Behavior (Recommended)
+### Kiosk Behavior (Recommended)
 
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
-4. **Install Tasker on the Android device**
+4. **Install Fully Kiosk Browser**
+   - Required for REST API access and reliable kiosk-mode operation
+   - PLUS or Pro version needed for Remote Admin functionality
+
+5. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
 
-5. **Configure Fully Kiosk Remote Admin**
+6. **Configure Fully Kiosk Remote Admin**
    - Enable Remote Admin
    - Set a password
    - Allow local REST API access (`localhost:2323`)
 
-6. **Create Tasker profiles**
+7. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
@@ -63,21 +67,15 @@ The dashboard achieves a true kiosk-mode experience while preserving normal oper
 
 Both configurations use the same Home Assistant dashboard architecture with device-specific Tasker profiles.
 
-## Usage
-
-I currently use the screensaver on two devices:
-- **Kitchen tablet**  
-  Always on, but also used as a regular tablet for recipes, thermometers while cooking, and as a general Home Assistant control panel.  
-  The screensaver must be disabled while actively used (e.g. cooking), but otherwise runs regardless of charging state, since battery level is monitored and charging is externally controlled.
-- **Smartphone**  
-  Used when docked in the kitchen, by my computer, or on the bedside table at night.  
-  The screensaver must only run while charging, and the behavior ideally varies depending on which charger is used.
- 
 ### Visual Example
 
 <img src="screensaver.jpg" width="20%" alt="Screensaver Dashboard Example">
 
-The dashboard displays time, date, temperature, weather, and 5-day forecast in a clean, minimalist design optimized for wall mounting. Anti-burn-in animations run continuously at imperceptible speeds to protect OLED/LCD panels.
+The dashboard displays time, date, temperature, weather, and 5-day forecast in a clean, minimalist design optimized for wall mounting. If an alarm is set on the device running the screensaver, the next alarm time appears at the top of the display. Anti-burn-in animations run continuously at imperceptible speeds to protect OLED/LCD panels.
+
+**Notes:**
+- Date and time formats can be localized (see "Configuring Date Locale" section below)
+- Weather forecast text and icons depend on which weather service you configure (e.g., SMHI for Sweden, Weather.com for US, etc.)
 
 ---
 
