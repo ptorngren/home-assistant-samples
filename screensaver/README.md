@@ -76,8 +76,8 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
 11. **Reference configuration examples** (Recommended)
-   - `www/docs/fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
-   - `www/docs/tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
+   - `fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
+   - `tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
 
 ➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display.
 ➡️ If you are not interested in Android automation, you can still use the dashboard as a clean, always-on wall display.
