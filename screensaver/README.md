@@ -478,7 +478,7 @@ When the screensaver is active (phone on charger), the phone **remains locked**.
 This project includes exported configuration files to simplify setup on your devices:
 
 **1. Fully Kiosk Browser Configuration**
-- **File:** `www/docs/fully-export.json`
+- **File:** `fully-export.json`
 - **Purpose:** Pre-configured FKB settings including Remote Admin, Keep Screen On, Unlock Screen, and start URL
 - **How to import:**
   1. Open Fully Kiosk Browser
@@ -489,7 +489,7 @@ This project includes exported configuration files to simplify setup on your dev
 - **What it includes:** Remote Admin enabled, Keep Screen On, Unlock Screen, Display Control, Background Restrictions
 
 **2. Tasker Profiles (Tablet and Phone)**
-- **File:** `www/docs/tasker-backup.xml`
+- **File:** `tasker-backup.xml`
 - **Purpose:** Ready-to-import Tasker profiles configured for phones with wireless charging. For tablets, remove the charging condition from the profiles.
 - **How to import:**
   1. Open Tasker
