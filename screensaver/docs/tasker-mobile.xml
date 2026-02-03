@@ -1,0 +1,108 @@
+<TaskerData sr="" dvi="1" tv="6.5.11">
+	<Profile sr="prof11" ve="2">
+		<cdate>1769602285687</cdate>
+		<edate>1769672285777</edate>
+		<flags>8</flags>
+		<id>11</id>
+		<mid1>6</mid1>
+		<nme>Charging Stop</nme>
+		<State sr="con0" ve="2">
+			<code>10</code>
+			<Int sr="arg0" val="3"/>
+		</State>
+	</Profile>
+	<Profile sr="prof3" ve="2">
+		<cdate>1769600998369</cdate>
+		<edate>1769672397993</edate>
+		<flags>10</flags>
+		<id>3</id>
+		<mid0>5</mid0>
+		<nme>Display Off =&gt; FKB</nme>
+		<Event sr="con0" ve="2">
+			<code>210</code>
+		</Event>
+		<State sr="con1" ve="2">
+			<code>10</code>
+			<Int sr="arg0" val="3"/>
+		</State>
+	</Profile>
+	<Project sr="proj0" ve="2">
+		<cdate>1751025258847</cdate>
+		<mdate>1769672350418</mdate>
+		<name>Base</name>
+		<pids>3,11</pids>
+		<tids>5,6</tids>
+		<Img sr="icon" ve="2">
+			<nme>mw_action_home</nme>
+		</Img>
+	</Project>
+	<Task sr="task5">
+		<cdate>1769601014282</cdate>
+		<edate>1769672325648</edate>
+		<id>5</id>
+		<nme>Start FKB</nme>
+		<pri>6</pri>
+		<Action sr="act0" ve="7">
+			<code>30</code>
+			<Int sr="arg0" val="500"/>
+			<Int sr="arg1" val="0"/>
+			<Int sr="arg2" val="0"/>
+			<Int sr="arg3" val="0"/>
+			<Int sr="arg4" val="0"/>
+		</Action>
+		<Action sr="act1" ve="7">
+			<code>806</code>
+			<Int sr="arg0" val="500"/>
+		</Action>
+		<Action sr="act2" ve="7">
+			<code>20</code>
+			<App sr="arg0">
+				<appClass>de.ozerov.fully.MainActivity</appClass>
+				<appPkg>de.ozerov.fully</appPkg>
+				<label>Fully Kiosk Browser</label>
+			</App>
+			<Str sr="arg1" ve="3"/>
+			<Int sr="arg2" val="0"/>
+			<Int sr="arg3" val="0"/>
+		</Action>
+	</Task>
+	<Task sr="task6">
+		<cdate>1769601205391</cdate>
+		<edate>1769672316860</edate>
+		<id>6</id>
+		<nme>Exit FKB</nme>
+		<Action sr="act0" ve="7">
+			<code>339</code>
+			<Bundle sr="arg0">
+				<Vals sr="val">
+					<net.dinglisch.android.tasker.RELEVANT_VARIABLES>&lt;StringArray sr=""&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES0&gt;%http_cookies
+Cookies
+The cookies the server sent in the response in the Cookie:COOKIE_VALUE format. You can use this directly in the 'Headers' field of the HTTP Request action&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES0&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES1&gt;%http_data
+Data
+Data that the server responded from the HTTP request.&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES1&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES2&gt;%http_file_output
+File Output
+Will always contain the file's full path even if you specified a directory as the File to save.&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES2&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES3&gt;%http_response_code
+Response Code
+The HTTP Code the server responded&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES3&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES4&gt;%http_headers()
+Response Headers
+The HTTP Headers the server sent in the response. Each header is in the 'key:value' format&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES4&gt;&lt;_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES5&gt;%http_response_length
+Response Length
+The size of the response in bytes&lt;/_array_net.dinglisch.android.tasker.RELEVANT_VARIABLES5&gt;&lt;/StringArray&gt;</net.dinglisch.android.tasker.RELEVANT_VARIABLES>
+					<net.dinglisch.android.tasker.RELEVANT_VARIABLES-type>[Ljava.lang.String;</net.dinglisch.android.tasker.RELEVANT_VARIABLES-type>
+				</Vals>
+			</Bundle>
+			<Int sr="arg1" val="0"/>
+			<Int sr="arg10" val="0"/>
+			<Int sr="arg11" val="0"/>
+			<Int sr="arg12" val="1"/>
+			<Str sr="arg2" ve="3">http://localhost:2323/?cmd=exitApp&amp;password=YOUR_REMOTE_ADMIN_PASSWORD</Str>
+			<Str sr="arg3" ve="3"/>
+			<Str sr="arg4" ve="3"/>
+			<Str sr="arg5" ve="3"/>
+			<Str sr="arg6" ve="3"/>
+			<Str sr="arg7" ve="3"/>
+			<Int sr="arg8" val="30"/>
+			<Int sr="arg9" val="0"/>
+		</Action>
+	</Task>
+</TaskerData>

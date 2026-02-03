@@ -24,19 +24,28 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
    - The `?kiosk` parameter hides the Home Assistant sidebar and header for a clean display
 
 2. **Copy the dashboard**
-   - Import `dashboards/screensaver.yaml` into your `dashboards/` directory.
+   - Import `screensaver.yaml` into your `dashboards/` directory.
 
-3. **Create your local config**
-   - Copy `packages/screensaver_local.yaml` and adapt:
+3. **Add packages directive to configuration.yaml**
+   - If not already present, add this to your `configuration.yaml`:
+     ```yaml
+     homeassistant:
+       packages:
+         !include_dir_named packages/
+     ```
+   - This enables Home Assistant to load YAML files from the `packages/` directory
+
+4. **Create your local config**
+   - Copy `screensaver_local.yaml` into your `packages/` directory and adapt:
      - sensor entities
      - weather entity
      - tap-action scripts
      - (optional) battery automation
 
-4. **Install required HACS components**
-   - `custom:button-card`
+5. **Install required HACS components**
+   - `button-card`
    - `card-mod`
-   - `Browser Mod`
+   - `browser-mod`
 
 ➡️ At this point, the screensaver dashboard itself works.
 
@@ -46,14 +55,14 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
-5. **Install additional HACS component**
-   - `kiosk-mode` (hides Home Assistant chrome for full-screen display)
+6. **Install additional HACS component**
+   - `kiosk-mode` (handles remaining chrome and edge cases in Fully Kiosk)
 
-6. **Install Fully Kiosk Browser**
+7. **Install Fully Kiosk Browser**
    - Required for REST API access and reliable kiosk-mode operation
    - PLUS or Pro version needed for Remote Admin functionality
 
-7. **Configure Fully Kiosk Browser URL**
+8. **Configure Fully Kiosk Browser URL**
    - In Fully Kiosk settings, set the **Start URL** to:
      ```
      https://your-ha-url/dashboard-screensaver/home?kiosk
@@ -62,20 +71,20 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
    - The `?kiosk` parameter hides Home Assistant chrome for a pure screensaver appearance
    - Enable **Keep Screen On** in FKB settings
 
-8. **Install Tasker on the Android device**
+9. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
 
-9. **Configure Fully Kiosk Remote Admin**
+10. **Configure Fully Kiosk Remote Admin**
    - Enable Remote Admin
    - Set a password
    - Allow local REST API access (`localhost:2323`)
 
-10. **Create Tasker profiles**
+11. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
-11. **Reference configuration examples** (Recommended)
+12. **Reference configuration examples** (Recommended)
    - `fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
    - `tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
 
@@ -106,6 +115,28 @@ The dashboard displays time, date, temperature, weather, and 5-day forecast in a
 **Notes:**
 - Date and time formats can be localized (see "Configuring Date Locale" section below)
 - Weather forecast text and icons depend on which weather service you configure (e.g., SMHI for Sweden, Weather.com for US, etc.)
+- ⚠️ **Alarm display requires the Home Assistant Companion App** with "Next Alarm" sensor enabled on the device running the screensaver. Without this, alarm times will not appear.
+
+---
+
+## Use Cases
+
+### Kitchen Tablet
+
+I have a tablet permanently mounted on the kitchen wall. Most of the time it simply shows the time and weather.
+
+When I enter the kitchen in the morning, I’ll often tap it to start some audio — usually the news. Later in the day it might be music while cooking or during dinner. When cooking, I unlock the tablet and open the app I need: recipes, thermometers, or other cooking apps.
+
+When I’m done, I close the cooking app (or leave it idling) and let the screensaver take over again.
+
+
+### Phone
+
+The phone behaves similarly when it’s placed on a wireless charger. While docked, it shows the time, next alarm, and weather. I can glance at it without picking it up, and the phone remains locked.
+
+I can also tap it to start audio — news in the morning, instrumental background while working, or something calmer in the evening.
+
+When I pick it up, the screensaver goes away immediately and the phone behaves normally.
 
 ---
 
@@ -154,7 +185,7 @@ The generic screensaver simply displays whatever value your temperature sensor p
 - **Deviation Display:** When the difference is **≥ 2°C**, show both minimum and maximum values in the format `min° | max°`
 
 **Custom-Sensor Pattern:** Some outdoor installations use several sensors to handle sun exposure. Morning and midday sun create significant temperature differences; at night or during winter, they read nearly the same.
-This can be locally implemented using a custom sensor; see `packages/screensaver_local.yaml` for a concrete example of this pattern using a template sensor.
+This can be locally implemented using a custom sensor; see `screensaver_local.yaml` for a concrete example of this pattern using a template sensor.
 
 ### Anti-Burn-in & Color Palette
 
@@ -197,12 +228,21 @@ const wind = states['sensor.screensaver_display_wind_speed']?.state;
 
 ### Full-Screen Panel Configuration
 
-The dashboard uses `panel: true` to:
-- Hide Home Assistant's standard header and sidebar
-- Make the card fill 100% of the viewport (`100vh` × `100vw`)
-- Remove scroll effects for a seamless, full-screen experience
+Three complementary mechanisms work together to achieve full-screen display:
 
-This is essential for the kiosk-mode wall panel aesthetic.
+1. **`panel: true`** — Home Assistant dashboard setting
+   - Makes the card fill 100% of the viewport (`100vh` × `100vw`)
+   - Removes scroll effects for a seamless, full-screen experience
+
+2. **`?kiosk` URL parameter** — Home Assistant parameter
+   - Hides the Home Assistant header and sidebar
+   - Provides a clean dashboard view without HA chrome
+
+3. **`kiosk-mode` HACS component** — Fully Kiosk integration
+   - Removes remaining edge cases and visual artifacts in Fully Kiosk
+   - Handles platform-specific chrome hiding not covered by the URL parameter
+
+Together, these create a true full-screen kiosk experience suitable for wall-mounted displays.
 
 ### User Interactions (Tap Actions)
 
@@ -222,7 +262,7 @@ Achieving true kiosk-mode operation while preserving normal functionality requir
 
 The original challenge was this: Fully Kiosk Browser has a built-in screensaver feature, but when active, it **locks the interface**. Even with extensive attempts using Tasker and ADB commands, there was no reliable way to pause the screensaver to show other apps.
 
-**This made Fully's native screensaver unsuitable** for a dual-mode system (passive wall display + active cooking app).
+This made Fully's native screensaver unsuitable for a dual-mode system (passive wall display + active cooking app).
 
 ### The Solution: Android System Timeout + Tasker + Fully Kiosk REST API
 
@@ -234,7 +274,18 @@ Instead of relying on Fully's screensaver, the system leverages three key compon
 
 Together, these create a seamless mode-switching experience where Tasker detects events and uses the Fully Kiosk REST API to cleanly shut down the screensaver when needed (phone removed from charger, app launch, etc.):
 
+**Fully Kiosk Browser Background Behavior**
+
+- **Mobile Phones:**
+  Set FKB to **Restricted** in Android's battery/background settings. This prevents FKB from consuming touch events after the screensaver exits (phone removed from charger), which could fire tap actions while the device is being picked up and unlocked.
+
+- **Wall-Mounted Tablets:**
+  FKB must be allowed to run in the background. Since there is no explicit screensaver exit action on tablets, FKB remains active to smoothly transition between screensaver display and cooking app mode. Restricting background execution may cause errors or prevent proper mode switching.
+
 ---
+
+<details>
+<summary><strong>Advanced: Fully Kiosk REST API Setup</strong></summary>
 
 ## Fully Kiosk REST API Setup: Clean Screensaver Exit
 
@@ -335,7 +386,12 @@ Tasker will execute this HTTP request, cleanly exiting Fully Kiosk when the prof
 - Store the password securely (password manager or secure note)
 - Don't share the password unless someone has direct device access
 
+</details>
+
 ---
+
+<details>
+<summary><strong>Advanced: Wall-Mounted Tablet Setup</strong></summary>
 
 ## Wall-Mounted Tablet Setup
 
@@ -389,7 +445,12 @@ While Fully Kiosk handles the visual display, Tasker manages system-level events
 
 This automation is transparent to the user—the tablet simply appears to transition between "wall display mode" and "active app mode" seamlessly.
 
+</details>
+
 ---
+
+<details>
+<summary><strong>Advanced: Mobile Phone Setup</strong></summary>
 
 ## Mobile Phone Setup
 
@@ -488,33 +549,48 @@ This project includes exported configuration files to simplify setup on your dev
   5. Adjust the start URL if your Home Assistant instance is at a different address
 - **What it includes:** Remote Admin enabled, Keep Screen On, Unlock Screen, Display Control, Background Restrictions
 
-**2. Tasker Profiles (Tablet and Phone)**
-- **File:** `tasker-backup.xml`
-- **Purpose:** Ready-to-import Tasker profiles configured for phones with wireless charging. For tablets, remove the charging condition from the profiles.
+**2. Tasker Profiles**
+
+Two separate Tasker exports are provided for device-specific configurations:
+
+**For Mobile Phones:**
+- **File:** `tasker-mobile.xml`
+- **Purpose:** Ready-to-import Tasker profiles optimized for wireless charging activation
 - **How to import:**
   1. Open Tasker
   2. Go to **Profiles tab**
   3. Long-press anywhere, select **Import**
-  4. Choose `tasker-backup.xml`
+  4. Choose `tasker-mobile.xml`
   5. Review all imported profiles
-- **Device-specific setup:**
-  - **Phone:** Keep profiles as-is (Display Off + Wireless Charging detection)
-  - **Tablet:** Remove the wireless charging condition from the profiles to trigger on Display Off alone
 - **Includes:**
+  - Display Off + Wireless Charging detection trigger
   - FKB launch and dashboard foreground enforcement
-  - REST API exit handling for charging removal (relevant for phones)
+  - REST API exit handling for charging removal
+- **Device-specific setup:**
+  - Keep profiles as-is (charging-conditional activation)
 
-**Important:** After importing, verify that device-specific settings (URLs, passwords, device names) match your environment before enabling. For tablets, edit the imported profiles to remove the charging state condition as described in the "Wall-Mounted Tablet Setup" section above.
+**For Wall-Mounted Tablets:**
+- **File:** `tasker-kitchentablet.xml`
+- **Purpose:** Ready-to-import Tasker profiles optimized for always-on screensaver activation
+- **How to import:**
+  1. Open Tasker
+  2. Go to **Profiles tab**
+  3. Long-press anywhere, select **Import**
+  4. Choose `tasker-kitchentablet.xml`
+  5. Review all imported profiles
+- **Includes:**
+  - Display Off trigger (no charging conditions)
+  - App detection for cooking apps (Recipe Keeper, Weber iGrill, MEATER)
+  - Timeout management: 30 seconds (idle) and 60 minutes (active app)
+  - Fully Kiosk lifecycle management
+- **Device-specific setup:**
+  - Profiles are already configured for tablet use (Display Off trigger alone)
+  - Update app package names if using different cooking apps
+  - Adjust timeout values (currently 30s idle, 60 min active) if needed
 
-### Known Issues & Workarounds
+**Important:** After importing either file, verify that device-specific settings (URLs, passwords, device names) match your environment before enabling. Replace placeholder values like `YOUR_REMOTE_ADMIN_PASSWORD` with your actual Fully Kiosk Remote Admin password.
 
-**FKB Remains in Background After Charging Exit**
-
-- **Issue:** After removing the phone from the charger, Fully Kiosk may continue running in the background instead of force-stopping
-- **Root Cause:** OxygenOS doesn't respond to the ADB command `am force-stop de.ozerov.fully` (returns error 255)
-- **Current Workaround:** Android background restriction "Begränsa bakgrund" allows the system to manage FKB's lifecycle naturally
-- **Practical Impact:** FKB idles peacefully in the background (doesn't consume significant resources) and won't interfere with normal phone use
-- **Status:** Not an issue in practice—the screensaver functions correctly with or without explicit force-stop
+</details>
 
 ---
 
@@ -535,11 +611,14 @@ This integration is essential for:
 - Programmatic control of Fully settings
 
 **Kiosk Configuration:**
-- Uses `panel: true` to hide Home Assistant chrome
+- Dashboard configured with `panel: true` to fill the viewport, combined with `?kiosk` URL parameter and `kiosk-mode` component to achieve full-screen display
 - Dashboard runs exclusively in Fully Kiosk, not in a web browser
 - Prevents accidental navigation or app switching
 
 ### Battery Management
+
+<details>
+<summary><strong>Battery Protection Deep Dive</strong></summary>
 
 Long-term device health requires active battery protection to prevent degradation (tablets) and swelling (phones).
 
@@ -580,6 +659,8 @@ Mobile phones typically use built-in charging optimizations (e.g., OxygenOS, One
 
 **For tablets specifically:** This approach significantly extends tablet lifespan by managing charge cycles intelligently.
 
+</details>
+
 ### Browser Mod Setup & Device Registration
 
 Browser Mod enables device-aware tap actions: the screensaver can execute different scripts depending on which tablet or phone is running it. This allows a single dashboard to adapt behavior per device.
@@ -608,8 +689,8 @@ Open Home Assistant on the specific tablet or phone you wish to configure:
 If the screensaver is running in FKB kiosk mode (no sidebar visible):
 
 1. **Edit FKB Start URL:** In Fully Kiosk settings, temporarily remove the `?kiosk` parameter from the end of the URL
-   - Before: `https://your-ha-url/dashboard-screensaver?kiosk`
-   - After: `https://your-ha-url/dashboard-screensaver` (reload)
+   - Before: `https://your-ha-url/dashboard-screensaver/home?kiosk`
+   - After: `https://your-ha-url/dashboard-screensaver/home` (reload)
 2. **Access Browser Mod:** Now the HA sidebar is visible. Click **Browser Mod** icon.
 3. **Find "This Browser"** section and set your Browser ID to something meaningful (e.g., `phone_screensaver`)
 4. **Toggle "Register"** to register the device
@@ -775,10 +856,10 @@ Battery Remains in Safe 20-80% Range
 
 ### Locale Configuration
 
-The screensaver automatically creates an `input_select.screensaver_locale` helper with default value `en-US`. To customize:
+The package defines an `input_select.screensaver_locale` helper with default value `en-US`. To customize:
 
 1. **Via UI:** Settings → Devices & Services → Helpers → Screensaver Locale
-2. **Via YAML:** Edit `packages/screensaver.yaml` to modify the `input_select.screensaver_locale` options list
+2. **Via YAML:** Edit `screensaver.yaml` to modify the `input_select.screensaver_locale` options list
 
 The date display will reflect your selected locale immediately (e.g., "Monday 04 January" for en-US, "Måndag 04 januari" for sv-SE).
 
@@ -819,7 +900,7 @@ Change the locale via Home Assistant UI:
 2. Select your preferred locale
 3. The date display updates immediately
 
-To add additional locales, edit the `input_select.screensaver_locale` helper options in `packages/screensaver.yaml`.
+To add additional locales, edit the `input_select.screensaver_locale` helper options in `screensaver.yaml`.
 
 ### Changing Sensor Sources
 
@@ -828,7 +909,7 @@ Replace entity references in JavaScript custom fields with your own sensors:
 - Weather description sensor (currently: `sensor.screensaver_display_weather`)
 - Humidity sensor (currently: `sensor.screensaver_display_humidity`)
 - Wind speed sensor (currently: `sensor.screensaver_display_wind_speed`)
-- Weather forecast entity (currently: `weather.forecast_love8`)
+- Weather forecast entity (currently: `weather.forecast_home`)
 
 ### Customizing Tap Actions
 
@@ -839,9 +920,9 @@ Define the following scripts in your Home Assistant configuration to customize t
 
 If these scripts don't exist, taps will be silently ignored.
 
-### Generic Implementation: packages/screensaver.yaml
+### Generic Implementation: screensaver.yaml
 
-The screensaver system provides generic tap action scripts in `packages/screensaver.yaml`:
+The screensaver system provides generic tap action scripts in `screensaver.yaml`:
 
 - **Device-aware routing:** Map browser IDs to specific actions using the `scenario_map` and `action_map` pattern
 - **Error handling:** Graceful fallback logging for unknown devices
@@ -850,13 +931,13 @@ The screensaver system provides generic tap action scripts in `packages/screensa
 
 This package is device-agnostic and reusable across any Home Assistant setup.
 
-### Local Implementation Example: packages/screensaver_local.yaml
+### Local Implementation Example: screensaver_local.yaml
 
-For a concrete, working example of how to implement the screensaver locally, see `packages/screensaver_local.yaml`. This package demonstrates:
+For a concrete, working example of how to implement the screensaver locally, see `screensaver_local.yaml`. This package demonstrates:
 
 - **Sensor aggregation:** Temperature, humidity, wind, and weather sensor setup for the screensaver display
 - **Battery management:** Automation to maintain tablet battery in the 20-80% range using Fully Kiosk integration (tablet-specific)
-- **Mapping example:** Shows how to customize the tap action maps in `packages/screensaver.yaml` for your device
+- **Mapping example:** Shows how to customize the tap action maps in `screensaver.yaml` for your device
 - **Browser ID registration:** Documents how to register devices in Browser Mod for device-aware tap actions
 
 Use this as a template for your own setup. The `scenario_map` and `action_map` patterns scale easily—just add new browser IDs and their corresponding actions as needed.
@@ -902,6 +983,20 @@ Check Home Assistant's entity registry:
 ---
 
 ## Known Limitations
+
+### Portrait Layout Only
+
+The screensaver dashboard is **designed exclusively for portrait orientation**. Using it on a landscape display will result in:
+
+- Disproportionate font sizes (elements sized for portrait may appear too small or too large in landscape)
+- Poor visual hierarchy and layout balance
+- Text that doesn't align with the intended design grid
+
+The dashboard uses viewport-relative sizing (`vw` units) calibrated for portrait aspect ratios (e.g., typical tablet 4:3 or phone 9:16). Landscape displays require significant redesign of the grid layout, font sizes, and spacing.
+
+**Workaround:** If landscape display is required, consider:
+- Rotating the device to portrait (easiest solution for wall-mounted tablets)
+- Creating a separate dashboard variant optimized for landscape proportions
 
 ### Motion Detection Not Supported
 

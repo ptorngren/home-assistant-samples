@@ -6,6 +6,11 @@
 # - Battery management automation for tablet
 # ------------------------------------------------------------------
 
+input_text:
+  peers_mobil_charger_location:
+    name: "Peer's Phone Charger Location"
+    initial: "unknown"
+
 sensor:
   - platform: time_date
     display_options:
@@ -59,7 +64,7 @@ template:
       - name: "Screensaver Display Weather"
         unique_id: screensaver_display_weather
         state: >
-          {% set s = states('weather.forecast_love8') %}
+          {% set s = states('weather.forecast_home') %}
           {% set mapper = {
             'clear': 'Klart',
             'clear-night': 'Klart',
@@ -98,6 +103,10 @@ template:
           {% set w = states('sensor.relax_vindmatare_wind_speed') | float(-1) %}
           {{ (w / 3.6) | round(1) if w > 0.1 else 'unavailable' }}
 
+      - name: "Peer's Phone Charger Location"
+        unique_id: peers_mobil_charger_location
+        state: "{{ states('input_text.peers_mobil_charger_location') }}"
+
 # ------------------------------------------------------------------
 # SCRIPTS
 # ------------------------------------------------------------------
@@ -113,23 +122,42 @@ template:
 # Unknown device IDs are logged and no action is taken
 script:
   screensaver_tap:
-    description: "Screensaver single tap - toggle scenario via browser_id"
+    description: "Screensaver single tap - toggle scenario via browser_id and location"
     sequence:
       - variables:
-          # Calculate time periods for time-based scenario selection
           current_hour: "{{ now().hour }}"
-          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
-          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
-          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
-          # Static device→scenario mapping (always same scenario regardless of time)
+          charger_location: "{{ states('input_text.peers_mobil_charger_location') }}"
+          # Time-based scenario selection for mobile (fallback if no location)
+          mobile_is_morning: "{{ current_hour >= 5 and current_hour < 8 }}"
+          mobile_is_day: "{{ current_hour >= 8 and current_hour < 22 }}"
+          mobile_is_evening: "{{ current_hour >= 22 or current_hour < 5 }}"
+          # Time-based scenario selection for kitchen tablet
+          kitchen_is_morning: "{{ current_hour < 10 }}"
+          kitchen_is_day: "{{ current_hour >= 10 and current_hour < 17 }}"
+          kitchen_is_evening: "{{ current_hour >= 17 }}"
+          # Static device→scenario mapping
           static_devices:
-            koksplatta: matlagning
-            koksplatta_fkb: matlagning
             p2r-deskp3: peer
-          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          # Resolve target scenario based on device type, location, and time
           target_scenario: >
             {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
-              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+              {% if charger_location == 'garage' %}
+                garage
+              {% elif charger_location == 'kök' %}
+                {% if current_hour >= 5 and current_hour < 10 %}godmorgon{% elif current_hour >= 10 and current_hour < 17 %}matlagning{% else %}middag{% endif %}
+              {% elif charger_location == 'peer' %}
+                peer
+              {% elif charger_location == 'sovrum' %}
+                {% if current_hour >= 5 and current_hour < 19 %}godmorgon{% else %}godnatt{% endif %}
+              {% elif charger_location == 'bastu' %}
+                bastu
+              {% elif charger_location not in ['unknown', 'unavailable', None, ''] %}
+                unknown
+              {% else %}
+                {% if mobile_is_morning %}godmorgon{% elif mobile_is_day %}peer{% else %}godnatt{% endif %}
+              {% endif %}
+            {% elif browser_id in ['koksplatta', 'koksplatta_fkb'] %}
+              {% if kitchen_is_morning %}godmorgon{% elif kitchen_is_day %}matlagning{% else %}middag{% endif %}
             {% else %}
               {{ static_devices.get(browser_id, 'unknown') }}
             {% endif %}
@@ -148,27 +176,46 @@ script:
               level: warning
 
   screensaver_double_tap:
-    description: "Screensaver double tap - randomize scenario via browser_id"
+    description: "Screensaver double tap - randomize scenario via browser_id and location"
     # Double tap triggers randomization for the active scenario
     # Uses same device mapping logic as single tap to determine target scenario
     # Randomization respects per-preset lock/exclude settings
     # Force_randomize: true overrides locked presets to force a new random selection
     sequence:
       - variables:
-          # Calculate time periods for time-based scenario selection
           current_hour: "{{ now().hour }}"
-          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
-          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
-          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
-          # Static device→scenario mapping (always same scenario regardless of time)
+          charger_location: "{{ states('input_text.peers_mobil_charger_location') }}"
+          # Time-based scenario selection for mobile (fallback if no location)
+          mobile_is_morning: "{{ current_hour >= 5 and current_hour < 8 }}"
+          mobile_is_day: "{{ current_hour >= 8 and current_hour < 22 }}"
+          mobile_is_evening: "{{ current_hour >= 22 or current_hour < 5 }}"
+          # Time-based scenario selection for kitchen tablet
+          kitchen_is_morning: "{{ current_hour < 10 }}"
+          kitchen_is_day: "{{ current_hour >= 10 and current_hour < 17 }}"
+          kitchen_is_evening: "{{ current_hour >= 17 }}"
+          # Static device→scenario mapping
           static_devices:
-            koksplatta: matlagning
-            koksplatta_fkb: matlagning
             p2r-deskp3: peer
-          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          # Resolve target scenario based on device type, location, and time
           target_scenario: >
             {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
-              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+              {% if charger_location == 'garage' %}
+                garage
+              {% elif charger_location == 'kök' %}
+                {% if current_hour >= 5 and current_hour < 10 %}godmorgon{% elif current_hour >= 10 and current_hour < 17 %}matlagning{% else %}middag{% endif %}
+              {% elif charger_location == 'peer' %}
+                peer
+              {% elif charger_location == 'sovrum' %}
+                {% if current_hour >= 5 and current_hour < 19 %}godmorgon{% else %}godnatt{% endif %}
+              {% elif charger_location == 'bastu' %}
+                bastu
+              {% elif charger_location not in ['unknown', 'unavailable', None, ''] %}
+                unknown
+              {% else %}
+                {% if mobile_is_morning %}godmorgon{% elif mobile_is_day %}peer{% else %}godnatt{% endif %}
+              {% endif %}
+            {% elif browser_id in ['koksplatta', 'koksplatta_fkb'] %}
+              {% if kitchen_is_morning %}godmorgon{% elif kitchen_is_day %}matlagning{% else %}middag{% endif %}
             {% else %}
               {{ static_devices.get(browser_id, 'unknown') }}
             {% endif %}
@@ -188,7 +235,7 @@ script:
               level: warning
 
   screensaver_hold:
-    description: "Screensaver hold - volume control popup via browser_id"
+    description: "Screensaver hold - volume control popup via browser_id and location"
     # Long press (hold) shows a browser_mod popup with volume control for the scenario's master zone
     # Uses same device mapping logic to determine target scenario and its master zone
     # Popup shows:
@@ -198,20 +245,39 @@ script:
     # If master zone unavailable/off, logs info message (silent failure, no error)
     sequence:
       - variables:
-          # Calculate time periods for time-based scenario selection
           current_hour: "{{ now().hour }}"
-          is_morning: "{{ current_hour >= 5 and current_hour < 10 }}"
-          is_day: "{{ current_hour >= 10 and current_hour < 20 }}"
-          is_evening: "{{ current_hour >= 20 or current_hour < 5 }}"
-          # Static device→scenario mapping (always same scenario regardless of time)
+          charger_location: "{{ states('input_text.peers_mobil_charger_location') }}"
+          # Time-based scenario selection for mobile (fallback if no location)
+          mobile_is_morning: "{{ current_hour >= 5 and current_hour < 8 }}"
+          mobile_is_day: "{{ current_hour >= 8 and current_hour < 22 }}"
+          mobile_is_evening: "{{ current_hour >= 22 or current_hour < 5 }}"
+          # Time-based scenario selection for kitchen tablet
+          kitchen_is_morning: "{{ current_hour < 10 }}"
+          kitchen_is_day: "{{ current_hour >= 10 and current_hour < 17 }}"
+          kitchen_is_evening: "{{ current_hour >= 17 }}"
+          # Static device→scenario mapping
           static_devices:
-            koksplatta: matlagning
-            koksplatta_fkb: matlagning
             p2r-deskp3: peer
-          # Resolve target scenario: static devices use fixed mapping, mobile uses time-based
+          # Resolve target scenario based on device type, location, and time
           target_scenario: >
             {% if browser_id in ['peers_mobil', 'peers_mobil_fkb'] %}
-              {% if is_morning %}godmorgon{% elif is_day %}matlagning{% else %}godnatt{% endif %}
+              {% if charger_location == 'garage' %}
+                garage
+              {% elif charger_location == 'kök' %}
+                {% if current_hour >= 5 and current_hour < 10 %}godmorgon{% elif current_hour >= 10 and current_hour < 17 %}matlagning{% else %}middag{% endif %}
+              {% elif charger_location == 'peer' %}
+                peer
+              {% elif charger_location == 'sovrum' %}
+                {% if current_hour >= 5 and current_hour < 19 %}godmorgon{% else %}godnatt{% endif %}
+              {% elif charger_location == 'bastu' %}
+                bastu
+              {% elif charger_location not in ['unknown', 'unavailable', None, ''] %}
+                unknown
+              {% else %}
+                {% if mobile_is_morning %}godmorgon{% elif mobile_is_day %}peer{% else %}godnatt{% endif %}
+              {% endif %}
+            {% elif browser_id in ['koksplatta', 'koksplatta_fkb'] %}
+              {% if kitchen_is_morning %}godmorgon{% elif kitchen_is_day %}matlagning{% else %}middag{% endif %}
             {% else %}
               {{ static_devices.get(browser_id, 'unknown') }}
             {% endif %}

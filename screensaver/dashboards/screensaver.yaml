@@ -165,7 +165,7 @@ views:
           forecast:
             card:
               type: weather-forecast
-              entity: weather.forecast_love8
+              entity: weather.forecast_home
               show_current: false
               show_forecast: true
               forecast_type: daily
