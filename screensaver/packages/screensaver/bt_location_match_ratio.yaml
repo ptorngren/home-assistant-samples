@@ -1,0 +1,240 @@
+# bt_location_match_ratio.yaml
+# Match Ratio Location Detection Algorithm
+# Composite scoring: 45% matched count + 30% fingerprint coverage + 25% RSSI quality
+script:
+  bt_location_match_ratio:
+    description: "Composite Score Location Matching: 45% matched count + 30% fingerprint coverage + 25% RSSI quality"
+    # This generic protocol allows algorithm swapping without orchestrator changes.
+    fields:
+      scan_context:
+        description: "Context for logging (e.g., 'Latest scan' or 'Fingerprint #2 (KÖK)')"
+        example: "Latest scan"
+      devices:
+        description: "Array of BT devices with MAC and RSSI from current scan"
+        example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'rssi': -65}]"
+      fingerprints_parsed:
+        description: "Parsed fingerprints from database"
+        example: "[{'location': 'peer', 'location_idx': 0, 'mac_rssi_str': 'AA:BB:CC:DD:EE:FF=-52,...'}]"
+    variables:
+      # Context for logging
+      scan_context: "{{ scan_context | default('Latest scan') }}"
+
+      # Load global ignored list from sensor attribute (file-backed, unlimited capacity)
+      global_ignored_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+
+      # Create a map of current scan MAC -> RSSI for fast lookup (filtered by global ignored)
+      current_scan_map: |
+        {%- set ns = namespace(map={}) -%}
+        {%- for device in devices -%}
+          {%- set device_mac = device.mac | upper -%}
+          {%- if device_mac not in global_ignored_list -%}
+            {%- set ns.map = ns.map | combine({device_mac: device.rssi}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.map }}
+
+      # Algorithm parameters
+      weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+      missing_beacon_penalty: "{{ states('input_number.bt_location_detection_missing_beacon_penalty') | float(50) }}"
+      min_common_beacons: 3
+
+      # Composite score weights (per Opus analysis: matched count 45%, fingerprint coverage 30%, RSSI quality 25%)
+      weight_matched: 0.45
+      weight_fingerprint_pct: 0.30
+      weight_rssi: 0.25
+
+      # BEACON EXCLUSION FILTER (used in max_matched_beacons and location_scores calculations)
+      # Skip beacon if any condition is true:
+      #   - fp_rssi == 0 (ghost beacon with no valid reference)
+      #   - fp_rssi < weak_signal_threshold (weak/unreliable reference point)
+      #   - fp_mac in global_ignored_list (beacon globally ignored as irrelevant)
+      #   - pair.endswith(':X') (beacon locally ignored for this location)
+      # Keep beacon in total count only if ALL conditions are false
+
+      # Maximum matched beacons across all locations (first pass to find max)
+      max_matched_beacons: |
+        {%- set ns = namespace(max_matched=0) -%}
+        {%- for fp in fingerprints_parsed -%}
+          {%- set ns.matched_beacons = 0 -%}
+          {%- set ns.total_fingerprint_beacons = 0 -%}
+          {%- for pair in fp.mac_rssi_str.split(',') -%}
+            {%- if '=' in pair -%}
+              {# Strip :X suffix from pair to get base MAC=RSSI #}
+              {%- set pair_base = pair.rstrip(':X') -%}
+              {%- set kv = pair_base.split('=') -%}
+              {%- if kv | length == 2 -%}
+                {%- set fp_mac = kv[0] | trim | upper -%}
+                {%- set fp_rssi = kv[1] | trim | int(0) -%}
+                {# Apply BEACON EXCLUSION FILTER (see definition above) #}
+                {%- if fp_rssi == 0 or fp_rssi < weak_signal_threshold or fp_mac in global_ignored_list or pair.endswith(':X') -%}
+                  {# Skip excluded beacon #}
+                {%- else -%}
+                  {%- set ns.total_fingerprint_beacons = ns.total_fingerprint_beacons + 1 -%}
+                  {%- if fp_mac in current_scan_map -%}
+                    {%- set current_rssi = current_scan_map[fp_mac] -%}
+                    {%- if current_rssi < 0 and current_rssi >= weak_signal_threshold -%}
+                      {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- if ns.matched_beacons > ns.max_matched -%}{%- set ns.max_matched = ns.matched_beacons -%}{%- endif -%}
+        {%- endfor -%}
+        {{ ns.max_matched if ns.max_matched > 0 else 1 }}
+
+      # Calculate Match Ratio score for each location
+      # ALGORITHM FLOW:
+      # 1. For each fingerprint, parse beacons and filter (exclusions, ghosts, weak signals)
+      # 2. Match against current scan and accumulate RSSI metrics
+      # 3. Calculate three normalized score components (0-1 scale each)
+      # 4. Combine components using weighted formula: total = (w1×count) + (w2×coverage) + (w3×signal)
+      location_scores: |
+        {%- set ns = namespace(scores={}) -%}
+        {%- for fp in fingerprints_parsed -%}
+          {%- set location = fp.location -%}
+          {%- set mac_rssi_str = fp.mac_rssi_str -%}
+
+          {# ===== PHASE 1: Initialize counters for this location ===== #}
+          {%- set ns.matched_beacons = 0 -%}
+          {%- set ns.weighted_rssi_diff_sum = 0 -%}
+          {%- set ns.weight_sum = 0 -%}
+          {%- set ns.total_fingerprint_beacons = 0 -%}
+
+          {# ===== PHASE 2: Parse fingerprint beacons and match against current scan ===== #}
+          {%- for pair in mac_rssi_str.split(',') -%}
+            {%- if '=' in pair -%}
+              {# Extract MAC and RSSI from pair (strip local ignore marker :X) #}
+              {%- set pair_base = pair.rstrip(':X') -%}
+              {%- set kv = pair_base.split('=') -%}
+              {%- if kv | length == 2 -%}
+                {%- set fp_mac = kv[0] | trim | upper -%}
+                {%- set fp_rssi = kv[1] | trim | int(0) -%}
+
+                {# Apply BEACON EXCLUSION FILTER (see definition above) #}
+                {%- if fp_rssi == 0 -%}
+                  {# Ghost beacon #}
+                {%- elif fp_rssi < weak_signal_threshold -%}
+                  {# Weak fingerprint beacon #}
+                {%- elif fp_mac in global_ignored_list or pair.endswith(':X') -%}
+                  {# Ignored beacon #}
+                {%- else -%}
+                  {# Beacon passed exclusion filters - count toward fingerprint total #}
+                  {%- set ns.total_fingerprint_beacons = ns.total_fingerprint_beacons + 1 -%}
+
+                  {# Now check if it exists in current scan #}
+                  {%- if fp_mac in current_scan_map -%}
+                    {%- set current_rssi = current_scan_map[fp_mac] -%}
+
+                    {# Apply signal quality filters from current scan #}
+                    {%- if current_rssi > 0 -%}
+                      {# Filter: Skip 0 dBm in scan too #}
+                    {%- elif current_rssi >= weak_signal_threshold -%}
+                      {# STRONG SIGNAL FOUND: Beacon meets all criteria - count as matched #}
+                      {# Calculate beacon weight based on signal strength #}
+                      {# Why: Strong beacons (e.g., -52 dBm) should influence RSSI average more than weak ones (-94 dBm) #}
+                      {# Formula: weight = max(0, 100 + rssi_value) normalizes negative dBm values to positive weights #}
+                      {#   Example: -52 dBm → weight=48, -94 dBm → weight=6 #}
+                      {#   Effect: Strong beacon has 8× more influence on weighted average #}
+                      {%- set rssi_diff = (current_rssi - fp_rssi) | abs -%}
+                      {%- set beacon_weight = [0, 100 + current_rssi] | max -%}
+
+                      {# Accumulate weighted RSSI differences and total weight for average calculation #}
+                      {%- set ns.weighted_rssi_diff_sum = ns.weighted_rssi_diff_sum + (rssi_diff * beacon_weight) -%}
+                      {%- set ns.weight_sum = ns.weight_sum + beacon_weight -%}
+                      {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                    {%- else -%}
+                      {# Filter: Beacon in fingerprint but below weak_signal_threshold in scan - missing from match #}
+                    {%- endif -%}
+                  {%- else -%}
+                    {# Beacon in fingerprint but not found in current scan - missing from match #}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+          {# ===== PHASE 3: Calculate score components (normalized to 0-1 range) ===== #}
+          {%- set missing_beacons = ns.total_fingerprint_beacons - ns.matched_beacons -%}
+          {%- set penalty = missing_beacons * missing_beacon_penalty -%}
+          {%- set beacon_score = 0 -%}
+          {%- set rssi_score = 0 -%}
+
+          {%- if ns.total_fingerprint_beacons > 0 -%}
+            {# Component 1: Beacon Match Score (how many matched vs max possible across all locations) #}
+            {%- set normalized_count = (ns.matched_beacons / max_matched_beacons) | round(3) -%}
+
+            {# Component 2: Coverage Score (what % of THIS location's fingerprint was found) #}
+            {%- set fingerprint_pct = (ns.matched_beacons / ns.total_fingerprint_beacons) | round(3) -%}
+            {%- set beacon_score = (fingerprint_pct * 100) | round(1) -%}
+
+            {# Component 3: Signal Quality Score (how close are RSSI values to fingerprint) #}
+            {%- set weighted_avg_rssi_diff = (ns.weighted_rssi_diff_sum / ns.weight_sum) | round(2) if ns.weight_sum > 0 else 0 -%}
+            {%- set normalized_rssi_diff = [weighted_avg_rssi_diff / 100, 1.0] | min -%}
+            {%- set rssi_similarity = (1.0 - normalized_rssi_diff) | round(3) -%}
+            {%- set rssi_score = (weighted_avg_rssi_diff + penalty) | round(2) -%}
+
+            {# ===== PHASE 4: Combine components using weighted formula ===== #}
+            {# Formula: total_score = (weight_matched × normalized_count) + (weight_coverage × fingerprint_pct) + (weight_rssi × rssi_similarity) #}
+            {# Weights: 45% matched count + 30% coverage + 25% RSSI quality #}
+            {%- set total_score = (weight_matched * normalized_count + weight_fingerprint_pct * fingerprint_pct + weight_rssi * rssi_similarity) | round(3) -%}
+          {%- else -%}
+            {%- set total_score = 0 -%}
+          {%- endif -%}
+
+          {# Store results for this location #}
+          {%- set ns.scores = ns.scores | combine({location: {"matched": ns.matched_beacons, "missing": missing_beacons, "beacon_score": beacon_score, "rssi_score": rssi_score, "penalty": penalty, "total_score": total_score}}) -%}
+        {%- endfor -%}
+        {{ ns.scores }}
+
+      # Find location with maximum composite score
+      best_location_info: |
+        {%- if location_scores | length > 0 -%}
+          {%- set ns = namespace(best_location=none, best_score=-1) -%}
+          {%- for location, metrics in location_scores | dictsort -%}
+            {%- if metrics.total_score > ns.best_score -%}
+              {%- set ns.best_location = location -%}
+              {%- set ns.best_score = metrics.total_score -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set confidence = ns.best_score | round(2) -%}
+          {{ {"location": ns.best_location, "score": ns.best_score, "confidence": confidence} }}
+        {%- else -%}
+          {{ {"location": "unknown", "score": 0.0, "confidence": 0.0} }}
+        {%- endif -%}
+
+    sequence:
+      # Build the result
+      - variables:
+          detected_location: "{{ best_location_info.location }}"
+          confidence: "{{ best_location_info.confidence | round(2) }}"
+          best_score: "{{ best_location_info.score }}"
+
+      # Log algorithm execution for debugging
+      - action: system_log.write
+        data:
+          message: |
+            COMPOSITE SCORE LOCATION MATCHING - {{ scan_context }}
+            Formula: score = (0.45 × normalized_count) + (0.30 × fingerprint_pct) + (0.25 × rssi_similarity)
+
+            All locations evaluated (0 dBm filtered):
+            {% for location, metrics in location_scores | dictsort %}
+            {{ location }}: matched={{ metrics.matched }}/{{ metrics.matched + metrics.missing }}, beacon%={{ metrics.beacon_score }}, rssi={{ metrics.rssi_score }}, penalty={{ metrics.penalty }}, score={{ metrics.total_score }}
+            {% endfor %}
+
+            Best Match: {{ detected_location | upper }}
+            Score: {{ best_score | round(3) }}
+            Confidence: {{ "%.1f" | format(confidence * 100) }}%
+          level: info
+
+      # Return result with same interface as old algorithm
+      - variables:
+          result:
+            detected_location: "{{ detected_location }}"
+            confidence: "{{ confidence }}"
+            score: "{{ best_score }}"
+            scores_detail: "{{ location_scores }}"
+
+      - stop: "Match Ratio complete"
+        response_variable: result

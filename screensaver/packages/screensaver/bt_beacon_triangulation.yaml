@@ -1,0 +1,918 @@
+# Screensaver Generic Package
+# Reusable components for screensaver dashboard (device-agnostic)
+# Contains tap action scripts, location detection, and dashboard configuration
+# Local customizations (temperature sensors, weather mapping) go in screensaver_local.yaml
+# ------------------------------------------------------------------
+
+input_text:
+  bt_calibration_locations:
+    name: "BT Calibration Locations"
+    icon: mdi:text-box-edit-outline
+    max: 255
+    # User-editable location list (e.g., "office, kitchen, garage, bedroom, ...")
+    # Template sensor bt_location_array parses this once and stores as indexable array
+    # Accessible via: state_attr('sensor.bt_location_array', 'locations')[index]
+
+  device_charger_locations:
+    name: "Device Charger Locations"
+    max: 255
+    initial: "{}"
+    # Stores JSON mapping of device_ids to charger locations: {"peers_mobil": "peer", "device_id_2": "kök", ...}
+    # NOTE: 'initial' resets this on HA restart, but that's acceptable because:
+    # 1. Mapping is only valid while phone is on charger (cleared on power disconnect)
+    # 2. Mapping is repopulated by every webhook (BT scan), so brief reset on restart doesn't matter
+    # 3. Edge case (HA restart with phone on charger) is rare and self-corrects on next BT scan
+
+input_button:
+  capture_bt_fingerprint:
+    name: "Capture BT Fingerprint"
+    # Manual trigger to capture current RSSI values to fingerprint database
+
+input_number:
+  bt_location_detection_weak_signal_threshold:
+    name: "BT Weak Signal Threshold (dBm)"
+    unit_of_measurement: "dBm"
+    min: -100
+    max: -60
+    step: 1
+    mode: slider
+    # Signals weaker than this are treated as missing/unreliable
+    # Prevents volatile weak signals from affecting location detection
+    # NOTE: No 'initial:' to prevent forced resets on HA restart
+    # Helper starts empty, so user must set this value manually in the UI unless the algorithm uses a default value
+
+  bt_location_detection_missing_beacon_penalty:
+    name: "BT Missing Beacon Penalty"
+    min: 0
+    max: 200
+    step: 5
+    mode: slider
+    # Penalty score for each beacon in fingerprint that's missing from current scan
+    # Higher = more aggressive penalization for missing distinctive beacons
+
+# Shell commands for file-based persistence (fingerprint database and BT scan data)
+# Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
+shell_command:
+  bt_fingerprint_database_write: /config/packages/screensaver/bt_fingerprints_persistor.sh write fingerprints {{ csv_content | base64_encode }}
+  bt_fingerprint_database_read: '/config/packages/screensaver/bt_fingerprints_persistor.sh read fingerprints'
+  bt_ignored_write: /config/packages/screensaver/bt_fingerprints_persistor.sh write ignored {{ csv_content | base64_encode }}
+  bt_ignored_read: '/config/packages/screensaver/bt_fingerprints_persistor.sh read ignored'
+
+# ------------------------------------------------------------------
+# BT SENSORS (Command-line integration)
+# ------------------------------------------------------------------
+# BT Latest Scan Full sensor is now webhook-triggered template sensor (see template section)
+# Other sensors read from file (fingerprints, location scores, ignored beacons)
+# ------------------------------------------------------------------
+command_line:
+  - sensor:
+      name: "BT Fingerprint Database File"
+      unique_id: bt_fingerprint_database_file
+      command: 'bash /config/packages/screensaver/bt_fingerprints_persistor.sh read fingerprints'
+      json_attributes:
+        - fingerprints
+      value_template: "{% if value_json.fingerprints %}ready{% else %}empty{% endif %}"
+      # Reads fingerprints from file and wraps in JSON object for attributes extraction
+      # Runs at HA startup and on YAML reload (no scan_interval to avoid unnecessary polling)
+      # Dashboard/scripts access via: state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')
+      # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
+
+  - sensor:
+      name: "BT Ignored Beacons"
+      unique_id: bt_ignored
+      command: 'bash /config/packages/screensaver/bt_fingerprints_persistor.sh read ignored'
+      json_attributes:
+        - ignored
+      value_template: "{% if value_json.ignored %}{{ value_json.ignored | length }}{% else %}0{% endif %}"
+      # Reads globally excluded beacon MACs from file (supports 100+ beacons)
+      # Stores as JSON array in attributes: state_attr('sensor.bt_ignored_beacons', 'ignored')
+      # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
+
+# Computed sensors (Template integration)
+template:
+  - sensor:
+      # Configuration for dashboard transformation logic (regex-based device ID mapping)
+      - name: "Dashboard Logic Config"
+        unique_id: dashboard_logic_config
+        state: "ready"
+        attributes:
+          browser_id_transform_pattern: "^(.+?)(?:_fkb)?$"
+          alarm_id_replacement: "sensor.$1_next_alarm"
+
+      # BT Location Array - Parses input_text.bt_calibration_locations into indexable array
+      # User edits comma-separated locations in input_text, this sensor stores as array in attributes
+      # Access via: state_attr('sensor.bt_location_array', 'locations')[index]
+      # State is count of locations, attributes contain the actual list
+      - name: "BT Location Array"
+        unique_id: bt_location_array
+        icon: mdi:format-list-numbered
+        state: >
+          {%- set locations_text = states('input_text.bt_calibration_locations') -%}
+          {%- if locations_text and locations_text != 'unavailable' -%}
+            {{ locations_text.split(',')
+               | map('trim')
+               | reject('eq', '')
+               | list
+               | length }}
+          {%- else -%}
+            0
+          {%- endif -%}
+        attributes:
+          locations: >
+            {%- set locations_text = states('input_text.bt_calibration_locations') -%}
+            {%- if locations_text and locations_text != 'unavailable' -%}
+              {{ locations_text.split(',')
+                 | map('trim')
+                 | reject('eq', '')
+                 | list }}
+            {%- else -%}
+              []
+            {%- endif -%}
+
+  # Webhook-triggered sensor for latest BT scan (replaces file-based storage)
+  # Stores complete scan data in memory via attributes (16KB+ capacity, no disk I/O)
+  # Triggered directly by Tasker webhook - data flows: webhook → template sensor attributes → dashboard
+  - trigger:
+      - platform: webhook
+        webhook_id: phone_charger_bt
+        allowed_methods:
+          - POST
+          - PUT
+    sensor:
+      - name: "BT Latest Scan Full"
+        unique_id: bt_latest_scan_full
+        state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        attributes:
+          devices: "{{ trigger.json.devices | default([]) }}"
+          browser_id: "{{ trigger.json.browser_id | default('unknown') }}"
+          timestamp: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      # Webhook-triggered sensor for BT device names mapping
+      # Accumulates MAC→name pairs from each scan in memory (no persistence across HA restart, acceptable for lookup data)
+      # Triggered by same webhook as BT Latest Scan Full - data flows: webhook → template sensor attributes → dashboard
+      - name: "BT Device Names"
+        unique_id: bt_device_names
+        state: "ready"
+        attributes:
+          devices_by_mac: |
+            {%- set current_map_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') -%}
+            {%- set current_map = current_map_raw | from_json if current_map_raw is string else {} -%}
+            {%- set ns = namespace(new_map=current_map | default({}) | combine({}) ) -%}
+            {%- for device in trigger.json.devices | default([]) -%}
+              {%- set mac = device.mac | upper -%}
+              {%- set name = device.name | default('unknown') -%}
+              {%- set ns.new_map = ns.new_map | combine({mac: name}) -%}
+            {%- endfor -%}
+            {{ ns.new_map | to_json }}
+
+  # Event-triggered sensor for BT location detection scores (transient, in-memory only)
+  # Triggered by bt_location_scores_updated event fired from detect_location_from_signals script
+  # No file I/O - scores kept in memory only (real-time detection data via event bus)
+  - triggers:
+      - trigger: event
+        event_type: bt_location_scores_updated
+    sensor:
+      - name: "BT Location Scores"
+        unique_id: bt_location_scores
+        state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        attributes:
+          location_scores: "{{ trigger.event.data.scores }}"
+
+# ------------------------------------------------------------------
+# SCRIPTS
+# ------------------------------------------------------------------
+script:
+  detect_charger_location:
+    description: "Analyze BT signals from Tasker scan and detect phone charger location"
+    fields:
+      browser_id:
+        description: "Device browser_id (e.g., peers_mobil, kitchen_tablet)"
+        example: "peers_mobil"
+      devices:
+        description: "Array of BT devices with MAC, name, and RSSI from Tasker scan"
+        example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'name': 'Device Name', 'rssi': -65}]"
+    sequence:
+      # Call location-specific detection logic (user-customizable in screensaver_local.yaml)
+      - action: script.detect_location_from_signals
+        data:
+          devices: "{{ devices }}"
+        response_variable: detection_result
+
+      # Transform browser_id to device_id by stripping FKB suffix
+      - variables:
+          transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
+          current_mapping: "{{ states('input_text.device_charger_locations') | default('{}') | from_json({}) }}"
+
+      - variables:
+          regex_matches: "{{ browser_id | regex_findall(transform_pattern) }}"
+
+      - variables:
+          device_id: "{{ regex_matches[0] if regex_matches | length > 0 else browser_id }}"
+
+      - variables:
+          detected_location: "{{ detection_result.detected_location }}"
+          updated_mapping: "{{ current_mapping | combine({device_id: detected_location}) }}"
+
+      - variables:
+          updated_mapping_json: "{{ updated_mapping | to_json }}"
+
+      # Update generic device-to-location JSON mapping
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.device_charger_locations
+        data:
+          value: "{{ updated_mapping_json }}"
+
+      # Log location detection result
+      - action: system_log.write
+        data:
+          message: "Charger location detected: {{ detected_location | upper }} (Score: {{ detection_result.score }}, Confidence: {{ \"%.1f\" | format(detection_result.confidence * 100) }}%)"
+          level: info
+
+  test_algorithm_sanity_check:
+    description: "Validate algorithm by testing against all saved fingerprints"
+    sequence:
+      # Read fingerprints from sensor (already returns array of lines)
+      - variables:
+          raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          passed_count: 0
+          failed_count: 0
+          log_lines: []
+
+      # Loop over all fingerprints
+      - repeat:
+          for_each: "{{ raw_fingerprints }}"
+          sequence:
+            # Parse current fingerprint data
+            - variables:
+                current_fingerprint: "{{ repeat.item | string }}"
+                fp_parts: "{{ current_fingerprint.split('|') if '|' in current_fingerprint else [] }}"
+                fp_index: "{{ fp_parts[0] | int(-1) if fp_parts | length == 2 else -1 }}"
+                fp_mac_rssi_str: "{{ fp_parts[1] | string if fp_parts | length == 2 else '' }}"
+
+            # Build test_devices array (separate block to ensure variables above are available)
+            - variables:
+                test_devices: |
+                  {%- set ns = namespace(devices=[]) -%}
+                  {# Ensure we act on a string to avoid Wrapper issues #}
+                  {%- set raw_str = fp_mac_rssi_str | string -%}
+                  {%- if raw_str | length > 0 -%}
+                    {%- for pair in raw_str.split(',') -%}
+                      {%- set pair_str = pair | string -%}
+                      {%- if '=' in pair_str -%}
+                        {%- set kv = pair_str.split('=') -%}
+                        {%- if kv | length == 2 -%}
+                          {%- set mac = kv[0] | trim -%}
+                          {%- set rssi = kv[1] | trim | int(0) -%}
+                          {%- set ns.devices = ns.devices + [{"mac": mac, "name": "test_device", "rssi": rssi}] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {{ ns.devices }}
+
+            # Determine expected location for fingerprint
+            - variables:
+                locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') }}"
+                expected_location: "{{ locations_list[fp_index] if fp_index >= 0 and fp_index < locations_list | length else 'unknown' }}"
+
+            # Call algorithm with test devices (don't persist scores during test)
+            - action: script.detect_location_from_signals
+              data:
+                devices: "{{ test_devices }}"
+                persist_scores: false
+                scan_context: "Fingerprint #{{ repeat.index }} ({{ expected_location | upper }})"
+              response_variable: algorithm_result
+
+            # Verify result matches fingerprint location
+            - variables:
+                is_match: "{{ algorithm_result.detected_location | lower == expected_location | lower }}"
+                status_icon: "{{ '✓' if is_match else '✗' }}"
+
+            # Update result counters and accumulate log line
+            - variables:
+                passed_count: "{{ passed_count + 1 if is_match else passed_count }}"
+                failed_count: "{{ failed_count + 1 if not is_match else failed_count }}"
+                log_line_entry: "{{ \"Fingerprint \" + (repeat.index + 1) | string + \" (\" + expected_location | upper + \"): \" + status_icon + \" \" + (\"PASS\" if is_match else \"FAIL\") + \" - Detected: \" + algorithm_result.detected_location + \" (Score: \" + algorithm_result.score | string + \")\" }}"
+
+            # Add detailed failure metrics if mismatch
+            - if: "{{ not is_match }}"
+              then:
+                - variables:
+                    expected_metrics: "{{ algorithm_result.scores_detail[expected_location] | default({}) }}"
+                    detected_metrics: "{{ algorithm_result.scores_detail[algorithm_result.detected_location] | default({}) }}"
+                    expected_detail: "- Expected ({{ expected_location | upper }}): matched={{ expected_metrics.get('matched') | int }} beacon%={{ expected_metrics.get('beacon_score') | float | round(1) }} rssi={{ expected_metrics.get('rssi_score') | float | round(1) }} missing={{ expected_metrics.get('missing') | int }} total={{ expected_metrics.get('total_score') | float | round(1) }}"
+                    detected_detail: "- Detected ({{ algorithm_result.detected_location | upper }}): matched={{ detected_metrics.get('matched') | int }} beacon%={{ detected_metrics.get('beacon_score') | float | round(1) }} rssi={{ detected_metrics.get('rssi_score') | float | round(1) }} missing={{ detected_metrics.get('missing') | int }} total={{ detected_metrics.get('total_score') | float | round(1) }}"
+                    log_lines: "{{ log_lines + [log_line_entry, expected_detail, detected_detail] }}"
+              else:
+                - variables:
+                    log_lines: "{{ log_lines + [log_line_entry] }}"
+
+      # Summary notification showing total pass/fail
+      - action: persistent_notification.create
+        data:
+          title: "🔬 Algorithm Sanity Check Complete"
+          message: |
+            ✓ {{ passed_count }} passed
+            ✗ {{ failed_count }} failed
+
+            See system log for details
+          notification_id: "bt_algorithm_summary"
+
+      # Log all results in single entry
+      - if: "{{ passed_count > 0 or failed_count > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: |
+                {% if failed_count > 0 %}Screensaver Location Detection Sanity Check: {{ passed_count }} passed, {{ failed_count }} failures{% else %}Screensaver Location Detection Sanity Check: {{ passed_count }} passed{% endif %}
+                {% for line in log_lines %}
+                {{ line }}
+                {% endfor %}
+              level: "{{ 'warning' if failed_count > 0 else 'info' }}"
+
+# ------------------------------------------------------------------
+# AUTOMATIONS
+# ------------------------------------------------------------------
+  bt_beacon_toggle_location_ignored:
+    description: "Toggle beacon ignored status for a specific location (tap action)"
+    fields:
+      location_index:
+        description: "Location index"
+        example: "0"
+      mac:
+        description: "Beacon MAC address to toggle"
+        example: "AA:BB:CC:DD:EE:FF"
+    sequence:
+      - variables:
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          location_idx: "{{ location_index | int(-1) }}"
+          beacon_mac: "{{ mac | upper }}"
+
+      - if: "{{ location_idx >= 0 }}"
+        then:
+          # Process fingerprints and toggle ignored status for this beacon at this location
+          - variables:
+              updated_fingerprints: |
+                {%- set ns = namespace(entries=[]) -%}
+                {%- if current_fingerprints is iterable -%}
+                  {%- for entry in current_fingerprints -%}
+                    {%- if entry and '|' in entry -%}
+                      {%- set parts = entry.split('|') -%}
+                      {%- if parts | length == 2 -%}
+                        {%- set idx = parts[0] | int(-1) -%}
+                        {%- set mac_rssi_str = parts[1] -%}
+                        {%- if idx == location_idx -%}
+                          {# This is our location - toggle the beacon ignored status #}
+                          {%- set ns.pairs = [] -%}
+                          {%- for pair in mac_rssi_str.split(',') -%}
+                            {%- if '=' in pair -%}
+                              {%- set pair_stripped = pair.rstrip(':X') -%}
+                              {%- set kv = pair_stripped.split('=') -%}
+                              {%- if kv | length == 2 -%}
+                                {%- set current_mac = kv[0] | trim | upper -%}
+                                {%- if current_mac == beacon_mac -%}
+                                  {# Toggle ignored status #}
+                                  {%- if pair.endswith(':X') -%}
+                                    {# Remove from ignored list #}
+                                    {%- set ns.pairs = ns.pairs + [pair_stripped] -%}
+                                  {%- else -%}
+                                    {# Add to ignored list #}
+                                    {%- set ns.pairs = ns.pairs + [pair ~ ':X'] -%}
+                                  {%- endif -%}
+                                {%- else -%}
+                                  {# Keep unchanged #}
+                                  {%- set ns.pairs = ns.pairs + [pair] -%}
+                                {%- endif -%}
+                              {%- else -%}
+                                {%- set ns.pairs = ns.pairs + [pair] -%}
+                              {%- endif -%}
+                            {%- else -%}
+                              {%- set ns.pairs = ns.pairs + [pair] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
+                          {%- set ns.entries = ns.entries + [updated_entry] -%}
+                        {%- else -%}
+                          {# Keep other locations unchanged #}
+                          {%- set ns.entries = ns.entries + [entry] -%}
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- endif -%}
+                    {%- else -%}
+                      {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.entries | join('\n') }}
+
+          # Write updated fingerprints
+          - action: shell_command.bt_fingerprint_database_write
+            data:
+              csv_content: "{{ updated_fingerprints }}"
+
+          # Refresh sensor
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.bt_fingerprint_database_file
+
+          # Log the action
+          - action: system_log.write
+            data:
+              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location | upper }}"
+              level: debug
+
+  bt_beacon_toggle_global_ignored:
+    description: "Toggle beacon in global ignored list (hold/double-tap action)"
+    fields:
+      mac:
+        description: "Beacon MAC address to toggle globally"
+        example: "AA:BB:CC:DD:EE:FF"
+    sequence:
+      - variables:
+          beacon_mac: "{{ mac | upper }}"
+          # Read current ignored list from sensor attribute (file-backed)
+          current_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+
+      # Check if MAC is already in the list
+      - variables:
+          is_ignored: "{{ beacon_mac in current_list }}"
+          updated_list: |
+            {%- if is_ignored -%}
+              {# Remove from ignored list #}
+              {%- set filtered = current_list | reject('equalto', beacon_mac) | list -%}
+              {{ filtered | join('\n') }}
+            {%- else -%}
+              {# Add to ignored list #}
+              {%- set new_list = current_list + [beacon_mac] -%}
+              {{ new_list | join('\n') }}
+            {%- endif -%}
+
+      # Write updated list to file (newline-separated for unlimited capacity)
+      - action: shell_command.bt_ignored_write
+        data:
+          csv_content: "{{ updated_list }}"
+
+      # Refresh sensor to pick up changes
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_ignored_beacons
+
+      # Log the action
+      - action: system_log.write
+        data:
+          message: "{{ 'Removed' if is_ignored else 'Added' }} beacon {{ beacon_mac }} to global ignored list"
+          level: debug
+
+  test_algorithm:
+    description: "Load latest BT scan and run location detection algorithm"
+    sequence:
+      # Load latest scan from sensor
+      - variables:
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      # Call location detection with loaded scan data
+      - action: script.detect_location_from_signals
+        data:
+          devices: "{{ scan_devices }}"
+
+  detect_location_from_signals:
+    description: "Apply location detection rules to BT signal data (user-customizable)"
+    fields:
+      devices:
+        description: "Array of BT devices with MAC, name, and RSSI from Tasker scan"
+        example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'name': 'Device Name', 'rssi': -65}]"
+      persist_scores:
+        description: "Whether to write results to CSV file and update dashboard (default: true)"
+        example: "true"
+      scan_context:
+        description: "Context for logging (e.g., 'Latest scan' or 'Fingerprint #2 (KÖK)') (default: 'Latest scan')"
+        example: "Latest scan"
+    variables:
+      # Control whether to persist scores to file/dashboard
+      persist_scores: "{{ persist_scores | default(true) }}"
+      # Context for logging (latest scan or fingerprint number)
+      scan_context: "{{ scan_context | default('Latest scan') }}"
+      # STEP 1: Parse fingerprint database into location-specific device sets
+      # Format: location_index|MAC1=rssi1,MAC2=rssi2,...
+      locations_map: "{{ state_attr('sensor.bt_location_array', 'locations') | default(none) }}"
+      raw_fingerprints: "{{ (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list }}"
+      fingerprints_parsed: |
+        {%- set ns = namespace(data=[]) -%}
+        {%- for entry in raw_fingerprints -%}
+          {%- if entry and '|' in entry -%}
+            {%- set parts = entry.split('|') -%}
+            {%- if parts | length == 2 -%}
+              {%- set location_idx = parts[0] | int(-1) -%}
+              {%- if location_idx >= 0 -%}
+                {%- if locations_map and location_idx < locations_map | length -%}
+                  {%- set location_name = locations_map[location_idx] -%}
+                {%- else -%}
+                  {%- set location_name = location_idx | string -%}
+                {%- endif -%}
+                {%- set mac_rssi_pairs = parts[1] -%}
+                {%- set ns.data = ns.data + [{"location": location_name, "location_idx": location_idx, "mac_rssi_str": mac_rssi_pairs}] -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.data }}
+
+    sequence:
+      # STEP 2-4: Call algorithm proxy (routes to implementation in screensaver_local, allows algorithm swapping)
+      - service: script.bt_location_detect_algorithm_proxy
+        data:
+          devices: "{{ devices }}"
+          fingerprints_parsed: "{{ fingerprints_parsed }}"
+          scan_context: "{{ scan_context }}"
+        response_variable: algorithm_result
+
+      # Build result with all scoring details
+      - variables:
+          result:
+            detected_location: "{{ algorithm_result.detected_location }}"
+            confidence: "{{ algorithm_result.confidence }}"
+            score: "{{ algorithm_result.score }}"
+            scores_detail: "{{ algorithm_result.scores_detail }}"
+            algorithm: "match_ratio"
+
+      # Fire event to update in-memory sensor with scores (no disk I/O)
+      - if: "{{ persist_scores }}"
+        then:
+          - event: bt_location_scores_updated
+            event_data:
+              scores: "{{ result.scores_detail }}"
+
+      - stop: "Location detected using similarity algorithm"
+        response_variable: result
+
+  capture_bt_fingerprint:
+    description: "Capture current RSSI values as fingerprint for location"
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+    sequence:
+      - variables:
+          # Get all detected beacons from latest scan (full device list from file sensor)
+          scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      # Validate that at least one anchor device was detected
+      - if:
+          - condition: template
+            value_template: "{{ scan | length > 0 }}"
+        then:
+          - variables:
+              # Extract beacon MACs and RSSI values from scan
+              beacon_macs_list: "{{ scan | map(attribute='mac') | list }}"
+              rssi_values_list: "{{ scan | map(attribute='rssi') | list }}"
+              # Build MAC=RSSI pairs for new self-describing format
+              mac_rssi_pairs: |
+                {%- set ns = namespace(pairs=[]) -%}
+                {%- for i in range(beacon_macs_list | length) -%}
+                  {%- set ns.pairs = ns.pairs + [beacon_macs_list[i] ~ '=' ~ rssi_values_list[i]] -%}
+                {%- endfor -%}
+                {{ ns.pairs | join(',') }}
+              # Build device details with names for display (MAC=RSSI (Device Name))
+              device_details: |
+                {%- set ns = namespace(pairs=[]) -%}
+                {%- for device in scan -%}
+                  {%- set ns.pairs = ns.pairs + [device.mac ~ '=' ~ device.rssi ~ ' (' ~ (device.name | default('unknown')) ~ ')'] -%}
+                {%- endfor -%}
+                {{ ns.pairs | join('\n') }}
+              # New fingerprint entry: location_index|MAC1=rssi1,MAC2=rssi2,...
+              new_entry: "{{ location_index }}|{{ mac_rssi_pairs | trim }}"
+
+          - variables:
+              # Read current fingerprints from sensor attribute (file-backed, no 255-char limit)
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+              # Filter out any existing entry for this location and append new one (newline-separated)
+              updated_fingerprints: |
+                {%- set ns = namespace(entries=[]) -%}
+                {%- if current_fingerprints is iterable -%}
+                  {%- for entry in current_fingerprints -%}
+                    {%- if entry and not entry.startswith(location_index ~ '|') -%}
+                      {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- set ns.entries = ns.entries + [new_entry] -%}
+                {{ ns.entries | join('\n') }}
+
+          # Write updated fingerprints directly to file (no helper needed - attributes have no size limit)
+          - action: shell_command.bt_fingerprint_database_write
+            data:
+              csv_content: "{{ updated_fingerprints }}"
+
+          # Refresh sensor to pick up new file contents
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.bt_fingerprint_database_file
+
+          - action: persistent_notification.create
+            data:
+              title: "BT Fingerprint Captured"
+              message: "Location: {{ location | upper }}\nBeacons: {{ scan | length }}\nDevices:\n{{ device_details | trim }}"
+              notification_id: "bt_fingerprint_{{ location }}"
+
+          - action: system_log.write
+            data:
+              message: "Captured BT fingerprint for {{ location | upper }} (index {{ location_index }}): {{ new_entry }}"
+              level: debug
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "BT Scan Required"
+              message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
+              notification_id: "bt_no_scan"
+
+          - action: system_log.write
+            data:
+              message: "Fingerprint capture failed: No BT scan data available for location {{ location | upper }}"
+              level: warning
+
+  merge_bt_fingerprint:
+    description: "Merge new beacons from latest scan into existing fingerprint, updating RSSI for matching beacons"
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+    sequence:
+      - variables:
+          scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ scan | length > 0 }}"
+        then:
+          - variables:
+              # Build scan data map: MAC -> RSSI for quick lookup
+              scan_map: |
+                {%- set ns = namespace(map={}) -%}
+                {%- for device in scan -%}
+                  {%- set ns.map = ns.map | combine({device.mac | upper: device.rssi}) -%}
+                {%- endfor -%}
+                {{ ns.map }}
+              # Read current fingerprints
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+
+          - variables:
+              # Find and parse existing fingerprint for this location
+              existing_entry: |
+                {%- for entry in current_fingerprints | default([]) -%}
+                  {%- if entry and entry.startswith(location_index ~ '|') -%}
+                    {{ entry }}
+                  {%- endif -%}
+                {%- endfor -%}
+              # Extract existing beacons as dict: MAC -> RSSI (preserving :X suffix for locally ignored)
+              existing_beacons: |
+                {%- set ns = namespace(beacons={}) -%}
+                {%- if existing_entry -%}
+                  {%- set beacon_pairs = existing_entry.split('|')[1].split(',') -%}
+                  {%- for pair in beacon_pairs -%}
+                    {%- set parts = pair.split('=') -%}
+                    {%- if parts | length == 2 -%}
+                      {%- set mac = parts[0] | upper -%}
+                      {%- set rssi_raw = parts[1] -%}
+                      {%- set is_locally_ignored = rssi_raw.endswith(':X') -%}
+                      {%- set rssi_base = rssi_raw.rstrip(':X') -%}
+                      {%- set rssi_value = rssi_base | int -%}
+                      {%- set rssi_stored = rssi_base ~ ':X' if is_locally_ignored else rssi_base -%}
+                      {%- set ns.beacons = ns.beacons | combine({mac: rssi_stored}) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.beacons }}
+
+          - variables:
+              # Merge: start with existing beacons, update RSSI from scan (preserving :X suffix), add new scan beacons
+              merged_beacons: |
+                {%- set ns = namespace(merged=existing_beacons) -%}
+                {%- for mac, rssi in scan_map.items() -%}
+                  {%- set was_locally_ignored = ns.merged.get(mac, '') | string | select('contains', ':X') | list | length > 0 -%}
+                  {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                  {%- set ns.merged = ns.merged | combine({mac: new_rssi}) -%}
+                {%- endfor -%}
+                {{ ns.merged }}
+              # Build MAC=RSSI pairs from merged data
+              merged_pairs: |
+                {%- set ns = namespace(pairs=[]) -%}
+                {%- for mac, rssi in merged_beacons.items() -%}
+                  {%- set ns.pairs = ns.pairs + [mac ~ '=' ~ rssi] -%}
+                {%- endfor -%}
+                {{ ns.pairs | join(',') }}
+              # New merged entry
+              merged_entry: "{{ location_index }}|{{ merged_pairs }}"
+
+          - variables:
+              # Update fingerprints: remove old entry for this location, add merged entry
+              updated_fingerprints: |
+                {%- set ns = namespace(entries=[]) -%}
+                {%- if current_fingerprints is iterable -%}
+                  {%- for entry in current_fingerprints -%}
+                    {%- if entry and not entry.startswith(location_index ~ '|') -%}
+                      {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- set ns.entries = ns.entries + [merged_entry] -%}
+                {{ ns.entries | join('\n') }}
+
+          - action: shell_command.bt_fingerprint_database_write
+            data:
+              csv_content: "{{ updated_fingerprints }}"
+
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.bt_fingerprint_database_file
+
+          - variables:
+              locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+              location_name: "{{ locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else 'unknown' }}"
+
+          - action: persistent_notification.create
+            data:
+              title: "BT Fingerprint Updated (Merged)"
+              message: "Location: {{ location_name | upper }}\nBeacons added: {{ (merged_beacons | length) - (existing_beacons | length) }} new\nBeacons existing: {{ (existing_beacons | length) }}\nTotal: {{ merged_beacons | length }} beacons"
+              notification_id: "bt_fingerprint_merged"
+
+          - action: system_log.write
+            data:
+              message: "Merged BT fingerprint for location {{ location_index }}: {{ merged_entry }}"
+              level: debug
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "BT Scan Required"
+              message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
+              notification_id: "bt_no_scan"
+
+  validate_beacon_ignored:
+    description: "Generate and display beacon status report"
+    sequence:
+      - variables:
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          global_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+
+      - variables:
+          validation_report: |
+            Global Ignored: {{ global_list | length }} beacons
+            {{ '- ' + global_list | join('\n- ') if global_list | length > 0 else '(none)' }}
+
+            Per-Location Status:
+            {% for entry in fingerprints %}
+            {%- if entry and '|' in entry %}
+              {%- set parts = entry.split('|') -%}
+              {%- set idx = parts[0] | int(-1) -%}
+              {%- set location_name = locations_list[idx] if idx >= 0 and idx < locations_list | length else (idx | string) -%}
+              {%- set mac_rssi_pairs = parts[1].split(',') -%}
+              {%- set ns = namespace(scanned=0, globally_ignored=0, locally_ignored=0, weak=0, active=0) -%}
+              {%- for pair in mac_rssi_pairs -%}
+                {%- set pair_stripped = pair.rstrip(':X') -%}
+                {%- set pair_parts = pair_stripped.split('=') -%}
+                {%- if pair_parts | length == 2 -%}
+                  {%- set beacon_mac = pair_parts[0] | upper -%}
+                  {%- set beacon_rssi = pair_parts[1] | int(0) -%}
+                  {%- if beacon_rssi != 0 -%}
+                    {%- set ns.scanned = ns.scanned + 1 -%}
+                    {%- if pair.endswith(':X') -%}
+                      {%- set ns.locally_ignored = ns.locally_ignored + 1 -%}
+                    {%- elif beacon_mac in global_list -%}
+                      {%- set ns.globally_ignored = ns.globally_ignored + 1 -%}
+                    {%- elif beacon_rssi < weak_signal_threshold -%}
+                      {%- set ns.weak = ns.weak + 1 -%}
+                    {%- else -%}
+                      {%- set ns.active = ns.active + 1 -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor %}
+
+            {{ location_name | upper }}: {{ ns.scanned }} beacons
+            │ Globally ignored: {{ ns.globally_ignored }}
+            │ Locally ignored: {{ ns.locally_ignored }}
+            │ Weak: {{ ns.weak }}
+            Σ Active: {{ ns.active }}
+            {%- endif %}
+            {% endfor %}
+
+      - action: persistent_notification.create
+        data:
+          title: "Beacon Status Report"
+          message: "{{ validation_report }}"
+          notification_id: "bt_ignored_validation"
+
+      - action: system_log.write
+        data:
+          message: "{{ validation_report }}"
+          level: info
+
+  load_bt_fingerprints_from_file:
+    description: "Refresh BT fingerprints sensor from file backup"
+    sequence:
+      # Force sensor to re-read current file contents
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_fingerprint_database_file
+
+  clear_bt_fingerprints:
+    description: "Clear BT fingerprints database and refresh sensor"
+    sequence:
+      # Clear the fingerprints file
+      - action: shell_command.bt_fingerprint_database_write
+        data:
+          csv_content: ""
+      # Refresh sensor to pick up empty file
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_fingerprint_database_file
+
+automation:
+  - alias: 'BT Calibration - Capture Fingerprint Button'
+    id: bt_calibration_capture_fingerprint
+    description: "Capture BT fingerprint when button pressed in calibration UI"
+    trigger:
+      - trigger: state
+        entity_id: input_button.capture_bt_fingerprint
+    action:
+      - action: script.capture_bt_fingerprint
+
+  - alias: 'BT Fingerprints - Load from File on Startup'
+    id: bt_fingerprints_load_on_startup
+    description: "Ensure BT fingerprint sensor is refreshed at Home Assistant startup"
+    trigger:
+      - trigger: homeassistant
+        event: start
+    action:
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_fingerprint_database_file
+  - alias: 'Phone Charger - BT Location Detection'
+    id: phone_charger_bt_location
+    description: "Receive Tasker BT scan webhook, analyze signals, detect and store charger location"
+    trigger:
+      - trigger: webhook
+        webhook_id: phone_charger_bt
+        # Triggered by Tasker when phone detects power (charger connected)
+        # Webhook receives JSON: {"browser_id": "peers_mobil", "devices": [{"mac": "...", "name": "...", "rssi": -65}, ...]}
+    action:
+      # Log raw device data from Tasker (custom format: MAC | RSSI (padded) | Name)
+      # (BT scan data now stored in-memory via template sensor attributes)
+      - action: system_log.write
+        data:
+          message: |
+            BT scan received:
+            {%- for device in trigger.json.devices %}
+            {{ device['mac'] }} | {{ (device['rssi'] | string).rjust(5) }} dBm | {{ device['name'] | default('unknown') }}
+            {%- endfor %}
+          level: info
+      # Call location detection script to analyze signals and store result
+      - action: script.detect_charger_location
+        data:
+          browser_id: "{{ trigger.json.browser_id }}"
+          devices: "{{ trigger.json.devices }}"
+
+  - alias: 'Phone Charger - Power Disconnect Detection'
+    id: phone_charger_power_disconnect
+    description: "Receive power-disconnect event from Tasker, clear charger location for specific device"
+    trigger:
+      - trigger: webhook
+        webhook_id: phone_charger_disconnect
+        # Triggered by Tasker when phone is removed from charger (power source disconnected)
+        # Webhook receives JSON: {"browser_id": "peers_mobil", "event": "power_disconnected"}
+    action:
+      # Remove only the disconnected device's entry from the location mapping
+      - variables:
+          current_mapping: "{{ states('input_text.device_charger_locations') | default('{}') | from_json({}) }}"
+          transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
+          regex_matches: "{{ trigger.json.browser_id | regex_findall(transform_pattern) }}"
+          device_id: "{{ regex_matches[0] if regex_matches | length > 0 else trigger.json.browser_id }}"
+
+      - if:
+          - "{{ device_id in current_mapping }}"
+        then:
+          - variables:
+              # Build new mapping without the disconnected device (using normalized device_id)
+              updated_mapping: "{% set ns = namespace(result={}) %}{% for key, value in current_mapping.items() %}{% if key != device_id %}{% set ns.result = ns.result | combine({key: value}) %}{% endif %}{% endfor %}{{ ns.result }}"
+              updated_mapping_json: "{{ updated_mapping | to_json }}"
+
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.device_charger_locations
+            data:
+              value: "{{ updated_mapping_json }}"
+
+          # Log location clearing with normalized device_id (debug only, see persistent notifications for details)
+          - action: system_log.write
+            data:
+              message: "Phone charger location cleared for {{ device_id }} (power disconnected)"
+              level: debug
+        else:
+          # Warn if browser_id not found in mapping
+          - action: system_log.write
+            data:
+              message: "Phone charger disconnect: browser_id '{{ trigger.json.browser_id }}' not found in location mapping. Available: {{ current_mapping.keys() | list }}. Check case sensitivity or device configuration."
+              level: warning

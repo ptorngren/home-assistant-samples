@@ -1,0 +1,135 @@
+# bt_location_similarity_match.yaml
+# Similarity-based Location Detection Algorithm (Legacy)
+# Lower score = better match (opposite of Match Ratio algorithm)
+# Uses missing beacon penalties to influence location selection
+#
+# ⚠️  COMPATIBILITY NOTE:
+# This legacy algorithm uses LOWER scores to indicate better matches (cost function),
+# which is opposite to the standard protocol (higher = better for Match Ratio).
+# Results from this algorithm do not directly compare with Match Ratio scores.
+# TODO: Invert scores (e.g., total_score = 1.0 / (1.0 + original_score)) to conform to standard protocol
+# before enabling this algorithm for proxy-based selection.
+
+script:
+  bt_location_similarity_match:
+    description: "Similarity-based matching algorithm with missing beacon penalties (legacy)"
+    fields:
+      devices:
+        description: "Array of BT devices with MAC and RSSI from current scan"
+        example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'rssi': -65}]"
+      fingerprints_parsed:
+        description: "Parsed fingerprints from database"
+        example: "[{'location': 'peer', 'location_idx': 0, 'mac_rssi_str': 'AA:BB:CC:DD:EE:FF=-52,...'}]"
+    variables:
+      # Create a map of current scan MAC -> RSSI for fast lookup
+      current_scan_map: |
+        {%- set ns = namespace(map={}) -%}
+        {%- for device in devices -%}
+          {%- set ns.map = ns.map | combine({device.mac: device.rssi}) -%}
+        {%- endfor -%}
+        {{ ns.map }}
+
+      # Algorithm parameters (tunable via helpers)
+      weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-85) }}"
+      missing_beacon_penalty: "{{ states('input_number.bt_location_detection_missing_beacon_penalty') | float(50) }}"
+
+      # Calculate scores for each location using missing beacon penalties
+      location_scores: |
+        {%- set ns = namespace(scores={}) -%}
+        {%- for fp in fingerprints_parsed -%}
+          {%- set location = fp.location -%}
+          {%- set mac_rssi_str = fp.mac_rssi_str -%}
+
+          {# Parse MAC=RSSI pairs from fingerprint and calculate score #}
+          {%- set ns.matched_beacons = 0 -%}
+          {%- set ns.missing_beacons = 0 -%}
+          {%- set ns.rssi_diff_sum = 0 -%}
+
+          {%- for pair in mac_rssi_str.split(',') -%}
+            {%- if '=' in pair -%}
+              {%- set kv = pair.split('=') -%}
+              {%- if kv | length == 2 -%}
+                {%- set fp_mac = kv[0] | trim -%}
+                {%- set fp_rssi = kv[1] | trim | int(0) -%}
+
+                {# Check if beacon is in current scan with strong signal #}
+                {%- if fp_mac in current_scan_map -%}
+                  {%- set current_rssi = current_scan_map[fp_mac] -%}
+                  {%- if current_rssi >= weak_signal_threshold -%}
+                    {# Strong/reliable signal - count as matched #}
+                    {%- set diff = (current_rssi - fp_rssi) | abs -%}
+                    {%- set ns.rssi_diff_sum = ns.rssi_diff_sum + diff -%}
+                    {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                  {%- else -%}
+                    {# Weak signal - treat as missing #}
+                    {%- set ns.missing_beacons = ns.missing_beacons + 1 -%}
+                  {%- endif -%}
+                {%- else -%}
+                  {# Beacon not in scan - missing #}
+                  {%- set ns.missing_beacons = ns.missing_beacons + 1 -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+          {# Calculate score for all locations (allows heterogeneous beacon sets) #}
+          {# Map to common protocol: beacon_score=0 (not used), rssi_score=rssi_diff_sum, penalty=missing_penalty #}
+          {%- set beacon_score = 0 -%}
+          {%- set rssi_score = (ns.rssi_diff_sum) | round(2) -%}
+          {%- set penalty = (ns.missing_beacons * missing_beacon_penalty) | round(2) -%}
+          {%- set total_score = (beacon_score + rssi_score + penalty) | round(2) -%}
+          {%- set ns.scores = ns.scores | combine({location: {"matched": ns.matched_beacons, "missing": ns.missing_beacons, "beacon_score": beacon_score, "rssi_score": rssi_score, "penalty": penalty, "total_score": total_score}}) -%}
+        {%- endfor -%}
+        {{ ns.scores }}
+
+
+      # Find location with minimum total_score
+      best_location_info: |
+        {%- if location_scores | length > 0 -%}
+          {# Find location with minimum total_score by manual iteration #}
+          {%- set ns = namespace(best_location=none, best_score=999) -%}
+          {%- for location, metrics in location_scores | dictsort -%}
+            {%- if metrics.total_score < ns.best_score -%}
+              {%- set ns.best_location = location -%}
+              {%- set ns.best_score = metrics.total_score -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set confidence = (1.0 / (1.0 + ns.best_score)) -%}
+          {{ {"location": ns.best_location, "score": ns.best_score, "confidence": confidence} }}
+        {%- else -%}
+          {{ {"location": "unknown", "score": 999, "confidence": 0.0} }}
+        {%- endif -%}
+
+    sequence:
+      # Build the result
+      - variables:
+          detected_location: "{{ best_location_info.location }}"
+          confidence: "{{ best_location_info.confidence | round(2) }}"
+          best_score: "{{ best_location_info.score | round(2) }}"
+
+      # Log algorithm execution for debugging
+      - action: system_log.write
+        data:
+          message: |
+            SIMILARITY MATCHING WITH MISSING BEACON PENALTIES
+
+            All locations evaluated
+            {% for location, metrics in location_scores | dictsort %}
+            {{ location }}: matched={{ metrics.matched }}, missing={{ metrics.missing }}, beacon_score={{ metrics.beacon_score }}, rssi_score={{ metrics.rssi_score }}, penalty={{ metrics.penalty }}, total={{ metrics.total_score }}
+            {% endfor %}
+
+            Best Match: {{ detected_location | upper }}
+            Total Score: {{ best_score }}
+            Confidence: {{ "%.1f" | format(confidence * 100) }}%
+          level: info
+
+      # Return result
+      - variables:
+          result:
+            detected_location: "{{ detected_location }}"
+            confidence: "{{ confidence }}"
+            score: "{{ best_score }}"
+            scores_detail: "{{ location_scores }}"
+
+      - stop: "Similarity match complete"
+        response_variable: result

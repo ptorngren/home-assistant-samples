@@ -8,25 +8,42 @@ This project consists of two parts:
 
 This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
-1. **Register the dashboard in Home Assistant**
+1. **Register the dashboards in Home Assistant**
    - Add this to your `configuration.yaml`:
      ```yaml
      lovelace:
        dashboards:
-         dashboard-screensaver:  # Creates URL path: https://your-ha-url/dashboard-screensaver
+         dashboard-screensaver:  # Main display: https://your-ha-url/dashboard-screensaver
            mode: yaml
            filename: dashboards/screensaver.yaml
            title: Screensaver
            icon: mdi:monitor-dashboard
            show_in_sidebar: true
+
+         dashboard-bt-location-calibration:  # Calibration: https://your-ha-url/dashboard-bt-location-calibration
+           mode: yaml
+           filename: dashboards/bt_location_calibration.yaml
+           title: BT Location Calibration
+           icon: mdi:cog
+           show_in_sidebar: true
      ```
-   - This makes the dashboard accessible at `https://your-ha-url/dashboard-screensaver/home?kiosk`
-   - The `?kiosk` parameter hides the Home Assistant sidebar and header for a clean display
+   - **Main screensaver:** Accessible at `https://your-ha-url/dashboard-screensaver/home?kiosk`
+     - Use `?kiosk` parameter to hide sidebar/header for clean display
+   - **Calibration dashboard:** Accessible at `https://your-ha-url/dashboard-bt-location-calibration`
+     - Used for BT fingerprint collection, beacon curation, and location setup
+     - No kiosk parameter needed (it's an admin/setup interface)
+     - See [bt-triangulation-README.md](docs/bt-triangulation-README.md) for a detailed guide and technical details
 
 2. **Copy the dashboard**
    - Import `screensaver.yaml` into your `dashboards/` directory.
 
-3. **Add packages directive to configuration.yaml**
+3. **Copy package files to packages/ directory**
+   - Copy `common.yaml`, `screensaver.yaml`, and `screensaver_local.yaml` into your `packages/` directory
+   - `common.yaml` contains shared components (time/date sensor) used by multiple packages
+   - `bt_beacon_triangulation.yaml` contains generic/reusable logic for location detection, device mapping, etc.
+   - `screensaver_local.yaml` contains local/customizable sensors, automations and entity mappings
+
+4. **Add packages directive to configuration.yaml**
    - If not already present, add this to your `configuration.yaml`:
      ```yaml
      homeassistant:
@@ -35,14 +52,12 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
      ```
    - This enables Home Assistant to load YAML files from the `packages/` directory
 
-4. **Create your local config**
-   - Copy `screensaver_local.yaml` into your `packages/` directory and adapt:
-     - sensor entities
-     - weather entity
-     - tap-action scripts
-     - (optional) battery automation
+5. **Customize screensaver_local.yaml for your setup**
+   - Replace entity IDs with your local sensor/device names
+   - Update weather entity, temperature sensors, tap action mappings
+   - See **"Customization & Local Adaptation"** section below for detailed guidance
 
-5. **Install required HACS components**
+6. **Install required HACS components**
    - `button-card`
    - `card-mod`
    - `browser-mod`
@@ -55,14 +70,14 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
-6. **Install additional HACS component**
+7. **Install additional HACS component**
    - `kiosk-mode` (handles remaining chrome and edge cases in Fully Kiosk)
 
-7. **Install Fully Kiosk Browser**
+8. **Install Fully Kiosk Browser**
    - Required for REST API access and reliable kiosk-mode operation
    - PLUS or Pro version needed for Remote Admin functionality
 
-8. **Configure Fully Kiosk Browser URL**
+9. **Configure Fully Kiosk Browser URL**
    - In Fully Kiosk settings, set the **Start URL** to:
      ```
      https://your-ha-url/dashboard-screensaver/home?kiosk
@@ -71,27 +86,89 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
    - The `?kiosk` parameter hides Home Assistant chrome for a pure screensaver appearance
    - Enable **Keep Screen On** in FKB settings
 
-9. **Install Tasker on the Android device**
+10. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
 
-10. **Configure Fully Kiosk Remote Admin**
+11. **Configure Fully Kiosk Remote Admin**
    - Enable Remote Admin
    - Set a password
    - Allow local REST API access (`localhost:2323`)
 
-11. **Create Tasker profiles**
+12. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
-12. **Reference configuration examples** (Recommended)
+13. **Reference configuration examples** (Recommended)
    - `fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
    - `tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
 
 ➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display.
 ➡️ If you are not interested in Android automation, you can still use the dashboard as a clean, always-on wall display.
 
-Everything below explains **why this architecture exists**, how the Tasker logic differs between tablets and phones, and how to run the system reliably long-term.
+---
+
+# Customization & Local Adaptation
+
+The screensaver system is split into two packages to separate generic/reusable logic from local/customizable settings:
+
+## Package Structure
+
+### `common.yaml` (Shared / Reusable)
+Contains truly generic components used by multiple packages (screensaver, motorvarmare, etc.):
+- **`sensor.time_date`** — Current time and date (provides periodic update trigger for any package needing it)
+
+**You should NOT need to edit this file.**
+
+### `bt_beacon_triangulation.yaml` (Generic / Reusable)
+Contains device-agnostic components specific to screensaver that work the same way for all users:
+- **`input_text.device_charger_locations`** — Helper that stores device-to-location mappings (updated by location detection)
+- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, eg to strip `_FKB` suffix)
+- **`script.detect_charger_location`** — Location detection logic that analyzes Bluetooth signals from Tasker
+- **Automations:**
+  - Phone Charger BT Location Detection — Receives Tasker webhook with BT scan results
+  - Phone Charger Power Disconnect Detection — Clears location when phone unplugged from charger
+
+**You should NOT need to edit this file.**
+
+### `screensaver_local.yaml` (Local / Customizable)
+Contains sensors and automations specific to your setup that you will adapt:
+- **Temperature sensor** — Reads from your local temperature sensors (currently: `garage_framsidan`, `relax_baksidan`)
+- **Weather sensor** — Reads your weather entity and maps conditions to local language (currently: Swedish translations)
+- **Humidity & Wind sensors** — Read from local weather stations
+- **Tap action scripts** — Define what happens when you tap/double-tap/hold the screensaver:
+  - Single tap: Randomize music in the detected scenario
+  - Double tap: Toggle scenario (on/off)
+  - Hold: Show volume control popup
+- **Battery management** — Keeps kitchen tablet battery between 20-80% (currently: hardcoded for `koksplatta`)
+
+**You MUST adapt this file for your setup:**
+1. **Temperature sensors:** Replace entity IDs to match your local sensors
+2. **Weather entity:** Change `weather.forecast_home` to your weather integration entity ID
+3. **Humidity & wind sensors:** Update to your local weather station entities
+4. **Tap actions:** Modify scenario names, time thresholds, and device mappings to match your setup
+5. **Battery automation:** Customize or remove if not using kitchen tablet
+
+## How to Adapt
+
+1. **Edit `screensaver_local.yaml`** for your environment:
+   - Keep the structure (template sensors, scripts, automations)
+   - Replace entity IDs with your local sensor/device names
+   - Adjust time thresholds (e.g., morning is 05:00-10:00, kitchen midday is 10:00-17:00)
+   - Add/remove devices from the tap action device mappings
+
+2. **Edit dashboard JavaScript** in `dashboards/screensaver.yaml` if:
+   - Your browser_id values differ from examples (e.g., not using FKB suffix)
+   - You want to customize tap action behavior
+
+3. **`bt_beacon_triangulation.yaml`** contains generic logic for location detection using Bluetooth triangulation:
+   - You should normally not need to edit this file
+
+4. **`common.yaml`** — Contains shared components (like time/date sensor) used by multiple packages
+   - You should normally not need to edit this file
+   - If you already have a common/shared package file, you can merge `common.yaml` into it
+
+---
 
 # Screensaver Dashboard Architecture
 
@@ -115,7 +192,8 @@ The dashboard displays time, date, temperature, weather, and 5-day forecast in a
 **Notes:**
 - Date and time formats can be localized (see "Configuring Date Locale" section below)
 - Weather forecast text and icons depend on which weather service you configure (e.g., SMHI for Sweden, Weather.com for US, etc.)
-- ⚠️ **Alarm display requires the Home Assistant Companion App** with "Next Alarm" sensor enabled on the device running the screensaver. Without this, alarm times will not appear.
+- ⚠️ **Alarm display requires the Home Assistant Companion App** with "Next Alarm" sensor enabled on the device running the screensaver. Without this, alarm times will not appear. 
+  If the sensor does not exist for a device, the alarm row will remain empty.
 
 ---
 
@@ -457,6 +535,8 @@ This automation is transparent to the user—the tablet simply appears to transi
 ### Architecture Difference: Charging-Conditional Activation
 
 On a mobile phone, the screensaver should only activate when the device is on a **wireless charger** (not every time the display times out). This prevents the screensaver from interrupting normal phone use while allowing it to display when the phone is docked.
+ALso, by using wireless charging as the trigger, the phone does not trigger the screensaver when connected to a powerbank. 
+Conditions can of course be adjusted to more spcific needs, eg based on geolocation, SSID, etc.
 
 ### Key Difference from Tablet
 
@@ -469,7 +549,7 @@ On a mobile phone, the screensaver should only activate when the device is on a 
 
 Two Tasker profiles work together to implement charging-conditional activation:
 
-#### Profile 1: "Display Off While Charging"
+#### Profile 1: "Display Off => FKB + BT Scan"
 
 **Type:** Event profile
 
@@ -477,12 +557,11 @@ Two Tasker profiles work together to implement charging-conditional activation:
 - Event: Display → Display Off
 - Condition: State → Power → Wireless (charging state)
 
-**Entry Task:**
-```
-Wait: 500ms
-Turn Display On
-Launch App → Fully Kiosk Browser (set "Keep Screen On" in FKB)
-```
+**Entry Task:** Calls a master "Docked" task that orchestrates both screensaver launch and Bluetooth scanning asynchronously. The master task executes:
+1. **UI Task (Start FKB):** Standard priority → launches screensaver immediately
+2. **BT Scan Task:** Lower priority (%priority - 1) → detects charger location in background (5+ seconds)
+
+By using asynchronous execution, the screensaver appears the moment the phone touches the charger, while location detection runs silently in the background.
 
 **Exit Task:** None (events don't have exits)
 
@@ -503,14 +582,11 @@ HTTP Request: http://localhost:2323/?cmd=exit&password=YOUR_PASSWORD
 
 **Purpose:** When the phone is removed from the wireless charger, the exit task sends the REST API command to cleanly shut down Fully Kiosk. As a consequence, the home screen or lock screen automatically appears.
 
-### Why Two Profiles?
+### Why Two Profiles with Asynchronous Execution?
 
-In Tasker, **event profiles don't have exit tasks**—they only detect when an event occurs. To properly handle both "entering charging mode" and "exiting charging mode," we need:
+In Tasker, **event profiles don't have exit tasks**—they only detect when an event occurs. To properly handle both "entering charging mode" and "exiting charging mode," we need two profiles. Additionally, sequential task execution would block the screensaver launch while the 5-second Bluetooth scan runs, causing noticeable lag. The solution uses asynchronous task execution: the master "Docked" task launches both UI and data tasks with different priorities, allowing the screensaver to appear immediately while the scan runs in the background.
 
-1. **Event profile** → Detects Display Off while charging, launches screensaver
-2. **State profile** → Detects when device leaves charging dock, cleans up and locks
-
-Together, they create a complete charging lifecycle.
+**Result:** Zero UI lag, complete charging lifecycle, and location detection without blocking.
 
 ### Fully Kiosk Configuration for Mobile
 
@@ -555,19 +631,36 @@ Two separate Tasker exports are provided for device-specific configurations:
 
 **For Mobile Phones:**
 - **File:** `tasker-mobile.xml`
-- **Purpose:** Ready-to-import Tasker profiles optimized for wireless charging activation
+- **Purpose:** Ready-to-import Tasker profiles optimized for wireless charging activation and BT location detection
 - **How to import:**
   1. Open Tasker
   2. Go to **Profiles tab**
   3. Long-press anywhere, select **Import**
   4. Choose `tasker-mobile.xml`
-  5. Review all imported profiles
+  5. Review all imported profiles and tasks
 - **Includes:**
-  - Display Off + Wireless Charging detection trigger
-  - FKB launch and dashboard foreground enforcement
-  - REST API exit handling for charging removal
+  - **"Charging" profile:** Detects wireless charging state (triggers BT scan and screensaver launch)
+  - **"Display Off => FKB" profile:** Display timeout handling and Fully Kiosk management
+  - **"Charger Disconnected" task:** Explicit exit process management - stops BT scan, clears FKB, sends power-disconnect webhook to HA
+  - **"BT Scan" task:** Performs Bluetooth scan of anchor devices, builds JSON payload, sends to HA webhook (unless interrupted by Task Stop when device removed from charger)
+- **Charger Location Detection Features (Multi-Device Support):**
+  - Automatically detects which charger location the device is placed on via Bluetooth anchor triangulation
+  - Sends `browser_id` parameter to HA for device-specific location storage
+  - Supports multiple devices with independent location tracking (each device's location stored separately in JSON mapping)
+  - Automatically clears location when device removed from charger
+- **Configuration required before importing:**
+  - Replace `[YOUR_HA_IP]` with your actual Home Assistant IP address in all HTTP POST actions
+  - Verify your Home Assistant instance is accessible from the phone on the local network
+  - FKB Remote Admin password must match the password set in Fully Kiosk settings
+- **Exit process (undocking):**
+  - Task Stop immediately kills the BT scan, preventing ghost docking data after removal
+  - Exit webhook (power_disconnected) guaranteed to be final message to HA
+  - FKB closes and device returns to home screen
+  - Location automatically cleared in HA for this device
 - **Device-specific setup:**
   - Keep profiles as-is (charging-conditional activation)
+  - Test BT scan on each charger location to verify location detection
+  - Verify exit task properly cleans up FKB and returns to home screen
 
 **For Wall-Mounted Tablets:**
 - **File:** `tasker-kitchentablet.xml`
@@ -589,6 +682,201 @@ Two separate Tasker exports are provided for device-specific configurations:
   - Adjust timeout values (currently 30s idle, 60 min active) if needed
 
 **Important:** After importing either file, verify that device-specific settings (URLs, passwords, device names) match your environment before enabling. Replace placeholder values like `YOUR_REMOTE_ADMIN_PASSWORD` with your actual Fully Kiosk Remote Admin password.
+
+### Advanced: Tasker Location Detection (Charger-Based)
+
+For homes with multiple wireless chargers in different rooms, the screensaver can detect which charger the phone is on and adjust behavior accordingly (e.g., show different scenarios, scenarios, or media based on location).
+
+#### How Location Detection Works
+
+When the phone detects power (charger connected), Tasker performs a brief **Bluetooth scan** to identify which nearby "anchor" device (eg BT speakers or plugs) has the strongest signal. 
+The data is sent to Home Assistant, which analyses the signals and maps it to a location that can be used for screensaver logic.
+Debug output from Bluetooth RSSI analysis is currently logged to **Home Assistant system logs**.
+
+**Why Bluetooth instead of WiFi/GPS?**
+- **Bluetooth RSSI** is stable and accurate when the phone is physically stationary on the charger
+- No continuous scanning needed (battery efficient—only 5 seconds on power connect)
+- Works even while phone is locked (Tasker has system-level permissions)
+- Uses existing hardware (no new sensors required)
+
+#### Scan Data Storage: Why Transient (In-Memory) Only
+
+The Bluetooth scan data received from Tasker is **stored in memory only** and is **not persisted to disk**. This is an intentional design decision based on the following rationale:
+
+**Why Transient Storage?**
+
+1. **Data Nature:** The BT scan data is inherently transient:
+   - Captured only when the phone docks on a charger (typically 1-2× daily)
+   - Contains real-time Bluetooth signal strengths that change over time
+   - Not needed after location detection is complete (only 100-200 ms of processing)
+   - Does not need to survive Home Assistant restarts
+
+2. **Eliminates SD Card Write Wear:**
+   - File-based storage would write to disk on every webhook trigger
+   - SD cards have limited write cycles (~100,000 cycles per cell)
+   - Unnecessary writes accelerate card degradation
+   - In-memory storage eliminates this issue entirely
+
+3. **Architecture Simplicity:**
+   - Uses Home Assistant's webhook-triggered template sensors (native feature)
+   - No file I/O, shell scripts, or complex persistence logic needed
+   - Scan data flows: Tasker webhook → template sensor attributes → dashboard
+   - Backward compatible with all existing scripts and dashboards
+
+4. **Performance:**
+   - Memory access is faster than disk I/O
+   - No file system latency or timeout issues
+   - Webhook data captured immediately and available to scripts
+
+**Technical Implementation:**
+
+- **Template Sensor:** `sensor.bt_latest_scan_full` (webhook-triggered)
+- **Storage:** Sensor attributes (16KB+ capacity, no 255-char state limit)
+- **Data Access:** `state_attr('sensor.bt_latest_scan_full', 'devices')` returns the device array
+- **Lifecycle:** Populated on webhook trigger, clears on HA restart (acceptable for transient data)
+
+**What About Dashboard Display?**
+
+The latest scan is visible in the calibration dashboard (`/lovelace/bt-location-calibration`) under "Latest BT Scan" card, showing:
+- All beacons detected in the current scan
+- RSSI values and device names
+- Weak signal indicators (italic + faded)
+- Globally ignored beacons (strikethrough)
+
+This is updated automatically when Tasker sends a new scan.
+
+**For Persistent Data (Fingerprints):**
+
+If you need data that survives Home Assistant restarts, the system uses **file-based storage with sensor attributes**:
+- Fingerprints: stored in `/config/.cache/bt_fingerprints.csv`
+- Accessed via: `state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')`
+- Read on HA startup and whenever referenced
+
+This pattern separates transient operational data (scans) from persistent configuration data (fingerprints), each using the most appropriate storage strategy.
+
+#### Prerequisites
+
+This feature requires:
+1. **Tasker** with elevated Bluetooth permissions (via ADB)
+2. **OxygenOS security settings** adjusted to allow background scanning
+3. **Home Assistant webhook** to receive location data
+4. **Anchor devices** in each room: Blutooth beacons like MusiCast speakers or Shelly Plug with Bluetooth enabled, but more or less any powered on BT device can be used.
+
+#### Tasker Task Configuration: "Send BT Raw Data"
+
+This task acts as the data collector, transforming raw Bluetooth signals into JSON for Home Assistant.
+
+**Action 1: Bluetooth Info**
+- **Category:** `Net` → `Bluetooth Info`
+- **Type:** `Scan Devices`
+- **Timeout (Seconds):** `5`
+- **Purpose:** Triggers a fresh BT scan. Populates Tasker's local arrays (`%bt_address()`, `%bt_name()`, `%bt_signal_strength()`) with current data from Shellys and MusicCast speakers.
+
+**Action 2: JavaScriptlet**
+- **Category:** `Code` → `JavaScriptlet`
+- **Code:**
+```javascript
+var devices = [];
+for (var i = 0; i < bt_address.length; i++) {
+    devices.push({
+        mac: bt_address[i],
+        name: bt_name[i],
+        rssi: parseInt(bt_signal_strength[i])
+    });
+}
+var payload = JSON.stringify({ devices: devices });
+```
+- **Purpose:** Converts Tasker's internal variables into a structured JSON object. Loops through discovered devices, pairing MAC address, name, and signal strength (RSSI).
+
+**Action 3: HTTP Request**
+- **Category:** `Net` → `HTTP Request`
+- **Method:** `POST`
+- **URL:** `http://[YOUR_HA_IP]:8123/api/webhook/phone_charger_bt`
+- **Headers:** `Content-Type:application/json`
+- **Body:** `%payload`
+- **Purpose:** Transmits the JSON to Home Assistant webhook. Using port `8123` explicitly bypasses default port issues.
+
+**Action 4: Flash (Optional Verification)**
+- **Category:** `Alert` → `Flash`
+- **Text:** `Sent: %payload`
+- **Long:** `Checked`
+- **Purpose:** Provides visual confirmation that data was captured and sent successfully. Use for debugging.
+
+#### Tasker Profile: Power Trigger
+
+**Profile Name:** `"Phone Charging - BT Scan"`
+
+**Trigger Type:** `State` profile
+- **Trigger:** `State` → `Power` → `Source: Any` (detects charger connection)
+- **Entry Task:** Link to "Send BT Raw Data" task above
+- **Exit Task:** None (optional: could reset location to "unknown" when unplugged)
+
+Note: the task can (should?) be embedded in the profile that starts the screensaver as the last task after launching Fully Kiosk Browser.
+
+#### Home Assistant Setup (Webhook Receiver & Triangulation)
+
+**Status:** Webhook receiver and location detection implemented in `packages/screensaver_local.yaml`. Simple testing and analysis procedure below.
+
+##### Setup Process: Fingerprint Capture & Location Detection
+
+The location detection system uses **Bluetooth fingerprinting** — it captures the unique combination of beacon signals at each charger location and automatically learns to recognize them. Here's the workflow:
+
+**Step 1: Configure Location Names**
+
+Visit the screensaver dashboard settings at `/lovelace/bt-location-calibration`:
+
+1. Go to the **"Triangulation"** view
+2. Find the **"Location Configuration"** card
+3. Enter comma-separated location names (e.g., `office, kitchen, garage, bedroom`)
+4. Press Enter to save
+
+⚠️ **Important:** Location order is permanent. Once you capture fingerprints, changing the order will corrupt all data. Renaming locations is OK, but don't reorder them.
+
+**Step 2: Capture Fingerprints at Each Location**
+
+For each location where you have a wireless charger:
+
+1. Place phone on the charger (let it sit 5+ seconds to stabilize signals)
+2. Wait for auto-trigger (or trigger the Tasker "Phone Charging - BT Scan" task manually)
+3. In the screensaver dashboard, find the **"Fingerprint Details"** section
+4. Locate the location heading for the current location (e.g., "OFFICE", "KITCEHN", etc.)
+5. **Hold** the location heading to capture from scratch, OR **tap** to merge new beacons into existing fingerprint
+
+Repeat for all configured locations.
+
+**Step 3: Verify Detection via Fingerprint Details**
+
+The **"Fingerprint Details"** section is your main verification tool. Each location heading shows a **live match score** (e.g., `PEER 5/9 • 58%`):
+- **Matched count** (5/9): How many beacons from the fingerprint are in the latest scan
+- **Confidence %** (58%): Quality of the match (higher = more reliable detection)
+
+To verify fingerprints are working:
+1. After capturing fingerprints, check each location heading in Fingerprint Details
+2. Look for match scores > 50% to indicate reliable detection
+3. Beacons are color-coded by quality:
+   - Green background = strong signal match (RSSI within ±5 dBm of fingerprint)
+   - Blue background = weak signal match (large RSSI difference)
+   - Strikethrough = ignored beacons (locally or globally)
+   - Italic, faded = weak signals (below threshold, excluded)
+
+**Step 4: Refine Beacon Selection (Optional)**
+
+If match scores are low (<50%):
+- **Tap a beacon** in Fingerprint Details to locally ignore it (this location only)
+- **Hold a beacon** to globally ignore it (all locations)
+- Adjust **"Weak Signal Threshold"** (default: -95 dBm) if many weak signals interfere
+- Re-capture fingerprints at problematic locations
+
+**Step 5: Advanced Testing (Algorithm Tuning)**
+
+For detailed algorithm analysis:
+1. Go to the **"Algorithm Tuning"** view
+2. Click **"Test Algorithm Sanity"** to verify each fingerprint correctly detects its own location
+3. Click **"Algorithm Results"** to see location scores for the latest BT scan across all locations. Review the table to see match quality and identify any conflicting/ambiguous locations.
+
+**Expected Outcome:**
+- Phone placed at each charger → screensaver shows the correct location name
+- Location becomes available in your screensaver tap action scripts for location-aware scenario selection
 
 </details>
 
@@ -682,6 +970,7 @@ Open Home Assistant on the specific tablet or phone you wish to configure:
      - Tablets: `kitchen_tablet`, `living_room_tablet`
      - Phones running FKB: Use the suffix `_fkb` to distinguish from the Companion App (e.g., `phone_fkb`, `bedroom_phone_fkb`)
    - These IDs are permanent and used to identify which device is running the screensaver, enabling device-specific sensor mapping (alarm data, battery, etc.)
+     The FKB browser ID is transformed to a regular entity id using the customizable `sensor.dashboard_logic_config`. 
 4. **Register:** Toggle **"Register"** to **ON**. This creates the device and associated entities (sensor, light, media_player) in Home Assistant.
 
 **For Kiosk Mode (Phone Screensaver):**
@@ -920,25 +1209,16 @@ Define the following scripts in your Home Assistant configuration to customize t
 
 If these scripts don't exist, taps will be silently ignored.
 
-### Generic Implementation: screensaver.yaml
+### Local Implementation: screensaver_local.yaml
 
-The screensaver system provides generic tap action scripts in `screensaver.yaml`:
+The `screensaver_local.yaml` package demonstrates environment-specific customization and device-aware routing:
 
-- **Device-aware routing:** Map browser IDs to specific actions using the `scenario_map` and `action_map` pattern
-- **Error handling:** Graceful fallback logging for unknown devices
-- **Multiple devices:** Single dashboard configuration working across different tablets and phones
-- **Customizable maps:** Edit the maps in each script to wire your device IDs to your actions
-
-This package is device-agnostic and reusable across any Home Assistant setup.
-
-### Local Implementation Example: screensaver_local.yaml
-
-For a concrete, working example of how to implement the screensaver locally, see `screensaver_local.yaml`. This package demonstrates:
-
+**Core Features:**
 - **Sensor aggregation:** Temperature, humidity, wind, and weather sensor setup for the screensaver display
+- **Device-aware routing:** Map browser IDs to specific actions using the `scenario_map` and `action_map` pattern
 - **Battery management:** Automation to maintain tablet battery in the 20-80% range using Fully Kiosk integration (tablet-specific)
-- **Mapping example:** Shows how to customize the tap action maps in `screensaver.yaml` for your device
 - **Browser ID registration:** Documents how to register devices in Browser Mod for device-aware tap actions
+- **Error handling:** Graceful fallback logging for unknown devices
 
 Use this as a template for your own setup. The `scenario_map` and `action_map` patterns scale easily—just add new browser IDs and their corresponding actions as needed.
 
@@ -1008,6 +1288,25 @@ The tablet's built-in motion sensor (Fully Kiosk motion detection) **cannot be u
 
 **Workaround:** If motion detection is needed, use a separate motion sensor (e.g., wall-mounted PIR sensor) in a different room or on a different device, not on the tablet itself.
 
+### Device Location Mapping Size Limit
+
+The `input_text.device_charger_locations` helper that stores device-to-charger mappings has a **255 character limit**. This is sufficient for most homes:
+
+- Example mapping: `{"work_phone": "office", "kitchen_tablet": "kitchen", "private_phone": "bedroom"}` ≈ 80 characters
+
+**If you exceed the limit:** The system will stop updating the mapping. To fix, consider archiving old device entries or using shorter device and/or location names.
+
+### Landscape Orientation Not Supported
+
+The dashboard is designed for portrait mode only. Landscape orientation will display incorrectly due to font sizing and grid layout optimizations for portrait aspect ratios. **Workaround:** Rotate device to portrait, or mount wall tablets in portrait orientation.
+
+---
+
+## Planned Enhancements
+
+- **Landscape mode support:** Automatic rotation detection with optimized landscape layout
+- **Improved location fingerprinting:** Replace manual RSSI thresholds with data-driven Manhattan distance matching for easier multi-location setup
+
 ---
 
 ## Summary: Why This Architecture?
@@ -1023,3 +1322,16 @@ This design represents a pragmatic balance between:
 - **Device-Agnostic:** Single dashboard configuration works across multiple device types
 
 The result is a versatile screensaver system that works equally well on wall-mounted tablets (always-on ambient displays) or mobile phones (charging-dock dashboards)—fully integrated into the Home Assistant ecosystem.
+
+---
+
+## Technical Reference
+
+For detailed documentation on the **Bluetooth location detection system**, including algorithm selection, beacon curation, and troubleshooting, see:
+
+- **[bt-triangulation-README.md](docs/bt-triangulation-README.md)** — Technical reference guide covering:
+  - Algorithm selection and comparative analysis
+  - Beacon curation system for handling overlapping signals
+  - How to ignore problematic beacons (per-location or globally)
+  - Data formats and storage patterns
+  - Troubleshooting guide

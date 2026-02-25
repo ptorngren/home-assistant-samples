@@ -5,6 +5,13 @@
 # Browser Mod enables the dashboard to pass device identification (browser_id) to tap action scripts,
 # allowing different devices to execute different actions from the same dashboard.
 # See www/docs/screensaver-README.md for setup instructions.
+#
+# ARCHITECTURE: Decluttering-card template pattern for YAML anchor resolution
+# - Design constants (colors, fonts) defined once with YAML anchors (&name) at top
+# - Decluttering template uses [[variable]] placeholders (resolved by decluttering-card)
+# - Views section passes YAML anchors as variables to template
+# - Flow: YAML anchor (*color) → resolves to hex → passed to decluttering-card → [[variable]] substituted
+# - Benefits: Single source of truth for all styling, no code duplication, works with nested cards
 title: Screensaver Dashboard
 
 # -------------------------------------------------------------------------------------
@@ -22,7 +29,7 @@ colors:
   background: &color_bg "#080808"             # Very dark background (minimizes light pollution)
   primary_text: &color_primary "#8A7057"      # Warm gold/copper for time and date
   secondary_text: &color_secondary "#808080"  # Muted grey for climate data
-  forecast_accent: &color_accent "#666"       # Forecast secondary text color
+  forecast_accent: &color_accent "#A0A0A0"    # Forecast temperatures (brightened from #666 for OLED contrast on high-DPI phones)
   alarm_highlight: &color_alarm "#C4A050"     # Brighter gold for alarm icon/time
 
 font_sizes:
@@ -31,237 +38,317 @@ font_sizes:
   time: &font_time 32vw
   date: &font_date 8vw
   temp: &font_temp 18vw
+  temp_small: &font_temp_small 14vw
   climate: &font_climate 7vw
   climate_details: &font_climate_details 7vw
   alarm: &font_alarm 5vw
+
+# Temperature display configuration
+# - char_limit: 13 chars = "-3.8 | -1.4°" (longest normal format)
+# - If temp string exceeds 13 chars, font shrinks from 18vw to 14vw to prevent overflow
+# - Value must match the hardcoded threshold in the temp custom_field JavaScript below
+# -------------------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------------------
+# DECLUTTERING TEMPLATES
+# -------------------------------------------------------------------------------------
+decluttering_templates:
+  screensaver_template:
+    card:
+      type: custom:button-card
+      # Pass the anchor value into a card variable
+      variables:
+        locale: '[[locale]]'
+        # browser_id is resolved dynamically at runtime via JavaScript from browser_mod localStorage
+      card_mod:
+        style: >
+          /* Animation testing multipliers: adjust both speed AND size (use to debug and verify) */
+          :host {
+            --anim-speed-mult: 1;    /* Speed multiplier: 1=normal, 2=2x faster, 5=5x faster */
+            --anim-size-mult: 1;     /* Size multiplier: 1=normal, 2=2x larger drift, 5=5x larger */
+          }
+
+          /* Soft motion to prevent screen burn-in */
+          @keyframes drift-slow {
+            0%    { transform: translate(0px, 0px); }
+            50%   { transform: translate(calc(8px * var(--anim-size-mult)), calc(6px * var(--anim-size-mult))); }
+            100%  { transform: translate(calc(-8px * var(--anim-size-mult)), calc(-6px * var(--anim-size-mult))); }
+          }
+          @keyframes drift-fast {
+            0%    { transform: translate(0px, 0px); }
+            50%   { transform: translate(calc(-6px * var(--anim-size-mult)), calc(4px * var(--anim-size-mult))); }
+            100%  { transform: translate(calc(6px * var(--anim-size-mult)), calc(-4px * var(--anim-size-mult))); }
+          }
+          /* Attach animations to elements at varied speeds for an organic feel */
+          #container { animation: drift-slow calc(240s / var(--anim-speed-mult)) ease-in-out infinite alternate; }
+          #date { animation: drift-fast calc(180s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #time { animation: drift-fast calc(180s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #temp { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #climate { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #climate_details { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #alarm { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
+          #forecast { animation: drift-fast calc(200s / var(--anim-speed-mult)) linear infinite alternate !important; }
+
+      show_name: false
+      show_state: false
+      
+      custom_fields:
+        # Current date with locale formatting
+        date: >
+          [[[
+            return new Date().toLocaleDateString(variables.locale, { weekday: 'long', day:
+            '2-digit', month: 'long' });
+          ]]]
+        
+        # Current time display
+        time: |
+          [[[ return states['sensor.time']?.state ?? ''; ]]]
+        
+        # Temperature display with conditional font sizing
+        # Uses temperature config anchors passed via variables
+        temp: |
+          [[[
+            const tempState = states['sensor.screensaver_display_temperature']?.state ?? '';
+            const tempDisplay = tempState + '°';
+            const charLimit = 13;  // Must match temperature char_limit in comments above
+            const fontSize = tempDisplay.length > charLimit ? '14vw' : '18vw';
+            return `<div style="font-size: ${fontSize};">${tempDisplay}</div>`;
+          ]]]
+        
+        # Weather description
+        climate: |
+          [[[
+            return states['sensor.screensaver_display_weather']?.state ?? '';
+          ]]]
+        
+        # Humidity and wind with middle dot separator
+        climate_details: |
+          [[[
+            const humidity = states['sensor.screensaver_display_humidity']?.state;
+            const wind = states['sensor.screensaver_display_wind_speed']?.state;
+          
+            const humidityValid = humidity && humidity !== 'unavailable' && humidity !== 'unknown';
+            const windValid = wind && wind !== 'unavailable' && wind !== 'unknown';
+          
+            if (!humidityValid && !windValid) return '';
+            if (!humidityValid) return `${wind} m/s`;
+            if (!windValid) return `${humidity} %`;
+          
+            return `${humidity} % · ${wind} m/s`;
+          ]]]
+
+        # Next alarm time for the active device (device-specific, via HA Companion App)
+        # Device identifier may be transformed or extended by local implementation
+        # Companion App provides alarm time in ISO 8601 format (e.g., "2026-01-30T07:30:00")
+        alarm: |
+          [[[
+            // Get browser_id from browser_mod
+            const browserId = localStorage.getItem('lovelace-player-device-id');
+            if (!browserId) return '';
+
+            // Fetch transformation rules from config sensor (defined in local package)
+            const configSensor = states['sensor.dashboard_logic_config'];
+            if (!configSensor?.attributes) return '';
+
+            const pattern = configSensor.attributes.browser_id_transform_pattern;
+            const replacement = configSensor.attributes.alarm_id_replacement;
+            if (!pattern || !replacement) return '';
+
+            // Apply regex transformation to construct sensor entity_id (case-insensitive)
+            const regex = new RegExp(pattern, 'i');
+            const alarmSensorId = browserId.replace(regex, replacement);
+            const alarmState = states[alarmSensorId]?.state;
+
+            // Silently return empty if sensor not found or unavailable
+            if (!alarmState || alarmState === 'unavailable' || alarmState === 'unknown') {
+              return '';
+            }
+
+            try {
+              // Parse ISO 8601 timestamp from Companion App and format using locale
+              const alarmTime = new Date(alarmState);
+              const locale = variables.locale || 'en-US';
+              // Format as HH:MM (24-hour) in the device's locale
+              const timeStr = alarmTime.toLocaleTimeString(locale, {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+              });
+              // Return with alarm icon
+              return `⏰ ${timeStr}`;
+            } catch (e) {
+              return '';
+            }
+          ]]]
+
+        # Charger location indicator (debug aid for location detection)
+        # Shows detected location at top right
+        charger_location: |
+          [[[
+            // Get browser_id from browser_mod localStorage
+            const browserId = localStorage.getItem('lovelace-player-device-id');
+            if (!browserId) return '';
+
+            // Fetch transformation rules from config sensor (same as alarm display)
+            const configSensor = states['sensor.dashboard_logic_config'];
+            const pattern = configSensor?.attributes?.browser_id_transform_pattern;
+            if (!pattern) return '';
+
+            // Apply regex to transform from browser_id to entity_id (e.g. by stripping Fully Kiosk Browser suffix)
+            const regex = new RegExp(pattern, 'i');
+            const mappingKey = browserId.replace(regex, '$1');
+
+            // Read device-to-location JSON mapping from helper
+            const mappingJson = states['input_text.device_charger_locations']?.state;
+            if (!mappingJson) return '';
+
+            try {
+              const mapping = JSON.parse(mappingJson);
+              // Only show location if this device has an entry in the mapping
+              const location = mapping[mappingKey];
+              return location && location !== 'unknown' ? location : '';
+            } catch (e) {
+              return '';
+            }
+          ]]]
+
+        # Embedded weather forecast card
+        forecast:
+          card:
+            type: weather-forecast
+            entity: weather.forecast_home
+            show_current: false
+            show_forecast: true
+            forecast_type: daily
+            forecast_slots: 5
+            card_mod:
+              style: |
+                ha-card {
+                  /* Fix the YAML anchor limitation by using Decluttering Card variables.
+                     The [[variable]] strings are replaced with hex values before parsing. */
+                  background: transparent !important;
+                  border: none !important;
+                  box-shadow: none !important;
+                  --primary-text-color: [[color_secondary]] !important;
+                  --secondary-text-color: [[color_accent]] !important;
+                  --paper-item-icon-color: [[color_primary]] !important;
+                  font-size: clamp(10px, 2.5vw, 18px);
+                }
+                .card-header { display: none !important; }
+                .forecast .temp { font-size: 1.2em !important; font-weight: 500 !important; }
+      
+      styles:
+        card:
+          - background-color: '[[color_bg]]'
+          - height: 100vh
+          - width: 100vw
+        grid:
+          - display: grid
+          - grid-template-rows: auto auto auto auto auto auto
+          - grid-template-areas: |
+              "date"
+              "time"
+              "temp"
+              "climate"
+              "climate_details"
+              "forecast"
+          - justify-items: center
+          - align-content: center
+        custom_fields:
+          date:
+            - grid-area: date
+            - font-size: '[[font_date]]'
+            - color: '[[color_primary]]'
+            - text-transform: capitalize
+          time:
+            - grid-area: time
+            - font-size: '[[font_time]]'
+            - font-weight: 400
+            - line-height: 1.1
+            - margin-bottom: 6vh
+            - color: '[[color_primary]]'
+            - width: 80vw
+            - text-align: center
+          temp:
+            - grid-area: temp
+            - font-size: '[[font_temp]]'
+            - color: '[[color_secondary]]'
+            - margin-top: 2vh
+          climate:
+            - grid-area: climate
+            - font-size: '[[font_climate]]'
+            - color: '[[color_secondary]]'
+            - margin-top: 2vh
+          climate_details:
+            - grid-area: climate_details
+            - font-size: '[[font_climate_details]]'
+            - color: '[[color_secondary]]'
+            - margin-top: 0.5vh
+          alarm:
+            - position: absolute
+            - top: 1vh
+            - left: 5vh
+            - font-size: '[[font_alarm]]'
+            - color: '[[color_alarm]]'
+            - z-index: 10
+          charger_location:
+            - position: absolute
+            - top: 1vh
+            - right: 5vh
+            - font-size: 3vh
+            - color: '[[color_secondary]]'
+            - opacity: 0.6
+            - z-index: 10
+          forecast:
+            - grid-area: forecast
+            - width: 80vw
+            - margin-top: 4vh
+      
+      # Tap interactions via browser_mod (passes device ID to scripts)
+      tap_action:
+        action: fire-dom-event
+        browser_mod:
+          service: script.screensaver_tap
+          data:
+            browser_id: THIS
+        haptic: light
+
+      double_tap_action:
+        action: fire-dom-event
+        browser_mod:
+          service: script.screensaver_double_tap
+          data:
+            browser_id: THIS
+        haptic: light
+
+      hold_action:
+        action: fire-dom-event
+        browser_mod:
+          service: script.screensaver_hold
+          data:
+            browser_id: THIS
+        haptic: heavy
+
+# -------------------------------------------------------------------------------------
+# VIEWS
 # -------------------------------------------------------------------------------------
 
 views:
   - path: home
     panel: true  # Makes the card full-screen (important for wall tablets)
     cards:
-      - type: custom:button-card
-        # Pass the anchor value into a card variable
+      - type: custom:decluttering-card
+        template: screensaver_template
         variables:
-          locale: *locale
-          # browser_id is resolved dynamically at runtime via JavaScript from browser_mod localStorage        
-        card_mod:
-          style: >
-            /* Animation testing multipliers: adjust both speed AND size (use to debug and verify) */
-            :host {
-              --anim-speed-mult: 1;    /* Speed multiplier: 1=normal, 2=2x faster, 5=5x faster */
-              --anim-size-mult: 1;     /* Size multiplier: 1=normal, 2=2x larger drift, 5=5x larger */
-            }
-
-            /* Soft motion to prevent screen burn-in */
-            @keyframes drift-slow {
-              0%    { transform: translate(0px, 0px); }
-              50%   { transform: translate(calc(8px * var(--anim-size-mult)), calc(6px * var(--anim-size-mult))); }
-              100%  { transform: translate(calc(-8px * var(--anim-size-mult)), calc(-6px * var(--anim-size-mult))); }
-            }
-            @keyframes drift-fast {
-              0%    { transform: translate(0px, 0px); }
-              50%   { transform: translate(calc(-6px * var(--anim-size-mult)), calc(4px * var(--anim-size-mult))); }
-              100%  { transform: translate(calc(6px * var(--anim-size-mult)), calc(-4px * var(--anim-size-mult))); }
-            }
-            /* Attach animations to elements at varied speeds for an organic feel */
-            #container { animation: drift-slow calc(240s / var(--anim-speed-mult)) ease-in-out infinite alternate; }
-            #date { animation: drift-fast calc(180s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #time { animation: drift-fast calc(180s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #temp { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #climate { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #climate_details { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #alarm { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
-            #forecast { animation: drift-fast calc(200s / var(--anim-speed-mult)) linear infinite alternate !important; }
-        
-        show_name: false
-        show_state: false
-        
-        custom_fields:
-          # Current date with locale formatting
-          date: >
-            [[[
-              return new Date().toLocaleDateString(variables.locale, { weekday: 'long', day:
-              '2-digit', month: 'long' });
-            ]]]
-        
-          # Current time display
-          time: |
-            [[[ return states['sensor.time']?.state ?? ''; ]]]
-        
-          # Temperature display
-          temp: |
-            [[[ return states['sensor.screensaver_display_temperature']?.state + '°'; ]]]
-        
-          # Weather description
-          climate: |
-            [[[
-              return states['sensor.screensaver_display_weather']?.state ?? '';
-            ]]]
-          
-          # Humidity and wind with middle dot separator
-          climate_details: |
-              [[[
-                const humidity = states['sensor.screensaver_display_humidity']?.state;
-                const wind = states['sensor.screensaver_display_wind_speed']?.state;
-
-                const humidityValid = humidity && humidity !== 'unavailable' && humidity !== 'unknown';
-                const windValid = wind && wind !== 'unavailable' && wind !== 'unknown';
-
-                if (!humidityValid && !windValid) return '';
-                if (!humidityValid) return `${wind} m/s`;
-                if (!windValid) return `${humidity} %`;
-
-                return `${humidity} % · ${wind} m/s`;
-              ]]]
-
-          # Next alarm time for the active device (device-specific, via HA Companion App)
-          # Device identifier may be transformed or extended by local implementation
-          # Companion App provides alarm time in ISO 8601 format (e.g., "2026-01-30T07:30:00")
-          alarm: |
-            [[[
-              // Get browser_id from browser_mod
-              const browserId = localStorage.getItem('lovelace-player-device-id');
-              if (!browserId) return '';
-
-              // Fetch transformation rules from config sensor (defined in local package)
-              const configSensor = states['sensor.dashboard_logic_config'];
-              if (!configSensor?.attributes) return '';
-
-              const pattern = configSensor.attributes.alarm_id_pattern;
-              const replacement = configSensor.attributes.alarm_id_replacement;
-              if (!pattern || !replacement) return '';
-
-              // Apply regex transformation to construct sensor entity_id (case-insensitive)
-              const regex = new RegExp(pattern, 'i');
-              const alarmSensorId = browserId.replace(regex, replacement);
-              const alarmState = states[alarmSensorId]?.state;
-
-              // Silently return empty if sensor not found or unavailable
-              if (!alarmState || alarmState === 'unavailable' || alarmState === 'unknown') {
-                return '';
-              }
-
-              // Parse ISO 8601 timestamp from Companion App and format using locale
-              try {
-                const alarmTime = new Date(alarmState);
-                const locale = variables.locale || 'en-US';
-
-                // Format as HH:MM (24-hour) in the device's locale
-                const timeStr = alarmTime.toLocaleTimeString(locale, {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  hour12: false
-                });
-
-                // Return with alarm icon
-                return `⏰ ${timeStr}`;
-              } catch (e) {
-                return '';
-              }
-            ]]]
-
-          # Embedded weather forecast card
-          forecast:
-            card:
-              type: weather-forecast
-              entity: weather.forecast_home
-              show_current: false
-              show_forecast: true
-              forecast_type: daily
-              forecast_slots: 5
-              card_mod:
-                style: |
-                  ha-card {
-                    background: transparent !important;
-                    border: none !important;
-                    box-shadow: none !important;
-                    --primary-text-color: *color_secondary;
-                    --secondary-text-color: *color_accent;
-                    --paper-item-icon-color: *color_primary;
-                  }
-                  .card-header { display: none !important; }
-        
-        styles:
-          card:
-            - background-color: *color_bg
-            - height: 100vh
-            - width: 100vw
-          grid:
-            - display: grid
-            - grid-template-rows: auto auto auto auto auto auto
-            - grid-template-areas: |
-                "date"
-                "time"
-                "temp"
-                "climate"
-                "climate_details"
-                "forecast"
-            - justify-items: center
-            - align-content: center
-          custom_fields:
-            date:
-              - grid-area: date
-              - font-size: *font_date
-              - color: *color_primary
-              - text-transform: capitalize
-            time:
-              - grid-area: time
-              - font-size: *font_time
-              - font-weight: 400
-              - line-height: 1.1
-              - margin-bottom: 6vh
-              - color: *color_primary
-              - width: 80vw
-              - text-align: center
-            temp:
-              - grid-area: temp
-              - font-size: *font_temp
-              - color: *color_secondary
-              - margin-top: 2vh
-            climate:
-              - grid-area: climate
-              - font-size: *font_climate
-              - color: *color_secondary
-              - margin-top: 2vh
-            climate_details:
-              - grid-area: climate_details
-              - font-size: *font_climate_details
-              - color: *color_secondary
-              - margin-top: 0.5vh
-            alarm:
-              - position: absolute
-              - top: 1vh
-              - left: 5vh
-              - font-size: *font_alarm
-              - color: *color_alarm
-              - z-index: 10
-            forecast:
-              - grid-area: forecast
-              - width: 80vw
-              - margin-top: 4vh
-        
-        # Tap interactions via browser_mod (passes device ID to scripts)
-        tap_action:
-          action: fire-dom-event
-          browser_mod:
-            service: script.screensaver_tap
-            data:
-              browser_id: THIS
-          haptic: light
-
-        double_tap_action:
-          action: fire-dom-event
-          browser_mod:
-            service: script.screensaver_double_tap
-            data:
-              browser_id: THIS
-          haptic: light
-
-        hold_action:
-          action: fire-dom-event
-          browser_mod:
-            service: script.screensaver_hold
-            data:
-              browser_id: THIS
-          haptic: heavy  
+          - locale: *locale
+          - color_bg: *color_bg
+          - color_primary: *color_primary
+          - color_secondary: *color_secondary
+          - color_accent: *color_accent
+          - color_alarm: *color_alarm
+          - font_time: *font_time
+          - font_date: *font_date
+          - font_temp: *font_temp
+          - font_climate: *font_climate
+          - font_climate_details: *font_climate_details
+          - font_alarm: *font_alarm
