@@ -259,8 +259,8 @@ script:
         description: "Context label for logging and debugging (e.g., 'Latest scan' or 'Fingerprint #2 (KITCHEN)')"
         example: "Latest scan"
     sequence:
-      # Call the Match Ratio algorithm (can be changed to similarity_match for different behavior)
-      - action: script.bt_location_match_ratio
+      # Call the Symmetric Ratio algorithm (can be changed to similarity_match for different behavior)
+      - action: script.bt_location_symmetric_ratio
         data:
           devices: "{{ devices }}"
           fingerprints_parsed: "{{ fingerprints_parsed }}"

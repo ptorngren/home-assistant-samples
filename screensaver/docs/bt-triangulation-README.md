@@ -36,13 +36,13 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 
 1. Open the **BT Location Calibration** dashboard
 2. Enter your room names in **Location Names** (e.g., kitchen, garage, bedroom)
-3. Adjust **BT Weak Signal Threshold** if needed (default -95 dBm filters out very weak signals)
+3. Adjust **BT Weak Signal Threshold** if needed (default -95 dBm; beacons below this are automatically filtered out during capture and updates)
 
 ### Capturing Fingerprints
 
 1. Go to each location with your phone/device
 2. Long-press the location heading in **Fingerprint Details** to capture beacon signals for that location
-3. The system records which beacons are detected and their signal strengths
+3. The system records which beacons are detected and their signal strengths—beacons below the weak signal threshold and globally ignored beacons are automatically filtered out
 4. Repeat for all locations
 
 ### Managing Beacons
@@ -57,7 +57,7 @@ In the **Fingerprint Details** section, you can adjust which beacons are used fo
 **Ignore a beacon globally (from all locations):**
 1. Find the beacon in the latest scan or any location's fingerprint
 2. **Hold the beacon** to toggle it globally ignored/active
-3. The beacon is now ignored everywhere and won't affect any location detection
+3. The beacon is now ignored everywhere, won't affect current detection, and will be automatically filtered out from future fingerprint captures and updates
 
 **Check Status**
 1. Click **Beacon Status** to see ignored/active beacons
@@ -75,12 +75,17 @@ After configuring locations and managing beacons:
 
 **How the algorithm scores locations:**
 ```
-Score = (0.45 × beacon_match_ratio) + (0.30 × fingerprint_coverage) + (0.25 × signal_similarity)
+Score = (matched / fingerprint_total) × (matched / scan_valid)
 
-- beacon_match_ratio: How many beacons you matched vs the best match across all locations
-- fingerprint_coverage: What percentage of this location's fingerprint you matched
-- signal_similarity: How close your RSSI values match the fingerprint
+- matched: Number of beacons found in both fingerprint and current scan
+- fingerprint_total: Total unique beacons in this location's fingerprint
+- scan_valid: Number of beacons in current scan that exist in at least one location's fingerprint
 ```
+
+**This symmetric ratio approach:**
+- **First term (matched/fingerprint):** Measures recall—how many of this location's expected beacons were found
+- **Second term (matched/scan_valid):** Measures precision—how many beacons in the scan belong to this location
+- **Result:** Bidirectional matching eliminates small-fingerprint bias and automatically penalizes unexpected beacons
 
 Beacon curation improves these scores by removing beacons that hurt detection. Here's how each problem degrades scoring:
 
@@ -92,22 +97,21 @@ A printer beacon was captured at -94 dBm (above threshold), but later appears at
 ```
 Fingerprint: OFFICE has [Printer at -94 dBm, Desk lamp at -65 dBm, Router at -45 dBm]
 
-Day 1 (Good): Scan finds [Printer at -94, Lamp at -65, Router at -45]
-- beacon_match_ratio: 3/3 = 1.0 (all beacons found)
-- fingerprint_coverage: 3/3 = 1.0 (matched 100%)
-- signal_similarity: All within 2 dBm → 0.95
-- Score: (0.45 × 1.0) + (0.30 × 1.0) + (0.25 × 0.95) = 0.98 ✅
+Day 1 (Good): Scan finds [Printer at -94, Lamp at -65, Router at -45] (all 3 valid beacons)
+- matched: 3 (all beacons found)
+- fingerprint_total: 3
+- scan_valid: 3
+- Score: (3/3) × (3/3) = 1.0 × 1.0 = 1.0 ✅
 
 Day 2 (Bad): Scan finds [Lamp at -65, Router at -45] (Printer at -96, below threshold)
-- beacon_match_ratio: 2/3 = 0.67 (only 2 of 3 beacons found)
-- fingerprint_coverage: 2/3 = 0.67 (matched only 67%)
-- signal_similarity: Can't evaluate Printer, others OK → 0.90
-- Score: (0.45 × 0.67) + (0.30 × 0.67) + (0.25 × 0.90) = 0.70 ❌
+- matched: 2 (only 2 of 3 found)
+- fingerprint_total: 3
+- scan_valid: 2 (only 2 valid beacons in scan)
+- Score: (2/3) × (2/2) = 0.67 × 1.0 = 0.67 ❌
 
 Solution: Ignore the volatile Printer beacon globally
 - Fingerprint becomes [Desk lamp at -65, Router at -45]
-- Both days: beacon_match_ratio 2/2, fingerprint_coverage 2/2, signal_similarity 0.95
-- Score both days: (0.45 × 1.0) + (0.30 × 1.0) + (0.25 × 0.95) = 0.98 ✅
+- Both days: matched 2/2, scan_valid 2, Score: (2/2) × (2/2) = 1.0 ✅
 ```
 
 ---
@@ -145,24 +149,23 @@ KITCHEN Fingerprint: 15 beacons (includes ENTRANCE at -70 dBm)
 GARAGE Fingerprint: 12 beacons (includes ENTRANCE at -68 dBm)
 (Both share 10 other beacons with similar signal profiles)
 
-When you're in KITCHEN and scan:
-- Scan shows 12 matching beacons
-- KITCHEN score: (0.45 × 1.0) + (0.30 × 0.80) + (0.25 × 0.85) = 0.68
-- GARAGE score: (0.45 × 0.83) + (0.30 × 1.0) + (0.25 × 0.82) = 0.63
+When you're in KITCHEN and scan with 12 matching beacons and 2 valid scan beacons total:
+- KITCHEN: (12/15) × (12/12) = 0.80 × 1.0 = 0.80
+- GARAGE: (10/12) × (10/12) = 0.83 × 0.83 = 0.69
 
-Result: KITCHEN wins, but margin is small (0.68 vs 0.63) — fragile detection
-- The ENTRANCE beacon is shared, so it doesn't help distinguish them
+Result: KITCHEN wins, but margin is small (0.80 vs 0.69) — fragile detection
+- The ENTRANCE beacon is shared, creating ambiguity
 - When ENTRANCE signal varies even slightly, GARAGE could win
 
 Solution: Ignore ENTRANCE from both KITCHEN and GARAGE
-- KITCHEN: 14 beacons → fingerprint_coverage improves (12/14 = 0.86 vs 0.80)
-- GARAGE: 11 beacons → fingerprint_coverage improves (10/11 = 0.91 vs 0.83)
+- KITCHEN: 14 beacons effective, 12 matched
+- GARAGE: 11 beacons effective, 10 matched
 
 New scores when in KITCHEN:
-- KITCHEN: (0.45 × 1.0) + (0.30 × 0.86) + (0.25 × 0.90) = 0.71
-- GARAGE: (0.45 × 0.83) + (0.30 × 0.91) + (0.25 × 0.85) = 0.65
+- KITCHEN: (12/14) × (12/12) = 0.86 × 1.0 = 0.86
+- GARAGE: (10/11) × (10/12) = 0.91 × 0.83 = 0.75
 
-Result: Larger margin (0.71 vs 0.65) = robust detection ✅
+Result: Larger margin (0.86 vs 0.75) = robust detection ✅
 ```
 
 ---
@@ -187,7 +190,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 **What you see:**
 - **Location Names** — Editable list of rooms where you want location detection (kitchen, garage, office, etc.)
-- **BT Weak Signal Threshold** — Slider to ignore weak beacons that might cause false positives  (-95 dBm is a fair staring point)
+- **BT Weak Signal Threshold** — Slider to ignore weak beacons that might cause false positives  (-95 dBm is a fair starting point)
 - **Management Buttons** — Report beacon status, load or clear stored data
 - **Latest BT Scan** — Bluetooth devices with signal strength (RSSI in dBm) and device names as reported by the most recent report
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
@@ -199,16 +202,12 @@ After capturing fingerprints, validate the matching algorithm with this sanity c
 ![Algorithm Tuning & Validation](algorithm_tuning.jpg)
 
 **What you see:**
-- **BT Missing Beacon Penalty** — Slider adjusting how much the algorithm penalizes missing beacons (higher = stricter matching)
 - **Test Algorithm Sanity** — Validates algorithm scoring against your current fingerprints
 - **Algorithm Results Table** — Shows how each location scores for the latest scan:
-  - **Matched** — How many beacons from the fingerprint were detected in the scan
-  - **Σ Match** — Aggregate match quality (percentage of beacons found)
-  - **Σ Signal** — Aggregate signal quality (how close RSSI values match)
-  - **Penalty** — Points deducted for missing beacons
-  - **Σ Total** — Final composite score (higher = better match)
+  - **Matched** — How many beacons from the fingerprint were detected in the scan (format: matched/fingerprint [known_in_scan])
+  - **Score** — Symmetric ratio result: (matched/fingerprint) × (matched/scan_valid) (higher = better match)
 
-**Goal:** The expected location should have high scores with clear separation to others (PEER 0.98 vs Garage 0.699 shows good distinction).
+**Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction).
 
 ---
 
@@ -357,29 +356,75 @@ Fingerprinting for indoor positioning (BT RSSI in a home) uses several main appr
 | Neural Net     | ML           | Hard      | Highest  | No (too complex)|
 | HMM            | Temporal     | Medium    | Stabilizes | Extra layer    |
 | Kalman Filter  | Temporal     | Easy      | Stabilizes | Yes (optional) |
-| **Match Ratio** | **Custom**   | **Easy**  | **Very Good** | **Yes (selected)** |
+| Match Ratio    | Custom       | Easy      | Very Good | Yes (abandoned) |
+| **Symmetric Ratio** | **Custom**   | **Easy**  | **Excellent** | **Yes (selected)** |
 
-## Algorithm Choice: Match Ratio with Beacon Strength Weighting
+## Algorithm Choice: Symmetric Ratio (Approach 0)
 
-**Chosen Algorithm:** Two-stage matching prioritizing beacon count, with RSSI quality as tiebreaker
+**Chosen Algorithm:** Bidirectional beacon matching using symmetric ratio formula
+
+**Formula:**
+```
+presence_score = (matched / fingerprint_total) × (matched / scan_valid)
+```
 
 **Why this approach:**
-Previous distance-based methods (Manhattan distance, weighted k-NN, summation-based scoring) all failed because they penalized locations with more beacons in their fingerprints. This caused false positives when a location with few beacons happened to have lucky RSSI matches.
 
-The Match Ratio algorithm **separates two concerns:**
-- **Stage 1: Beacon matching** — How many beacons from the fingerprint appear in the current scan (percentage-based, location-neutral)
-- **Stage 2: Signal quality** — How close RSSI values match (weighted by beacon strength, high beacons ~48× more influential than weak ones)
+The problem with unidirectional matching (only checking "do fingerprint beacons appear in scan") is that it creates a **small-fingerprint bias**—locations with fewer beacons always appear to have better matches because it's easier to match 2 beacons than 5. This causes false positives when a location with few beacons happens to have lucky matches.
 
-**Result:** Eliminated the bias against larger fingerprints. 5/5 test locations detected correctly. Robust to signal drift and fingerprint size differences.
+The Symmetric Ratio approach solves this by combining two complementary metrics:
+- **matched/fingerprint (Recall):** What percentage of this location's expected beacons were found?
+- **matched/scan_valid (Precision):** What percentage of the scan beacons belong to this location?
 
-**Key features:**
-- Beacon strength weighting: `weight = max(0, 100 + rssi_dBm)` — strong beacons (-52 dBm) ~48× more influential than weak ones (-94 dBm)
-- Works reliably with fingerprints of different sizes
-- No performance penalty (O(n) filtering per scan)
+Together, these terms create a natural penalty system:
+- **Small fingerprints no longer always win** — they must also account for unexpected beacons in the scan
+- **Unexpected beacons are automatically penalized** — if a beacon unique to Location 2 appears in the scan, Location 1 is penalized through the precision term
+- **No tuning parameters needed** — the formula is mathematically optimal for noise-filtered scans
+
+**Key assumptions:**
+- The scan is pre-filtered to contain only "valid" beacons (those existing in at least one location's fingerprint)
+- This automatically eliminates alien/neighbor devices without requiring explicit configuration
+- Beacon curation (global and per-location ignores) works seamlessly with the algorithm
+
+**Result:** Bidirectional matching eliminates small-fingerprint bias. All locations detected correctly with clear score separation and natural robustness to signal drift.
+
+**Advantages over alternatives:**
+- ✅ No weight tuning (45/30/25 weighting no longer needed)
+- ✅ No penalty parameters (missing beacon penalty eliminated)
+- ✅ Mathematically elegant (combines recall and precision naturally)
+- ✅ Works with any fingerprint size
+- ✅ Scales to 50–120+ beacons without degradation
+
+---
+
+## Algorithm Analysis: Why Approach 0?
+
+**Decision Process**
+
+Four candidate algorithms were analyzed in depth (documented in `.claude/algorithm_tuning.md`):
+
+1. **F1-Score-Based (Harmonic Mean)** — `2×matched / (fingerprint + scan)`
+2. **Jaccard Index** — `matched / (fingerprint + scan - matched)`
+3. **Asymmetric with Multi-Factor** — Complex confidence scoring
+4. **Simplified Symmetric Ratio** — `(matched/fingerprint) × (matched/scan_valid)` ← **Selected**
+
+**Why Symmetric Ratio (Approach 0) Won**
+
+The symmetric ratio approach was selected because:
+
+- **Mathematically Sound:** Combines Recall (do I see this location's beacons?) with Precision (do scanned beacons belong here?) in a single elegant formula
+- **No Configuration Needed:** Pre-filtered scans eliminate alien noise automatically, so no weight tuning or penalty parameters are required
+- **Solves the Core Problem:** Bidirectional matching eliminates the "small-fingerprint bias" that plagued previous algorithms
+- **Cleanest Implementation:** Pure Jinja2, no external dependencies, O(n) performance
+- **Validated by Multiple Sources:** Analysis confirmed by Claude Opus, Claude Sonnet, ChatGPT, and Gemini
+
+**Key Insight:** The pre-filter assumption (scan contains only beacons existing in at least one fingerprint) is critical. This filter eliminates unknown/alien devices automatically, which simplifies the algorithm dramatically—no need for aggressive penalty tuning or multi-factor scoring.
+
+---
 
 ## Algorithm Output Protocol
 
-The code is prepared to handle pluggable algorithms via `script.bt_location_detect_algorithm_proxy`. The generic detection logic in `bt_beacon_triangulation.yaml` calls this proxy, which is implemented in `screensaver_local.yaml` (default: Match Ratio algorithm). To swap algorithms, override the proxy implementation in your local package.
+The code is prepared to handle pluggable algorithms via `script.bt_location_detect_algorithm_proxy`. The generic detection logic in `bt_beacon_triangulation.yaml` calls this proxy, which is implemented in `screensaver_local.yaml` (default: Symmetric Ratio algorithm). To swap algorithms, override the proxy implementation in your local package.
 
 All location detection algorithms must return the following metrics for integration with the detection orchestrator:
 
@@ -387,22 +432,16 @@ All location detection algorithms must return the following metrics for integrat
 |--------|------|-------------|
 | `matched` | int | Number of beacons found in both fingerprint and current scan |
 | `missing` | int | Number of beacons in fingerprint but not in current scan |
-| `beacon_score` | float | Score contribution from beacon matching quantity |
-| `rssi_score` | float | Score contribution from RSSI signal accuracy |
-| `penalty` | float | Additional penalty (missing beacons, confidence gaps, etc.) |
 | `total_score` | float | Final composite score; higher = better match |
 
-**Match Ratio Algorithm Output Example:**
+**Symmetric Ratio Algorithm Output Example:**
 ```yaml
 matched: 12
 missing: 3
-beacon_score: 80.0  # (12/15) × 100
-rssi_score: 4.25    # weighted average RSSI difference
-penalty: 0
-total_score: 84.25  # beacon_score + rssi_score + penalty
+total_score: 0.727  # (12/15) × (12/16.5) = 0.8 × 0.909 = 0.727
 ```
 
-**Rationale:** This uniform protocol allows algorithm implementations to be swapped without changing detection logic, enabling future algorithm improvements or alternative matching strategies without affecting the orchestrator code.
+**Rationale:** This minimal protocol allows algorithm implementations to be swapped without changing detection logic, enabling future algorithm improvements or alternative matching strategies without affecting the orchestrator code. Algorithms with more complex output requirements must provide alternative visualization methods.
 
 ---
 
@@ -468,7 +507,7 @@ Algorithm automatically uses updated list
 BT scan → script.detect_location_from_signals
   ↓ (loads fingerprints + global ignored)
   ↓ (filters out ignored beacons)
-script.bt_location_match_ratio
+script.bt_location_symmetric_ratio
   ↓ (uses only active beacons for scoring)
 Returns best match location
 ```

@@ -167,6 +167,12 @@ decluttering_templates:
             try {
               // Parse ISO 8601 timestamp from Companion App and format using locale
               const alarmTime = new Date(alarmState);
+              // Only display if alarm is at least 5 minutes in the future (grace period)
+              const now = new Date();
+              const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60000);
+              if (alarmTime <= fiveMinutesFromNow) {
+                return '';
+              }
               const locale = variables.locale || 'en-US';
               // Format as HH:MM (24-hour) in the device's locale
               const timeStr = alarmTime.toLocaleTimeString(locale, {

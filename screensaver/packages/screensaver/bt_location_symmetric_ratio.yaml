@@ -1,9 +1,9 @@
-# bt_location_match_ratio.yaml
-# Symmetric Ratio Location Detection Algorithm (Approach 0)
+# bt_location_symmetric_ratio.yaml
+# Symmetric Ratio Location Detection Algorithm
 # Bidirectional beacon matching: (matched/fingerprint) × (matched/scan_valid)
 # Eliminates small-fingerprint bias and alien beacon noise without tuning parameters
 script:
-  bt_location_match_ratio:
+  bt_location_symmetric_ratio:
     description: "Symmetric Ratio Location Matching: (matched/fingerprint) × (matched/scan_valid)"
     # This generic protocol allows algorithm swapping without orchestrator changes.
     fields:

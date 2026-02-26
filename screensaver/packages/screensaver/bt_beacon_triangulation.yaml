@@ -30,7 +30,7 @@ input_button:
 
 input_number:
   bt_location_detection_weak_signal_threshold:
-    name: "BT Weak Signal Threshold (dBm)"
+    name: "Weak Signal Threshold"
     unit_of_measurement: "dBm"
     min: -100
     max: -60
@@ -41,14 +41,16 @@ input_number:
     # NOTE: No 'initial:' to prevent forced resets on HA restart
     # Helper starts empty, so user must set this value manually in the UI unless the algorithm uses a default value
 
-  bt_location_detection_missing_beacon_penalty:
-    name: "BT Missing Beacon Penalty"
+  bt_location_detection_rssi_tolerance:
+    name: "RSSI Match Tolerance"
+    unit_of_measurement: "dBm"
     min: 0
-    max: 200
-    step: 5
+    max: 20
+    step: 1
     mode: slider
-    # Penalty score for each beacon in fingerprint that's missing from current scan
-    # Higher = more aggressive penalization for missing distinctive beacons
+    # Tolerance for matching beacon RSSI in scan against fingerprint RSSI
+    # Beacon counts as match only if scan RSSI is within ±N dBm of fingerprint RSSI
+    # Higher values = more lenient matching, lower values = stricter RSSI matching
 
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
@@ -143,7 +145,33 @@ template:
         unique_id: bt_latest_scan_full
         state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         attributes:
-          devices: "{{ trigger.json.devices | default([]) }}"
+          # Hard-filter RSSI=0 beacons (often dynamic MACs or echo devices with no valid signal)
+          # These provide no location information and pollute the fingerprint database
+          devices: |
+            {%- set ns = namespace(filtered=[]) -%}
+            {%- for device in trigger.json.devices | default([]) -%}
+              {%- if device.rssi != 0 -%}
+                {%- set ns.filtered = ns.filtered + [device] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.filtered }}
+
+
+          # Count beacons in current scan that exist in active known beacons list
+          # Uses dynamically calculated list from sensor.bt_active_known_beacons (auto-updates on fingerprint/ignore changes)
+          # NOTE: Uses trigger.json.devices directly to avoid race condition with attribute calculation
+          known_beacons_in_scan: |
+            {%- set ns = namespace(count=0) -%}
+            {%- set active_beacons = state_attr('sensor.bt_active_known_beacons', 'active_beacons') | default([]) -%}
+            {%- set devices = trigger.json.devices | default([]) | selectattr('rssi', 'ne', 0) | list -%}
+            {%- for device in devices -%}
+              {%- set mac = device.mac | upper -%}
+              {%- if mac in active_beacons -%}
+                {%- set ns.count = ns.count + 1 -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.count }}
+
           browser_id: "{{ trigger.json.browser_id | default('unknown') }}"
           timestamp: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
 
@@ -177,6 +205,61 @@ template:
         state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         attributes:
           location_scores: "{{ trigger.event.data.scores }}"
+          active_beacons_in_scan: "{{ trigger.event.data.active_beacons_in_scan | int(0) }}"
+          known_beacons_in_scan: "{{ trigger.event.data.known_beacons_in_scan | int(0) }}"
+          unknown_beacons_in_scan: "{{ trigger.event.data.unknown_beacons_in_scan | int(0) }}"
+
+      # Active Known Beacons - dynamically calculated from fingerprints, excluding globally ignored
+      # Updates whenever fingerprints change OR ignore list changes
+      # Single source of truth for "which beacons should be considered in location detection"
+      - name: "BT Active Known Beacons"
+        unique_id: bt_active_known_beacons
+        icon: mdi:bluetooth
+        state: >
+          {%- set ns = namespace(active_beacons=[]) -%}
+          {%- set global_ignored_raw = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+          {%- set global_ignored_list = global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] -%}
+          {%- set raw_fingerprints = (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list -%}
+          {%- for entry in raw_fingerprints -%}
+            {%- if entry and '|' in entry -%}
+              {%- set parts = entry.split('|') -%}
+              {%- if parts | length == 2 -%}
+                {%- set mac_rssi_str = parts[1] -%}
+                {%- for pair in mac_rssi_str.split(',') -%}
+                  {%- if '=' in pair -%}
+                    {%- set mac = pair.split('=')[0] | upper -%}
+                    {%- if mac not in ns.active_beacons and mac not in global_ignored_list -%}
+                      {%- set ns.active_beacons = ns.active_beacons + [mac] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.active_beacons | length }}
+        attributes:
+          active_beacons: >
+            {%- set ns = namespace(active_beacons=[]) -%}
+            {%- set global_ignored_raw = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+            {%- set global_ignored_list = global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] -%}
+            {%- set raw_fingerprints = (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list -%}
+            {%- for entry in raw_fingerprints -%}
+              {%- if entry and '|' in entry -%}
+                {%- set parts = entry.split('|') -%}
+                {%- if parts | length == 2 -%}
+                  {%- set mac_rssi_str = parts[1] -%}
+                  {%- for pair in mac_rssi_str.split(',') -%}
+                    {%- if '=' in pair -%}
+                      {%- set mac = pair.split('=')[0] | upper -%}
+                      {%- if mac not in ns.active_beacons and mac not in global_ignored_list -%}
+                        {%- set ns.active_beacons = ns.active_beacons + [mac] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.active_beacons }}
 
 # ------------------------------------------------------------------
 # SCRIPTS
@@ -346,8 +429,10 @@ script:
     sequence:
       - variables:
           current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
           location_idx: "{{ location_index | int(-1) }}"
           beacon_mac: "{{ mac | upper }}"
+          location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
 
       - if: "{{ location_idx >= 0 }}"
         then:
@@ -420,7 +505,7 @@ script:
           # Log the action
           - action: system_log.write
             data:
-              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location | upper }}"
+              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name | upper }}"
               level: debug
 
   bt_beacon_toggle_global_ignored:
@@ -465,8 +550,8 @@ script:
           message: "{{ 'Removed' if is_ignored else 'Added' }} beacon {{ beacon_mac }} to global ignored list"
           level: debug
 
-  test_algorithm:
-    description: "Load latest BT scan and run location detection algorithm"
+  calculate_location_scores:
+    description: "Calculate location scores against latest BT scan and update location metrics"
     sequence:
       # Load latest scan from sensor
       - variables:
@@ -528,21 +613,27 @@ script:
           scan_context: "{{ scan_context }}"
         response_variable: algorithm_result
 
-      # Build result with all scoring details
+      # Build result with all scoring details and beacon counts
       - variables:
           result:
             detected_location: "{{ algorithm_result.detected_location }}"
             confidence: "{{ algorithm_result.confidence }}"
             score: "{{ algorithm_result.score }}"
             scores_detail: "{{ algorithm_result.scores_detail }}"
+            active_beacons_in_scan: "{{ algorithm_result.active_beacons_in_scan }}"
+            known_beacons_in_scan: "{{ algorithm_result.known_beacons_in_scan }}"
+            unknown_beacons_in_scan: "{{ algorithm_result.unknown_beacons_in_scan }}"
             algorithm: "match_ratio"
 
-      # Fire event to update in-memory sensor with scores (no disk I/O)
+      # Fire event to update in-memory sensor with scores and beacon counts (no disk I/O)
       - if: "{{ persist_scores }}"
         then:
           - event: bt_location_scores_updated
             event_data:
               scores: "{{ result.scores_detail }}"
+              active_beacons_in_scan: "{{ result.active_beacons_in_scan }}"
+              known_beacons_in_scan: "{{ result.known_beacons_in_scan }}"
+              unknown_beacons_in_scan: "{{ result.unknown_beacons_in_scan }}"
 
       - stop: "Location detected using similarity algorithm"
         response_variable: result
@@ -556,7 +647,25 @@ script:
     sequence:
       - variables:
           # Get all detected beacons from latest scan (full device list from file sensor)
-          scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          # Get weak signal threshold and global ignored list
+          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+          global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
+
+      - variables:
+          # Filter scan: exclude weak signals and globally ignored beacons
+          scan: |
+            {%- set ns = namespace(filtered=[]) -%}
+            {%- for device in raw_scan -%}
+              {%- set mac_upper = device.mac | upper -%}
+              {%- set is_globally_ignored = mac_upper in global_ignored_list -%}
+              {%- set is_weak = device.rssi < weak_signal_threshold -%}
+              {%- if not is_globally_ignored and not is_weak -%}
+                {%- set ns.filtered = ns.filtered + [device] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.filtered }}
 
       # Validate that at least one anchor device was detected
       - if:
@@ -640,7 +749,25 @@ script:
         example: "0"
     sequence:
       - variables:
-          scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          # Get weak signal threshold and global ignored list
+          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+          global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
+
+      - variables:
+          # Filter scan: exclude weak signals and globally ignored beacons
+          scan: |
+            {%- set ns = namespace(filtered=[]) -%}
+            {%- for device in raw_scan -%}
+              {%- set mac_upper = device.mac | upper -%}
+              {%- set is_globally_ignored = mac_upper in global_ignored_list -%}
+              {%- set is_weak = device.rssi < weak_signal_threshold -%}
+              {%- if not is_globally_ignored and not is_weak -%}
+                {%- set ns.filtered = ns.filtered + [device] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.filtered }}
 
       - if:
           - condition: template
@@ -748,8 +875,8 @@ script:
               message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
               notification_id: "bt_no_scan"
 
-  validate_beacon_ignored:
-    description: "Generate and display beacon status report"
+  report_beacon_status:
+    description: "Generate and display beacon status report showing active, ignored, and weak beacons"
     sequence:
       - variables:
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
@@ -850,6 +977,23 @@ automation:
       - action: homeassistant.update_entity
         target:
           entity_id: sensor.bt_fingerprint_database_file
+
+  - alias: 'BT Location Scores - Update on Fingerprint or Ignore Changes'
+    id: bt_location_scores_update_on_changes
+    description: "Automatically run algorithm to update location scores when fingerprints or ignores change"
+    trigger:
+      - trigger: state
+        entity_id:
+          - sensor.bt_fingerprint_database_file
+          - sensor.bt_ignored_beacons
+    # NOTE: Timing issue - sensors may not be ready immediately after YAML reload
+    # Condition checks all three sensors are valid to avoid errors during initialization
+    condition:
+      - condition: template
+        value_template: "{{ states('sensor.bt_fingerprint_database_file') is not none and states('sensor.bt_ignored_beacons') is not none and state_attr('sensor.bt_latest_scan_full', 'devices') is not none }}"
+    action:
+      - action: script.calculate_location_scores
+
   - alias: 'Phone Charger - BT Location Detection'
     id: phone_charger_bt_location
     description: "Receive Tasker BT scan webhook, analyze signals, detect and store charger location"
