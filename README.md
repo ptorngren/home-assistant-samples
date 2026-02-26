@@ -48,7 +48,8 @@ reliance on AI tools to accelerate learning and code generation:
 
 - **Claude Code** — Primary development tool with Home Assistant MCP integration and IntelliJ IDEA plugin
 - **Gemini** — Supplementary tool for specific technical questions and alternative approaches
-- **ChatGPT** — for a second opinion and review, especially texts.
+- **Microsoft Copilot** - for a second opinion and review on technical matters
+- **ChatGPT** — for a second opinion and review, especially texts
 - **Github Copilot** — initially used for coding in VS Code until replaced by Claude Code in IntelliJ
 
 This approach allowed rapid prototyping and iteration while focusing intellectual energy on architecture and design rather than language syntax. 
