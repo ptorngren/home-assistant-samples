@@ -49,15 +49,21 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 
 In the **Fingerprint Details** section, you can adjust which beacons are used for each location:
 
-**Ignore a beacon locally (from specific location):**
+**Ignore a beacon locally (single tap — while experimenting):**
 1. Find the beacon in a location's fingerprint list
 2. **Tap the beacon** to toggle it ignored/active for that location
-3. The beacon is now ignored in this location but remains active in other locations
+3. The beacon stays in the fingerprint but is excluded from scoring
 
-**Ignore a beacon globally (from all locations):**
+**Remove a beacon from fingerprint (double tap):**
+1. Find the beacon in a location's fingerprint list
+2. **Double-tap the beacon** to permanently remove it from this location's fingerprint
+3. The beacon is gone from the fingerprint — recapture or merge to add it back
+
+**Ignore a beacon globally (long press):**
 1. Find the beacon in the latest scan or any location's fingerprint
 2. **Hold the beacon** to toggle it globally ignored/active
-3. The beacon is now ignored everywhere, won't affect current detection, and will be automatically filtered out from future fingerprint captures and updates
+3. When ignored: removed from all fingerprints and excluded everywhere, filtered out from future captures
+4. When restored: counts when matching; recapture or merge to restore in relevant fingerprints
 
 **Check Status**
 1. Click **Beacon Status** to see ignored/active beacons
@@ -213,26 +219,47 @@ After capturing fingerprints, validate the matching algorithm with this sanity c
 
 ## Common Tasks
 
-### Task 1: Remove an Overlapping Beacon
+### Refining Fingerprints
+
+Review "Fingerprint Details" table for each location and identify overlapping beacons (beacons that appear in multiple locations with similar signal strength). Improve triangulation using these tools:
+
+- **Tap a beacon** — Ignore in this location only (Fingerprint Details only) — block overlapping beacons from affecting this location (e.g., strong beacon in adjacent rooms). This preserves the beacon for other locations that need it. The beacon stays in the fingerprint but is excluded from scoring.
+- **Double-tap a beacon** — Remove permanently from this location's fingerprint — use when a beacon is no longer relevant to this location and you don't want it counted. The beacon is gone from the fingerprint — recapture or merge to add it back.
+- **Hold/long-press a beacon** — Ignore globally across all locations — remove irrelevant/volatile devices (e.g., neighbor's bluetooth party speaker). The beacon is removed from all fingerprints and excluded everywhere, filtered out from future captures.
+
+**Hint:** Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons. Use **tap** to temporarily ignore overlapping beacons while experimenting, **double-tap** to permanently remove beacons that don't belong, and **long-press** to mark truly irrelevant devices as globally ignored. Mark irrelevant devices as globally ignored in the "Latest BT Scan" view, and they'll be filtered out from future captures.
+
+### Task 1: Experiment with Overlapping Beacons (Single-Tap)
 
 1. Identify locations where beacon causes ambiguity (similar RSSI values)
-2. Ignore from affected locations by tapping the beacon
-3. Beacon remains active in other locations where RSSI differs significantly
-4. Affected locations show the beacon as ignored
-5. Beacon never matches the affected locations
+2. **Tap the beacon** to toggle it ignored/active for that location
+3. Beacon remains in the fingerprint but is excluded from scoring
+4. Run "Test Algorithm Sanity" to see if scores improve
+5. If satisfied, you're done — beacon stays in fingerprint for recapture/merging
+6. If unsure, leave it active for now — easy to toggle back
 
-### Task 2: Ignore an Irrelevant Device
+### Task 2: Permanently Remove a Beacon (Double-Tap)
 
-1. Identify beacon that's generally unwanted (neighbor device noise)
-2. Long press the beacon in latest scan or in any location 
-3. All locations show that this MAC is ignored
-4. Beacon never matches any location
+1. Identify beacon that doesn't belong in this location's fingerprint
+2. **Double-tap the beacon** to permanently remove it from this location's fingerprint
+3. Beacon is gone — if you need it back later, recapture the location or merge fingerprints
+4. Useful for removing false captures or stale beacons
 
-### Task 3: Re-enable an Ignored Beacon
+### Task 3: Ignore an Irrelevant Device Globally (Long-Press)
 
-1. Toggle the state by repeating the action (tap or press)
+1. Identify beacon that's generally unwanted (neighbor device noise, volatile)
+2. **Hold/long-press the beacon** in latest scan or in any location's fingerprint
+3. Beacon is removed from all locations' fingerprints and excluded everywhere
+4. Beacon never matches any location and is filtered from future captures
+5. All locations show that this MAC is ignored
 
-### Task 4: Check Current Ignore Status
+### Task 4: Re-enable an Ignored Beacon
+
+1. Toggle the state by repeating the action (tap to toggle local ignore, long-press to toggle global ignore)
+2. Local ignore (`:X` suffix) removes the visual ignored indicator, beacon counts in scoring again
+3. Global ignore removal removes it from global list, but does NOT re-add to fingerprints — recapture or merge to restore
+
+### Task 5: Check Current Ignore Status
 
 1. Check `sensor.bt_ignored_beacons` state (shows count)
 2. Go to `/lovelace/screensaver-settings`
@@ -240,10 +267,10 @@ After capturing fingerprints, validate the matching algorithm with this sanity c
 4. Check "Beacon Coverage Summary" for active/ignored counts per location
 5. Run `script.report_ignored_beacons` for detailed report
 
-### Task 5: Reset All Ignores
+### Task 6: Reset All Ignores
 
 1. Clear global ignored file (delete or empty `.cache/bt_ignored.csv`)
-2. Recapture a location fingerprints (removes `:X` suffixes):
+2. Recapture location fingerprints (removes `:X` suffixes):
 
 ---
 
@@ -545,22 +572,31 @@ for beacon in fingerprint:
 
 | Script | Purpose | Input |
 |--------|---------|-------|
-| `script.bt_beacon_toggle_location_ignored` | Ignore beacon at specific locations | location, mac |
-| `script.bt_beacon_toggle_global_ignored` | Ignore beacon everywhere | mac |
+| `script.bt_beacon_toggle_location_ignored` | Toggle beacon ignored status at specific location (single-tap) | location_index, mac |
+| `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
+| `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
 | `script.report_ignored_beacons` | Check ignore status | (none) |
 | `script.test_algorithm_sanity_check` | Test with ignored beacons | (none) |
 
 ### Service Call Examples
 
-**Ignore beacon from specific location:**
+**Toggle beacon ignored status for specific location (single-tap):**
 ```yaml
 service: script.bt_beacon_toggle_location_ignored
 data:
-  location: "garage"
+  location_index: 0
   mac: "AA:BB:CC:DD:EE:FF"
 ```
 
-**Ignore beacon globally:**
+**Remove beacon from specific location's fingerprint (double-tap):**
+```yaml
+service: script.bt_beacon_remove_from_fingerprint
+data:
+  location_index: 0
+  mac: "AA:BB:CC:DD:EE:FF"
+```
+
+**Toggle beacon ignored status globally (long-press):**
 ```yaml
 service: script.bt_beacon_toggle_global_ignored
 data:

@@ -508,6 +508,88 @@ script:
               message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name | upper }}"
               level: debug
 
+  bt_beacon_remove_from_fingerprint:
+    description: "Remove beacon from fingerprint for a specific location (double-tap action)"
+    fields:
+      location_index:
+        description: "Location index"
+        example: "0"
+      mac:
+        description: "Beacon MAC address to remove"
+        example: "AA:BB:CC:DD:EE:FF"
+    sequence:
+      - variables:
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          location_idx: "{{ location_index | int(-1) }}"
+          beacon_mac: "{{ mac | upper }}"
+          location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
+
+      - if: "{{ location_idx >= 0 }}"
+        then:
+          # Process fingerprints and remove beacon from this location
+          - variables:
+              updated_fingerprints: |
+                {%- set ns = namespace(entries=[]) -%}
+                {%- if current_fingerprints is iterable -%}
+                  {%- for entry in current_fingerprints -%}
+                    {%- if entry and '|' in entry -%}
+                      {%- set parts = entry.split('|') -%}
+                      {%- if parts | length == 2 -%}
+                        {%- set idx = parts[0] | int(-1) -%}
+                        {%- set mac_rssi_str = parts[1] -%}
+                        {%- if idx == location_idx -%}
+                          {# This is our location - remove the beacon (skip it entirely) #}
+                          {%- set ns.pairs = [] -%}
+                          {%- for pair in mac_rssi_str.split(',') -%}
+                            {%- if '=' in pair -%}
+                              {%- set pair_stripped = pair.rstrip(':X') -%}
+                              {%- set kv = pair_stripped.split('=') -%}
+                              {%- if kv | length == 2 -%}
+                                {%- set current_mac = kv[0] | trim | upper -%}
+                                {%- if current_mac != beacon_mac -%}
+                                  {# Keep unchanged #}
+                                  {%- set ns.pairs = ns.pairs + [pair] -%}
+                                {%- endif -%}
+                              {%- else -%}
+                                {%- set ns.pairs = ns.pairs + [pair] -%}
+                              {%- endif -%}
+                            {%- else -%}
+                              {%- set ns.pairs = ns.pairs + [pair] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
+                          {%- set ns.entries = ns.entries + [updated_entry] -%}
+                        {%- else -%}
+                          {# Keep other locations unchanged #}
+                          {%- set ns.entries = ns.entries + [entry] -%}
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- endif -%}
+                    {%- else -%}
+                      {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.entries | join('\n') }}
+
+          # Write updated fingerprints
+          - action: shell_command.bt_fingerprint_database_write
+            data:
+              csv_content: "{{ updated_fingerprints }}"
+
+          # Refresh sensor
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.bt_fingerprint_database_file
+
+          # Log the action
+          - action: system_log.write
+            data:
+              message: "Removed beacon {{ beacon_mac }} from fingerprint for location {{ location_name | upper }}"
+              level: debug
+
   bt_beacon_toggle_global_ignored:
     description: "Toggle beacon in global ignored list (hold/double-tap action)"
     fields:
@@ -549,6 +631,58 @@ script:
         data:
           message: "{{ 'Removed' if is_ignored else 'Added' }} beacon {{ beacon_mac }} to global ignored list"
           level: debug
+
+      # When adding to global ignore, also remove from all fingerprints
+      - if: "{{ not is_ignored }}"
+        then:
+          - variables:
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          - variables:
+              cleaned_fingerprints: |
+                {%- set ns = namespace(entries=[]) -%}
+                {%- if current_fingerprints is iterable -%}
+                  {%- for entry in current_fingerprints -%}
+                    {%- if entry and '|' in entry -%}
+                      {%- set parts = entry.split('|') -%}
+                      {%- if parts | length == 2 -%}
+                        {%- set idx = parts[0] | int(-1) -%}
+                        {%- set mac_rssi_str = parts[1] -%}
+                        {# Process all locations - remove beacon_mac from each #}
+                        {%- set ns.pairs = [] -%}
+                        {%- for pair in mac_rssi_str.split(',') -%}
+                          {%- if '=' in pair -%}
+                            {%- set pair_stripped = pair.rstrip(':X') -%}
+                            {%- set kv = pair_stripped.split('=') -%}
+                            {%- if kv | length == 2 -%}
+                              {%- set current_mac = kv[0] | trim | upper -%}
+                              {%- if current_mac != beacon_mac -%}
+                                {# Keep unchanged #}
+                                {%- set ns.pairs = ns.pairs + [pair] -%}
+                              {%- endif -%}
+                            {%- else -%}
+                              {%- set ns.pairs = ns.pairs + [pair] -%}
+                            {%- endif -%}
+                          {%- else -%}
+                            {%- set ns.pairs = ns.pairs + [pair] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
+                        {%- set ns.entries = ns.entries + [updated_entry] -%}
+                      {%- else -%}
+                        {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- endif -%}
+                    {%- else -%}
+                      {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.entries | join('\n') }}
+          - action: shell_command.bt_fingerprint_database_write
+            data:
+              csv_content: "{{ cleaned_fingerprints }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.bt_fingerprint_database_file
 
   calculate_location_scores:
     description: "Calculate location scores against latest BT scan and update location metrics"
