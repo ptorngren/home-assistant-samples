@@ -13,7 +13,7 @@ DATA_TYPE="$2"
 CONTENT="$3"
 
 # Path configuration
-BASE_DIR="/config/.cache"
+BASE_DIR="/config/packages/screensaver/data"
 
 # Ensure directory exists
 mkdir -p "$BASE_DIR"

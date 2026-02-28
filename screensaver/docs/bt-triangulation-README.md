@@ -65,8 +65,23 @@ In the **Fingerprint Details** section, you can adjust which beacons are used fo
 3. When ignored: removed from all fingerprints and excluded everywhere, filtered out from future captures
 4. When restored: counts when matching; recapture or merge to restore in relevant fingerprints
 
+**View & Manage All Active Beacons:**
+
+Visit the **Review** tab for three dedicated analysis tables:
+
+1. **All Active Beacons** — Shows every beacon present across all locations with a list of locations where each beacon appears. Helpful for identifying overlapping beacons (appearing in multiple locations):
+   - **Tap a beacon** to toggle local ignore in all locations at once (prevents it from affecting scoring everywhere)
+   - **Hold a beacon** to toggle global ignore (removes from all fingerprints and future captures)
+
+2. **Globally Ignored** — Shows all beacons you've marked as globally ignored:
+   - All styled in grey with strikethrough to indicate ignored status
+   - **Hold any beacon** to restore it (remove from global ignore list)
+
+3. **Location Cross-Reference Matrix** — Shows location ambiguity by scoring each location as if scanned from another location's perspective. Use this to identify which locations share too many overlapping beacons.
+
 **Check Status**
 1. Click **Beacon Status** to see ignored/active beacons
+2. Review **Review** tab for All Active Beacons, Globally Ignored, and Location Cross-Reference Matrix
 
 ### Validating Your Setup
 
@@ -200,6 +215,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 - **Management Buttons** — Report beacon status, load or clear stored data
 - **Latest BT Scan** — Bluetooth devices with signal strength (RSSI in dBm) and device names as reported by the most recent report
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
+- **Review Tab** — Three dedicated analysis views: All Active Beacons (shows overlapping beacons across locations), Globally Ignored (centralized table of all globally ignored beacons), and Location Cross-Reference Matrix (visualizes location confusion risks)
 
 ### Algorithm Validation
 
@@ -227,7 +243,7 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 - **Double-tap a beacon** — Remove permanently from this location's fingerprint — use when a beacon is no longer relevant to this location and you don't want it counted. The beacon is gone from the fingerprint — recapture or merge to add it back.
 - **Hold/long-press a beacon** — Ignore globally across all locations — remove irrelevant/volatile devices (e.g., neighbor's bluetooth party speaker). The beacon is removed from all fingerprints and excluded everywhere, filtered out from future captures.
 
-**Hint:** Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons. Use **tap** to temporarily ignore overlapping beacons while experimenting, **double-tap** to permanently remove beacons that don't belong, and **long-press** to mark truly irrelevant devices as globally ignored. Mark irrelevant devices as globally ignored in the "Latest BT Scan" view, and they'll be filtered out from future captures.
+**Hint:** Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons. Use **tap** to temporarily ignore overlapping beacons while experimenting, **double-tap** to permanently remove beacons that don't belong, and **long-press** to mark truly irrelevant devices as globally ignored. Visit the **Review** tab to see all active beacons across locations, manage globally ignored beacons, and check the Location Cross-Reference Matrix to visualize overlapping locations.
 
 ### Task 1: Experiment with Overlapping Beacons (Single-Tap)
 
@@ -255,9 +271,17 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 
 ### Task 4: Re-enable an Ignored Beacon
 
-1. Toggle the state by repeating the action (tap to toggle local ignore, long-press to toggle global ignore)
-2. Local ignore (`:X` suffix) removes the visual ignored indicator, beacon counts in scoring again
-3. Global ignore removal removes it from global list, but does NOT re-add to fingerprints — recapture or merge to restore
+**Local ignore (single-tap toggle):**
+1. Find the beacon in Fingerprint Details
+2. **Tap the beacon** again to toggle it active (removes `:X` suffix)
+3. Beacon now counts in scoring again for that location
+
+**Global ignore (long-press toggle):**
+1. Find the beacon in Latest BT Scan, Fingerprint Details, **Globally Ignored** table (Triangulation tab), or **All Active Beacons** table (Review tab)
+2. **Hold/long-press the beacon** to restore it (remove from global list)
+3. Beacon is removed from the Globally Ignored table
+4. Beacon no longer appears with strikethrough in Latest BT Scan and Fingerprint Details
+5. Note: Restoration removes it from global list but does NOT re-add to fingerprints — recapture or merge to restore in relevant locations. The **All Active Beacons** table (Review tab) provides a centralized view of all active beacons across locations, making it easy to find and restore specific beacons in bulk.
 
 ### Task 5: Check Current Ignore Status
 

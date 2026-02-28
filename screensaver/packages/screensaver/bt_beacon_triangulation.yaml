@@ -261,10 +261,146 @@ template:
             {%- endfor -%}
             {{ ns.active_beacons }}
 
+  # BT Location Confusion Matrix - Stores pre-calculated similarity scores
+  # Updated by script.generate_confusion_matrix when fingerprints/locations/tolerance change
+  - triggers:
+      - trigger: event
+        event_type: bt_matrix_calculation_complete
+    sensor:
+      - name: "BT Location Confusion Matrix"
+        unique_id: bt_location_confusion_matrix
+        icon: mdi:matrix
+        state: "{{ now().isoformat() }}"
+        attributes:
+          matrix: "{{ trigger.event.data.matrix }}"
+
 # ------------------------------------------------------------------
 # SCRIPTS
 # ------------------------------------------------------------------
 script:
+  get_active_fingerprint_beacons:
+    alias: "Get Active Fingerprint Beacons"
+    description: "Extract active beacons from fingerprint string. Filters out locally-ignored (:X marked) beacons."
+    fields:
+      mac_rssi_str:
+        description: "Fingerprint beacon string (e.g. 'AA:BB:CC:DD:EE:FF=-52,11:22:33:44:55:66=-65:X')"
+        example: "AA:BB:CC:DD:EE:FF=-52,11:22:33:44:55:66=-65:X"
+    sequence:
+      - variables:
+          # Filter out :X-marked (locally-ignored) beacons
+          active_beacons_str: |
+            {%- set ns = namespace(pairs=[]) -%}
+            {%- if mac_rssi_str and mac_rssi_str | length > 0 -%}
+              {%- for pair in (mac_rssi_str | string).split(',') -%}
+                {%- if '=' in pair and not pair.endswith(':X') -%}
+                  {%- set ns.pairs = ns.pairs + [pair.rstrip(':X')] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {{ ns.pairs | join(',') }}
+          result:
+            fingerprint: "{{ active_beacons_str }}"
+      - stop: "Active beacons extracted"
+        response_variable: result
+
+  generate_confusion_matrix:
+    alias: "Generate BT Confusion Matrix"
+    description: "Calculate location confusion scores by testing each fingerprint against all others"
+    mode: restart
+    sequence:
+      - variables:
+          fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          weak_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-75) }}"
+
+      # Build map: location_name → fingerprint_string (MAC=RSSI,MAC=RSSI,...)
+      - variables:
+          fp_map: >
+            {%- set ns = namespace(data={}) -%}
+            {%- for row in fingerprints_raw -%}
+              {%- set parts = row.split('|') -%}
+              {%- if parts | count == 2 -%}
+                {%- set loc_idx = parts[0] | trim | int(-1) -%}
+                {%- if loc_idx >= 0 and loc_idx < locations_list | length -%}
+                  {%- set loc_name = locations_list[loc_idx] -%}
+                  {%- set ns.data = ns.data | combine({loc_name: parts[1]}) -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.data }}
+
+      # Accumulator for matrix results
+      - variables:
+          matrix_rows: []
+
+      # Outer loop: For each location, test its fingerprint against all locations
+      - repeat:
+          for_each: "{{ fp_map.keys() | sort }}"
+          sequence:
+            - variables:
+                row_location: "{{ repeat.item }}"
+                fp_mac_rssi_str: "{{ fp_map[row_location] }}"
+                row_scores: {}
+
+            # Extract active beacons (filter out :X-marked ones)
+            - action: script.get_active_fingerprint_beacons
+              data:
+                mac_rssi_str: "{{ fp_mac_rssi_str }}"
+              response_variable: active_fp_str
+
+            # Convert to test_devices array
+            - variables:
+                test_devices: |
+                  {%- set ns = namespace(devices=[]) -%}
+                  {%- if active_fp_str.fingerprint and active_fp_str.fingerprint | length > 0 -%}
+                    {%- for pair in active_fp_str.fingerprint.split(',') -%}
+                      {%- if '=' in pair -%}
+                        {%- set kv = pair.split('=') -%}
+                        {%- if kv | length == 2 -%}
+                          {%- set mac = kv[0] | trim | upper -%}
+                          {%- set rssi = kv[1] | trim | int(0) -%}
+                          {%- set ns.devices = ns.devices + [{"mac": mac, "name": "fingerprint_device", "rssi": rssi}] -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {{ ns.devices }}
+
+            # Inner loop: Call detection script for each column (reference location)
+            - repeat:
+                for_each: "{{ fp_map.keys() | sort }}"
+                sequence:
+                  - variables:
+                      col_location: "{{ repeat.item }}"
+
+                  # Call detection script with simulated scan
+                  - action: script.detect_location_from_signals
+                    data:
+                      devices: "{{ test_devices }}"
+                      persist_scores: false
+                      scan_context: "Matrix: {{ row_location }} vs {{ col_location }}"
+                    response_variable: detection_result
+
+                  # Extract score for this column location
+                  - variables:
+                      col_score: "{{ detection_result.scores_detail.get(col_location, {}).get('total_score', 0.0) | float }}"
+                      row_scores: "{{ row_scores | combine({col_location: (col_score | round(2))}) }}"
+
+            # Add row to matrix
+            - variables:
+                matrix_rows: "{{ matrix_rows + [{'src': row_location, 'scores': row_scores}] }}"
+
+      # Fire event with complete matrix
+      - event: bt_matrix_calculation_complete
+        event_data:
+          matrix: "{{ matrix_rows | to_json }}"
+
+      # Log completion
+      - action: system_log.write
+        data:
+          message: "BT Confusion Matrix calculated: {{ matrix_rows | length }} locations"
+          level: info
+
   detect_charger_location:
     description: "Analyze BT signals from Tasker scan and detect phone charger location"
     fields:
@@ -333,19 +469,22 @@ script:
                 fp_index: "{{ fp_parts[0] | int(-1) if fp_parts | length == 2 else -1 }}"
                 fp_mac_rssi_str: "{{ fp_parts[1] | string if fp_parts | length == 2 else '' }}"
 
-            # Build test_devices array (separate block to ensure variables above are available)
+            # Extract active beacons (filter out :X-marked ones)
+            - action: script.get_active_fingerprint_beacons
+              data:
+                mac_rssi_str: "{{ fp_mac_rssi_str }}"
+              response_variable: active_fp_str
+
+            # Build test_devices array from active beacons
             - variables:
                 test_devices: |
                   {%- set ns = namespace(devices=[]) -%}
-                  {# Ensure we act on a string to avoid Wrapper issues #}
-                  {%- set raw_str = fp_mac_rssi_str | string -%}
-                  {%- if raw_str | length > 0 -%}
-                    {%- for pair in raw_str.split(',') -%}
-                      {%- set pair_str = pair | string -%}
-                      {%- if '=' in pair_str -%}
-                        {%- set kv = pair_str.split('=') -%}
+                  {%- if active_fp_str.fingerprint and active_fp_str.fingerprint | length > 0 -%}
+                    {%- for pair in active_fp_str.fingerprint.split(',') -%}
+                      {%- if '=' in pair -%}
+                        {%- set kv = pair.split('=') -%}
                         {%- if kv | length == 2 -%}
-                          {%- set mac = kv[0] | trim -%}
+                          {%- set mac = kv[0] | trim | upper -%}
                           {%- set rssi = kv[1] | trim | int(0) -%}
                           {%- set ns.devices = ns.devices + [{"mac": mac, "name": "test_device", "rssi": rssi}] -%}
                         {%- endif -%}
@@ -508,6 +647,92 @@ script:
               message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name | upper }}"
               level: debug
 
+  bt_beacon_toggle_all_locations_ignored:
+    description: "Toggle beacon locally ignored across ALL locations (tap action in all-beacons table)"
+    fields:
+      mac:
+        description: "Beacon MAC address"
+        example: "AA:BB:CC:DD:EE:FF"
+    sequence:
+      - variables:
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          beacon_mac: "{{ mac | upper }}"
+
+      - variables:
+          updated_fingerprints: |
+            {%- set ns = namespace(entries=[], pairs=[], has_any_active=false, has_any_present=false) -%}
+            {# Phase A: determine toggle direction #}
+            {%- if current_fingerprints is iterable -%}
+              {%- for entry in current_fingerprints -%}
+                {%- if entry and '|' in entry -%}
+                  {%- set parts = entry.split('|') -%}
+                  {%- if parts | length == 2 -%}
+                    {%- for pair in parts[1].split(',') -%}
+                      {%- if '=' in pair -%}
+                        {%- set kv = pair.rstrip(':X').split('=') -%}
+                        {%- if kv | length == 2 and kv[0] | trim | upper == beacon_mac -%}
+                          {%- set ns.has_any_present = true -%}
+                          {%- if not pair.endswith(':X') -%}
+                            {%- set ns.has_any_active = true -%}
+                          {%- endif -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {# Phase B: apply transformation #}
+            {%- if current_fingerprints is iterable -%}
+              {%- for entry in current_fingerprints -%}
+                {%- if entry and '|' in entry -%}
+                  {%- set parts = entry.split('|') -%}
+                  {%- if parts | length == 2 -%}
+                    {%- set idx = parts[0] | int(-1) -%}
+                    {%- set ns.pairs = [] -%}
+                    {%- for pair in parts[1].split(',') -%}
+                      {%- if '=' in pair -%}
+                        {%- set pair_stripped = pair.rstrip(':X') -%}
+                        {%- set kv = pair_stripped.split('=') -%}
+                        {%- if kv | length == 2 and kv[0] | trim | upper == beacon_mac -%}
+                          {%- if ns.has_any_active -%}
+                            {# Add :X if not already present #}
+                            {%- set ns.pairs = ns.pairs + ([pair_stripped ~ ':X'] if not pair.endswith(':X') else [pair]) -%}
+                          {%- else -%}
+                            {# Remove :X #}
+                            {%- set ns.pairs = ns.pairs + [pair_stripped] -%}
+                          {%- endif -%}
+                        {%- else -%}
+                          {%- set ns.pairs = ns.pairs + [pair] -%}
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- set ns.pairs = ns.pairs + [pair] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set ns.entries = ns.entries + [idx | string ~ '|' ~ ns.pairs | join(',')] -%}
+                  {%- else -%}
+                    {%- set ns.entries = ns.entries + [entry] -%}
+                  {%- endif -%}
+                {%- else -%}
+                  {%- set ns.entries = ns.entries + [entry] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {{ ns.entries | join('\n') }}
+
+      - action: shell_command.bt_fingerprint_database_write
+        data:
+          csv_content: "{{ updated_fingerprints }}"
+
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_fingerprint_database_file
+
+      - action: system_log.write
+        data:
+          message: "Toggled beacon {{ beacon_mac }} locally ignored across ALL locations"
+          level: debug
+
   bt_beacon_remove_from_fingerprint:
     description: "Remove beacon from fingerprint for a specific location (double-tap action)"
     fields:
@@ -589,6 +814,71 @@ script:
             data:
               message: "Removed beacon {{ beacon_mac }} from fingerprint for location {{ location_name | upper }}"
               level: debug
+
+  bt_beacon_remove_from_all_fingerprints:
+    description: "Remove beacon from ALL location fingerprints (double-tap action in all-beacons table)"
+    fields:
+      mac:
+        description: "Beacon MAC address to remove"
+        example: "AA:BB:CC:DD:EE:FF"
+    sequence:
+      - variables:
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          beacon_mac: "{{ mac | upper }}"
+
+      - variables:
+          updated_fingerprints: |
+            {%- set ns = namespace(entries=[]) -%}
+            {%- if current_fingerprints is iterable -%}
+              {%- for entry in current_fingerprints -%}
+                {%- if entry and '|' in entry -%}
+                  {%- set parts = entry.split('|') -%}
+                  {%- if parts | length == 2 -%}
+                    {%- set idx = parts[0] | int(-1) -%}
+                    {%- set mac_rssi_str = parts[1] -%}
+                    {# Process all locations - remove beacon from each #}
+                    {%- set ns.pairs = [] -%}
+                    {%- for pair in mac_rssi_str.split(',') -%}
+                      {%- if '=' in pair -%}
+                        {%- set pair_stripped = pair.rstrip(':X') -%}
+                        {%- set kv = pair_stripped.split('=') -%}
+                        {%- if kv | length == 2 -%}
+                          {%- set current_mac = kv[0] | trim | upper -%}
+                          {%- if current_mac != beacon_mac -%}
+                            {# Keep unchanged #}
+                            {%- set ns.pairs = ns.pairs + [pair] -%}
+                          {%- endif -%}
+                        {%- else -%}
+                          {%- set ns.pairs = ns.pairs + [pair] -%}
+                        {%- endif -%}
+                      {%- else -%}
+                        {%- set ns.pairs = ns.pairs + [pair] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
+                    {%- set ns.entries = ns.entries + [updated_entry] -%}
+                  {%- else -%}
+                    {%- set ns.entries = ns.entries + [entry] -%}
+                  {%- endif -%}
+                {%- else -%}
+                  {%- set ns.entries = ns.entries + [entry] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {{ ns.entries | join('\n') }}
+
+      - action: shell_command.bt_fingerprint_database_write
+        data:
+          csv_content: "{{ updated_fingerprints }}"
+
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_fingerprint_database_file
+
+      - action: system_log.write
+        data:
+          message: "Removed beacon {{ beacon_mac }} from all location fingerprints"
+          level: debug
 
   bt_beacon_toggle_global_ignored:
     description: "Toggle beacon in global ignored list (hold/double-tap action)"
@@ -1092,6 +1382,21 @@ script:
           entity_id: sensor.bt_fingerprint_database_file
 
 automation:
+  - alias: 'BT Calibration - Update Confusion Matrix'
+    id: bt_confusion_matrix_update
+    description: "Recalculate confusion matrix when fingerprints, locations, or thresholds change"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.bt_fingerprint_database_file
+          - sensor.bt_location_array
+          - input_number.bt_location_detection_rssi_tolerance
+          - input_number.bt_location_detection_weak_signal_threshold
+    action:
+      - delay: "00:00:05"
+      - action: script.generate_confusion_matrix
+    mode: restart
+
   - alias: 'BT Calibration - Capture Fingerprint Button'
     id: bt_calibration_capture_fingerprint
     description: "Capture BT fingerprint when button pressed in calibration UI"

@@ -163,24 +163,11 @@ script:
           confidence: "{{ best_location_info.confidence | round(2) }}"
           best_score: "{{ best_location_info.score }}"
 
-      # Log algorithm execution for debugging
+      # Log algorithm results
       - action: system_log.write
         data:
-          message: |
-            SYMMETRIC RATIO LOCATION MATCHING - {{ scan_context }}
-            Formula: score = (matched/fingerprint) × (matched/scan_valid)
-            Scan valid count (beacons in at least one fingerprint): {{ scan_valid_count }}
-            RSSI tolerance: ±{{ rssi_tolerance }} dBm
-
-            All locations evaluated (0 dBm and ignored beacons filtered):
-            {% for location, metrics in location_scores | dictsort %}
-            {{ location }}: matched={{ metrics.matched }}/{{ metrics.matched + metrics.missing }}, score={{ metrics.total_score }}
-            {% endfor %}
-
-            Best Match: {{ detected_location | upper }}
-            Score: {{ best_score | round(3) }}
-            Confidence: {{ "%.1f" | format(confidence * 100) }}%
-          level: info
+          message: 'BT Location: {{ detected_location | upper }} (score: {{ best_score | round(3) }}, confidence: {{ "%.0f" | format(confidence * 100) }}%) — {{ scan_context }}'
+          level: debug
 
       # Calculate beacon counts for display
       - variables:
