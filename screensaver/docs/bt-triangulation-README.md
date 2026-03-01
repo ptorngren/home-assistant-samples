@@ -1,6 +1,67 @@
 
 # Bluetooth Triangulation: Beacon Curation & Location Matching
 
+## Setup & Installation
+
+### Prerequisites
+
+This guide assumes you have already:
+- Installed Home Assistant
+- Set up the main screensaver dashboard and packages (see `screensaver-README.md`)
+- Installed required HACS components: `button-card`, `card-mod`, `browser-mod`
+
+### Installation Steps
+
+#### 1. Register the BT Location Calibration Dashboard
+
+Add this to your `configuration.yaml` (if not already present):
+
+```yaml
+lovelace:
+  dashboards:
+    dashboard-bt-location-calibration:
+      mode: yaml
+      filename: dashboards/bt_location_calibration.yaml
+      title: BT Location Calibration
+      icon: mdi:bluetooth
+      show_in_sidebar: true
+```
+
+- Accessible at: `https://your-ha-url/dashboard-bt-location-calibration`
+- This is the interface for capturing fingerprints, managing beacons, and tuning the algorithm
+
+#### 2. Copy Dashboard & Package Files
+
+- Copy `dashboards/bt_location_calibration.yaml` to your `dashboards/` directory
+- Copy `packages/screensaver/bt_beacon_triangulation.yaml` to your `packages/screensaver/` directory
+- Copy `packages/screensaver/bt_location_symmetric_ratio.yaml` to your `packages/screensaver/` directory
+
+#### 3. Verify Packages Are Loaded
+
+Ensure your `configuration.yaml` includes the packages directive:
+
+```yaml
+homeassistant:
+  packages:
+    !include_dir_named packages/
+```
+
+#### 4. Reload Packages
+
+In Home Assistant:
+1. Developer Tools → YAML → Packages (reload)
+2. Or restart Home Assistant
+
+#### 5. Initial Configuration
+
+1. Open the **BT Location Calibration** dashboard
+2. Enter your location names in **Location Names** (e.g., "kitchen, garage, bedroom")
+3. Proceed to "How to Use" section below for fingerprint capture and beacon curation
+
+---
+
+## How It Works
+
 BT location detection uses beacon signal strength (RSSI) to identify which room you're in. When you capture a location's fingerprint, you record which beacons are present and their signal strengths. However, **not all beacons are reliable**:
 
 **Three problems degrade location detection:**
@@ -30,6 +91,50 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 
 ---
 
+## Understanding 0 dBm "Ghost" Signals
+
+When a sensor reports **0 dBm**, it's saying: *"I can detect this device's presence, but my hardware can't calculate the distance because the signal is too distorted or unstable."*
+
+In other words, **presence is confirmed, but distance is unknown.**
+
+### The Tradeoff
+
+**Advantage of including 0 dBm signals:**
+- A beacon with 0 dBm still counts as a "match," keeping your location score high
+- Prevents your score from dropping to zero when a beacon flickers into a "0 dBm glitch state"
+- Acts as a presence flag: "This beacon exists in range, even if we can't measure strength"
+
+**Disadvantage:**
+- Bluetooth signals travel through walls
+- A 0 dBm signal from the Kitchen might be picked up by the Bedroom sensor
+- Treats weak/distorted signal the same as accurately measured ones, risking location ambiguity
+
+### How to Handle 0 dBm in Your Setup
+
+1. **During Fingerprint Capture:**
+   - If you capture a 0 dBm reading, discard that packet and wait for a real RSSI value (e.g., -70, -85 dBm)
+   - Your master fingerprint should contain actual measured signal strengths, not glitched zeros
+
+2. **During Runtime (Location Detection):**
+   - All captured signals (including 0 dBm) are always visible in the latest scan
+   - Whether 0 dBm signals contribute to location matching depends on the **Ignore Ghost Signals** toggle:
+     - **ON:** 0 dBm signals are ignored in scoring/matching; presence is captured but not used for triangulation
+     - **OFF:** 0 dBm signals are treated like any other signal and contribute to location matching
+
+3. **The Algorithm's Special Rule:**
+   - When a 0 dBm signal is included (toggle OFF), treat it as a "Logical Match" but a "Distance Outlier"
+   - Count it in matched_beacons: `+1` (presence confirmed)
+   - Skip RSSI tolerance checking: if `scan_rssi == 0`, automatically count as matched
+   - This way: `matched_beacons` stays high → location score stays stable
+
+### Configuration
+
+Use the **Ignore Ghost Signals (0 dBm)** toggle in Algorithm Settings:
+- **ON:** 0 dBm signals are captured and visible in the latest scan but ignored in scoring/matching (treated as weak signals)
+- **OFF:** 0 dBm signals are captured, visible, and included in scoring/matching like any other valid signal
+
+---
+
 ## How to Use
 
 ### Setting Up Locations
@@ -37,6 +142,9 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 1. Open the **BT Location Calibration** dashboard
 2. Enter your room names in **Location Names** (e.g., kitchen, garage, bedroom)
 3. Adjust **BT Weak Signal Threshold** if needed (default -95 dBm; beacons below this are automatically filtered out during capture and updates)
+4. Configure **Ignore Ghost Signals (0 dBm)** if needed:
+   - **ON:** Ignores RSSI=0 beacons in scoring/matching (captured and visible but not used for triangulation)
+   - **OFF:** Includes RSSI=0 beacons in scoring/matching like any other signal
 
 ### Capturing Fingerprints
 
@@ -67,17 +175,7 @@ In the **Fingerprint Details** section, you can adjust which beacons are used fo
 
 **View & Manage All Active Beacons:**
 
-Visit the **Review** tab for three dedicated analysis tables:
-
-1. **All Active Beacons** — Shows every beacon present across all locations with a list of locations where each beacon appears. Helpful for identifying overlapping beacons (appearing in multiple locations):
-   - **Tap a beacon** to toggle local ignore in all locations at once (prevents it from affecting scoring everywhere)
-   - **Hold a beacon** to toggle global ignore (removes from all fingerprints and future captures)
-
-2. **Globally Ignored** — Shows all beacons you've marked as globally ignored:
-   - All styled in grey with strikethrough to indicate ignored status
-   - **Hold any beacon** to restore it (remove from global ignore list)
-
-3. **Location Cross-Reference Matrix** — Shows location ambiguity by scoring each location as if scanned from another location's perspective. Use this to identify which locations share too many overlapping beacons.
+Visit the **Review** tab to analyze beacon usage and identify location ambiguity. See the Review section in Visual Setup Guide for details.
 
 **Check Status**
 1. Click **Beacon Status** to see ignored/active beacons
@@ -207,7 +305,7 @@ Result: Larger margin (0.86 vs 0.75) = robust detection ✅
 
 This is the main interface for setting up and managing BT location detection. You configure locations, capture fingerprints, and monitor beacon signals here.
 
-![BT Location Calibration Dashboard](Triangulation.jpg)
+![BT Location Calibration Dashboard](triangulation.jpg)
 
 **What you see:**
 - **Location Names** — Editable list of rooms where you want location detection (kitchen, garage, office, etc.)
@@ -217,19 +315,37 @@ This is the main interface for setting up and managing BT location detection. Yo
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
 - **Review Tab** — Three dedicated analysis views: All Active Beacons (shows overlapping beacons across locations), Globally Ignored (centralized table of all globally ignored beacons), and Location Cross-Reference Matrix (visualizes location confusion risks)
 
-### Algorithm Validation
+### Tuning
 
-After capturing fingerprints, validate the matching algorithm with this sanity check. It shows how well each location can be distinguished based on beacon signals.
+**What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
 
-![Algorithm Tuning & Validation](algorithm_tuning.jpg)
+![Algorithm Tuning & Validation](tuning.jpg)
+
+**How to use:**
+
+1. **Test Algorithm Sanity** — Validates algorithm scoring against your current fingerprints to see how each location scores for the latest scan
+2. **Review Algorithm Results Table** — Shows how each location matches:
+   - **Matched** — How many beacons from the fingerprint were detected in the scan (format: matched/fingerprint [known_in_scan])
+   - **Score** — Symmetric ratio result: (matched/fingerprint) × (matched/scan_valid) (higher = better match)
+3. **Adjust algorithm parameters** in Algorithm Settings:
+   - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
+   - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
+   - **Ignore Ghost Signals (0 dBm)** — Toggle to exclude RSSI=0 "ghost" beacons (devices with dynamic MACs or no valid signal). **ON by default** preserves data quality; toggle **OFF** temporarily for diagnostic purposes (e.g., investigating unexpected devices in your environment)
+
+**Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction). If scores are similar across locations, refine your fingerprints by managing overlapping beacons (see Refining Fingerprints section).
+
+### Review
+
+**What it does:** Provides three integrated analysis views for understanding beacon distribution across locations and diagnosing location overlap risks.
+
+![Review Analysis Views](review.jpg)
 
 **What you see:**
-- **Test Algorithm Sanity** — Validates algorithm scoring against your current fingerprints
-- **Algorithm Results Table** — Shows how each location scores for the latest scan:
-  - **Matched** — How many beacons from the fingerprint were detected in the scan (format: matched/fingerprint [known_in_scan])
-  - **Score** — Symmetric ratio result: (matched/fingerprint) × (matched/scan_valid) (higher = better match)
+- **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
+- **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; helps identify overlapping beacons
+- **Globally Ignored Beacons** — Centralized view of all beacons marked as globally ignored with quick toggle to restore them
 
-**Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction).
+**Use this to:** Identify overlapping beacons (appearing in multiple locations with similar RSSI), detect location pairs that might confuse the algorithm, and manage global beacon ignores.
 
 ---
 

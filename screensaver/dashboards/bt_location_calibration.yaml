@@ -1,0 +1,1148 @@
+# screensaver_settings.yaml
+# BT Location Calibration and Screensaver Settings Dashboard
+# DEPENDENCIES: button-card (via HACS)
+#
+# Access at: /lovelace/screensaver-settings
+# Used for: BT fingerprint collection, advanced configuration
+
+title: Screensaver Settings
+
+# Style constants (YAML anchors)
+_colors:
+  action_destructive: &color_action_destructive "rgba(239, 54, 54, 0.2) !important"
+  action_load: &color_action_load "rgba(54, 150, 239, 0.2) !important"
+  success: &color_success "rgba(76, 175, 80, 0.2) !important"
+  warning: &color_warning "rgba(255, 152, 0, 0.2) !important"
+  action_test: &color_action_test "rgba(100, 200, 100, 0.2) !important"
+  beacon_in_scan: &color_beacon_in_scan rgba(54, 150, 239, 0.15)
+  beacon_rssi_match: &color_beacon_rssi_match rgba(76, 175, 80, 0.15)
+  location_header_bg: &color_location_header_bg rgba(0, 0, 0, 0.1)
+  # Matrix template colors (referenced in button-card JavaScript)
+  matrix_header_bg: &color_matrix_header_bg rgba(0, 0, 0, 0.1)
+  matrix_success: &color_matrix_success rgba(76, 175, 80, 0.2)
+  matrix_warning: &color_matrix_warning rgba(255, 152, 0, 0.2)
+  matrix_destructive: &color_matrix_destructive rgba(239, 54, 54, 0.2)
+
+# Beacon state styling: Applied inline in template conditionals (see beacon_list_template filter)
+# Anchors cannot be used here because styling must be conditionally combined with other states (weak_signal, etc.)
+# in Jinja2 ternary expressions. The inline approach is more readable for conditional style chains.
+
+# -------------------------------------------------------------------------------------
+# DECLUTTERING TEMPLATES (for reusable card definitions with YAML anchor injection)
+# -------------------------------------------------------------------------------------
+
+decluttering_templates:
+  beacon_list_template:
+    card:
+      type: custom:auto-entities
+      card:
+        type: entities
+        card_mod:
+          style: |
+            .card-content { padding: 0 !important; }
+            ha-card {
+              border: none !important;
+              box-shadow: none !important;
+              background: none !important;
+            }
+      filter:
+        template: |
+          {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
+          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
+          {%- set rssi_match_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int -%}
+          {%- set prev_location = '' -%}
+          {# Color scheme (injected via decluttering variables from _colors anchors) #}
+          {%- set color_beacon_rssi_match = "[[color_rssi_match]]" -%}
+          {%- set color_beacon_in_scan = "[[color_in_scan]]" -%}
+          {%- set color_location_header_bg = "[[location_header_bg]]" -%}
+          {# Get latest scan data for matching against fingerprints #}
+          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
+          {%- set ns_scan = namespace(scan_map={}) -%}
+          {%- for scan_dev in scan_devices -%}
+            {%- set ns_scan.scan_map = ns_scan.scan_map | combine({scan_dev.mac | upper: scan_dev.rssi}) -%}
+          {%- endfor -%}
+          {# Get device names mapping for displaying friendly names alongside MACs #}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
+          {# Build active scan map: beacons above threshold and not globally ignored #}
+          {%- set ns_active = namespace(map={}) -%}
+          {%- for dev in scan_devices -%}
+            {%- set mac = dev.mac | upper -%}
+            {%- set rssi = dev.rssi | int(0) -%}
+            {%- if rssi != 0 and rssi >= weak_threshold and mac not in global_list -%}
+              {%- set ns_active.map = ns_active.map | combine({mac: rssi}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set active_scan_map = ns_active.map -%}
+          {%- set active_scan_count = active_scan_map | length -%}
+          {# Load location scores from event-triggered sensor (empty dict if not yet triggered) #}
+          {%- set scores_raw = state_attr('sensor.bt_location_scores', 'location_scores') or {} -%}
+          {%- set scores = scores_raw | from_json if scores_raw is string else scores_raw -%}
+
+          {# Get known beacon count for context #}
+          {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
+          {# Extract fingerprints into named variable #}
+          {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+          {# Build MAC → active-location-count map for overlap highlighting #}
+          {%- set ns_overlap = namespace(mac_loc_count={}) -%}
+          {%- for row in fingerprints_raw -%}
+            {%- set parts = row.split('|') -%}
+            {%- if parts | count == 2 -%}
+              {%- for device in parts[1].split(',') -%}
+                {%- if '=' in device -%}
+                  {%- set pair_stripped = device.rstrip(':X') -%}
+                  {%- set kv = pair_stripped.split('=') -%}
+                  {%- if kv | count == 2 -%}
+                    {%- set mac = kv[0] | trim | upper -%}
+                    {%- set rssi_val = kv[1] | trim | int(0) -%}
+                    {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
+                      {%- set cur = ns_overlap.mac_loc_count.get(mac, 0) -%}
+                      {%- set ns_overlap.mac_loc_count = ns_overlap.mac_loc_count | combine({mac: cur + 1}) -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {# Loop over beacons #}
+          {%- for row in fingerprints_raw -%}
+            {%- set parts = row.split('|') -%}
+            {%- if parts | count == 2 -%}
+              {%- set location_index = parts[0] | trim | int(-1) -%}
+              {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else (location_index | string) -%}
+              {%- set devices = parts[1].split(',') -%}
+              {%- if location_name != prev_location -%}
+                {%- set loc_metrics = scores[location_name] if location_name in scores else {} -%}
+                {%- set loc_score = loc_metrics.total_score | default(-1) | float -%}
+                {%- set confidence_pct = ((loc_score * 100) | round(0) | int) if loc_score >= 0 else -1 -%}
+                {{
+                  {
+                    "type": "custom:button-card",
+                    "layout": "vertical",
+                    "show_icon": false,
+                    "show_name": true,
+                    "name": location_name | upper ~ " " ~ loc_metrics.matched ~ "/" ~ (loc_metrics.matched + loc_metrics.missing) ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
+                    "tap_action": {
+                      "action": "call-service",
+                      "service": "script.merge_bt_fingerprint",
+                      "data": {
+                        "location_index": location_index
+                      }
+                    },
+                    "hold_action": {
+                      "action": "call-service",
+                      "service": "script.capture_bt_fingerprint",
+                      "data": {
+                        "location_index": location_index
+                      }
+                    },
+                    "styles": {
+                      "card": [
+                        {"height": "24px"},
+                        {"padding": "8px"},
+                        {"border": "none"},
+                        {"box-shadow": "none"},
+                        {"background": color_location_header_bg},
+                        {"margin-top": "8px"},
+                        {"align-items": "start"}
+                      ],
+                      "name": [
+                        {"font-size": "12px"},
+                        {"font-weight": "bold"},
+                        {"color": "var(--primary-text-color)"},
+                        {"justify-self": "start"}
+                      ]
+                    }
+                  }
+                }},
+                {%- set prev_location = location_name -%}
+              {%- endif -%}
+              {# Build beacon list with match status for sorting #}
+              {%- set ns_beacons = namespace(list=[]) -%}
+              {%- for device in devices -%}
+                {%- set device_stripped = device.rstrip(':X') -%}
+                {%- set dev_parts = device_stripped.split('=') -%}
+                {%- if dev_parts | count == 2 -%}
+                  {%- set mac = dev_parts[0] | trim | upper -%}
+                  {%- set rssi = dev_parts[1] | trim | int(-100) -%}
+                  {%- set is_locally_ignored = device.endswith(':X') -%}
+                  {%- set is_globally_ignored = mac in global_list -%}
+                  {%- set is_weak_signal = rssi == 0 or rssi < weak_threshold -%}
+                  {%- set is_in_scan = mac in ns_scan.scan_map -%}
+                  {%- set scan_rssi = ns_scan.scan_map.get(mac, 0) if is_in_scan else 0 -%}
+                  {%- set rssi_diff = (scan_rssi - rssi) | abs if is_in_scan else 999 -%}
+                  {%- set is_rssi_match = is_in_scan and rssi_diff <= rssi_match_tolerance -%}
+                  {# Determine match status: match=0, weak_match=1, no_match=2 #}
+                  {%- if is_rssi_match -%}
+                    {%- set match_status = 0 -%}
+                  {%- elif is_in_scan -%}
+                    {%- set match_status = 1 -%}
+                  {%- else -%}
+                    {%- set match_status = 2 -%}
+                  {%- endif -%}
+                  {# For sorting: ghost (0 dBm) sorts last within group, weak signals by RSSI #}
+                  {%- set sort_rssi = -999 if rssi == 0 else rssi -%}
+                  {%- set ns_beacons.list = ns_beacons.list + [{'device': device, 'rssi': rssi, 'sort_rssi': sort_rssi, 'match_status': match_status}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {# Sort by match_status groups, then by sort_rssi within each group (ghosts last) #}
+              {%- set match = ns_beacons.list | selectattr('match_status', 'equalto', 0) | sort(attribute='sort_rssi', reverse=true) | list -%}
+              {%- set weak_match = ns_beacons.list | selectattr('match_status', 'equalto', 1) | sort(attribute='sort_rssi', reverse=true) | list -%}
+              {%- set no_match = ns_beacons.list | selectattr('match_status', 'equalto', 2) | sort(attribute='sort_rssi', reverse=true) | list -%}
+              {%- set devices_sorted = match + weak_match + no_match -%}
+              {%- for beacon_obj in devices_sorted -%}
+          
+              {%- set device = beacon_obj.device -%}
+                {%- set device_stripped = device.rstrip(':X') -%}
+                {%- set dev_parts = device_stripped.split('=') -%}
+                {%- if dev_parts | count == 2 -%}
+                  {%- set mac = dev_parts[0] | trim | upper -%}
+                  {%- set rssi = dev_parts[1] | trim -%}
+                  {%- set rssi_value = rssi | int(-100) -%}
+                  {%- set is_locally_ignored = device.endswith(':X') -%}
+                  {%- set is_globally_ignored = mac in global_list -%}
+                  {%- set is_weak_signal = rssi_value == 0 or rssi_value < weak_threshold -%}
+
+                  {# Check if beacon is in latest scan and if RSSI matches #}
+                  {%- set is_in_scan = mac in ns_scan.scan_map -%}
+                  {%- set scan_rssi = ns_scan.scan_map.get(mac, 0) if is_in_scan else 0 -%}
+                  {%- set rssi_diff = (scan_rssi - rssi_value) | abs if is_in_scan else 999 -%}
+                  {%- set is_rssi_match = is_in_scan and rssi_diff <= rssi_match_tolerance -%}
+                  {%- set is_overlapping = ns_overlap.mac_loc_count.get(mac, 0) > 1 -%}
+                  {{
+                    {
+                      "type": "custom:button-card",
+                      "show_icon": false,
+                      "show_name": false,
+                      "styles": {
+                        "card": [
+                          {"height": "20px"},
+                          {"padding": "0px 8px"},
+                          {"border": "none"},
+                          {"box-shadow": "none"},
+                          {"background": color_beacon_rssi_match if is_rssi_match else (color_beacon_in_scan if is_in_scan else "none")}
+                        ],
+                        "grid": [
+                          {"grid-template-columns": "120px 90px 1fr"},
+                          {"grid-template-areas": "'mac rssi name'"}
+                        ],
+                        "custom_fields": {
+                          "mac": [
+                            {"font-size": "12px"},
+                            {"justify-self": "start"},
+                            {"align-self": "center"},
+                            {"font-family": "monospace"}
+                          ] + (
+                            [{"font-weight": "bold"}] if is_overlapping else []
+                          ) + (
+                            [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                          ) + (
+                            [{"text-decoration": "line-through"}] if is_locally_ignored else []
+                          ) + (
+                            [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                          ),
+                          "rssi": [
+                            {"font-size": "12px"},
+                            {"justify-self": "start"},
+                            {"align-self": "center"},
+                            {"padding-left": "6px"},
+                            {"font-family": "monospace"}
+                          ] + (
+                            [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                          ) + (
+                            [{"text-decoration": "line-through"}] if is_locally_ignored else []
+                          ) + (
+                            [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                          ),
+                          "name": [
+                            {"font-size": "11px"},
+                            {"justify-self": "start"},
+                            {"align-self": "center"},
+                            {"padding": "0 6px"},
+                            {"overflow": "hidden"},
+                            {"text-overflow": "ellipsis"}
+                          ] + (
+                            [{"font-weight": "bold"}] if is_overlapping else []
+                          ) + (
+                            [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                          ) + (
+                            [{"text-decoration": "line-through"}] if is_locally_ignored else []
+                          ) + (
+                            [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                          )
+                        }
+                      },
+                      "custom_fields": {
+                        "mac": mac,
+                        "rssi": rssi ~ " dBm",
+                        "name": device_names[mac] | default('?')
+                      },
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "script.bt_beacon_toggle_location_ignored",
+                        "data": {
+                          "location_index": location_index,
+                          "mac": mac
+                        }
+                      },
+                      "hold_action": {
+                        "action": "call-service",
+                        "service": "script.bt_beacon_toggle_global_ignored",
+                        "data": {
+                          "mac": mac
+                        }
+                      },
+                      "double_tap_action": {
+                        "action": "call-service",
+                        "service": "script.bt_beacon_remove_from_fingerprint",
+                        "data": {
+                          "location_index": location_index,
+                          "mac": mac
+                        }
+                      }
+                    }
+                  }},
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+  scan_list_template:
+    card:
+      type: custom:auto-entities
+      card:
+        type: entities
+        card_mod:
+          style: |
+            .card-content { padding: 0 !important; }
+            ha-card {
+              border: none !important;
+              box-shadow: none !important;
+              background: none !important;
+            }
+      filter:
+        template: |
+          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
+          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) -%}
+
+          {# Partition into valid and weak/ghost buckets #}
+          {%- set ns = namespace(valid=[], weak=[]) -%}
+          {%- for device in scan_devices -%}
+            {%- set rssi_value = device.rssi | int(0) -%}
+            {%- set sort_rssi = -999 if rssi_value == 0 else rssi_value -%}
+            {%- if rssi_value == 0 or rssi_value < weak_threshold -%}
+              {%- set ns.weak = ns.weak + [device | combine({'sort_rssi': sort_rssi})] -%}
+            {%- else -%}
+              {%- set ns.valid = ns.valid + [device | combine({'sort_rssi': rssi_value})] -%}
+            {%- endif -%}
+          {%- endfor -%}
+
+          {%- set valid_sorted = ns.valid | sort(attribute='sort_rssi', reverse=true) -%}
+          {%- set weak_sorted = ns.weak | sort(attribute='sort_rssi', reverse=true) -%}
+          {%- set scan_sorted = valid_sorted + weak_sorted -%}
+
+          {%- for device in scan_sorted -%}
+            {%- set mac = device.mac | upper -%}
+            {%- set rssi_value = device.rssi | int(0) -%}
+            {%- set device_name = device.name | default('unknown') -%}
+            {%- set is_globally_ignored = mac in global_list -%}
+            {%- set is_weak_signal = rssi_value == 0 or rssi_value < weak_threshold -%}
+            {%- set active_known_beacons = state_attr('sensor.bt_active_known_beacons', 'active_beacons') | default([]) -%}
+            {%- set is_known = mac in active_known_beacons -%}
+            {{
+              {
+                "type": "custom:button-card",
+                "show_icon": false,
+                "show_name": false,
+                "styles": {
+                  "card": [
+                    {"height": "20px"},
+                    {"padding": "0px 8px"},
+                    {"border": "none"},
+                    {"box-shadow": "none"},
+                    {"background": "none"}
+                  ],
+                  "grid": [
+                    {"grid-template-columns": "120px 90px 1fr"},
+                    {"grid-template-areas": "'mac rssi name'"}
+                  ],
+                  "custom_fields": {
+                    "mac": [
+                      {"font-size": "12px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"font-family": "monospace"}
+                    ] + (
+                      [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                    ) + (
+                      [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                    ),
+                    "rssi": [
+                      {"font-size": "12px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"padding-left": "6px"},
+                      {"font-family": "monospace"}
+                    ] + (
+                      [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                    ) + (
+                      [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                    ),
+                    "name": [
+                      {"font-size": "12px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"padding-left": "6px"}
+                    ] + (
+                      [{"font-weight": "bold"}] if is_known else []
+                    ) + (
+                      [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                    ) + (
+                      [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
+                    )
+                  }
+                },
+                "custom_fields": {
+                  "mac": mac,
+                  "rssi": rssi_value | string ~ " dBm",
+                  "name": device_name
+                },
+                "tap_action": {
+                  "action": "none"
+                },
+                "hold_action": {
+                  "action": "call-service",
+                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "data": {"mac": mac}
+                }
+              }
+            }},
+          {%- endfor -%}
+
+  ignored_list_template:
+    card:
+      type: custom:auto-entities
+      card:
+        type: entities
+        card_mod:
+          style: |
+            .card-content { padding: 0 !important; }
+            ha-card {
+              border: none !important;
+              box-shadow: none !important;
+              background: none !important;
+            }
+      filter:
+        template: |
+          {%- set ignored_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
+          {%- set ns = namespace(ignored_sorted=[]) -%}
+          {%- for mac in ignored_list | sort -%}
+            {%- set ns.ignored_sorted = ns.ignored_sorted + [mac] -%}
+          {%- endfor -%}
+          {%- for mac in ns.ignored_sorted -%}
+            {{
+              {
+                "type": "custom:button-card",
+                "show_icon": false,
+                "show_name": false,
+                "styles": {
+                  "card": [
+                    {"height": "20px"},
+                    {"padding": "0px 8px"},
+                    {"border": "none"},
+                    {"box-shadow": "none"},
+                    {"background": "none"}
+                  ],
+                  "grid": [
+                    {"grid-template-columns": "120px 1fr"},
+                    {"grid-template-areas": "'mac name'"}
+                  ],
+                  "custom_fields": {
+                    "mac": [
+                      {"font-size": "12px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"font-family": "monospace"},
+                      {"color": "var(--disabled-text-color)"},
+                      {"text-decoration": "line-through"}
+                    ],
+                    "name": [
+                      {"font-size": "11px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"padding": "0 6px"},
+                      {"overflow": "hidden"},
+                      {"text-overflow": "ellipsis"},
+                      {"color": "var(--disabled-text-color)"},
+                      {"text-decoration": "line-through"}
+                    ]
+                  }
+                },
+                "custom_fields": {
+                  "mac": mac,
+                  "name": device_names[mac] | default('?')
+                },
+                "tap_action": {
+                  "action": "none"
+                },
+                "hold_action": {
+                  "action": "call-service",
+                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "data": {"mac": mac}
+                }
+              }
+            }},
+          {%- endfor -%}
+
+  all_beacons_template:
+    card:
+      type: custom:auto-entities
+      card:
+        type: entities
+        card_mod:
+          style: |
+            .card-content { padding: 0 !important; }
+            ha-card {
+              border: none !important;
+              box-shadow: none !important;
+              background: none !important;
+            }
+      filter:
+        template: |
+          {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+          {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
+          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
+          {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
+          {# Color scheme (injected via decluttering variables from _colors anchors) #}
+          {%- set color_beacon_overlap = "[[color_overlap]]" -%}
+          {%- set color_beacon_discriminated = "[[color_discriminated]]" -%}
+          {# Pass 1: Build MAC → {name, locs} dict for all active beacons #}
+          {%- set ns_build = namespace(mac_locs={}) -%}
+          {%- for row in fingerprints_raw -%}
+            {%- set parts = row.split('|') -%}
+            {%- if parts | count == 2 -%}
+              {%- set location_index = parts[0] | trim | int(-1) -%}
+              {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else '' -%}
+              {%- if location_name -%}
+                {%- for device in parts[1].split(',') -%}
+                  {%- if '=' in device -%}
+                    {%- set pair_stripped = device.rstrip(':X') -%}
+                    {%- set kv = pair_stripped.split('=') -%}
+                    {%- if kv | count == 2 -%}
+                      {%- set mac = kv[0] | trim | upper -%}
+                      {%- set rssi_val = kv[1] | trim | int(0) -%}
+                      {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
+                        {%- if mac not in ns_build.mac_locs -%}
+                          {%- set ns_build.mac_locs = ns_build.mac_locs | combine({mac: {'name': device_names[mac] | default('?'), 'locs': [], 'rssi_list': []}}) -%}
+                        {%- endif -%}
+                        {%- set cur_locs = ns_build.mac_locs[mac].locs -%}
+                        {%- set cur_rssi = ns_build.mac_locs[mac].rssi_list -%}
+                        {%- if location_name not in cur_locs -%}
+                          {%- set ns_build.mac_locs = ns_build.mac_locs | combine({mac: {'name': ns_build.mac_locs[mac].name, 'locs': cur_locs + [location_name], 'rssi_list': cur_rssi + [rssi_val]}}) -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {# Pass 1.5: Calculate RSSI consistency for each beacon #}
+          {%- set total_locations = locations_list | length -%}
+          {%- set ns_consistency = namespace(bg_colors={}) -%}
+          {%- for mac in ns_build.mac_locs.keys() -%}
+            {%- set rssi_list = ns_build.mac_locs[mac].rssi_list -%}
+            {%- set n = rssi_list | length -%}
+            {%- if n <= 1 -%}
+              {%- set bg = "none" -%}
+            {%- else -%}
+              {%- set ns_c = namespace(pairs_within=0, pairs_total=0) -%}
+              {%- for i in range(n) -%}
+                {%- for j in range(i+1, n) -%}
+                  {%- set ns_c.pairs_total = ns_c.pairs_total + 1 -%}
+                  {%- if (rssi_list[i] - rssi_list[j]) | abs <= rssi_tolerance -%}
+                    {%- set ns_c.pairs_within = ns_c.pairs_within + 1 -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {%- if n == total_locations and ns_c.pairs_within == ns_c.pairs_total -%}
+                {%- set bg = color_beacon_overlap -%}
+              {%- elif ns_c.pairs_within == 0 -%}
+                {%- set bg = color_beacon_discriminated -%}
+              {%- else -%}
+                {%- set bg = "none" -%}
+              {%- endif -%}
+            {%- endif -%}
+            {%- set ns_consistency.bg_colors = ns_consistency.bg_colors | combine({mac: bg}) -%}
+          {%- endfor -%}
+          {# Pass 2: Render button-cards sorted by MAC #}
+          {%- for mac in ns_build.mac_locs.keys() | sort -%}
+            {%- set entry = ns_build.mac_locs[mac] -%}
+            {%- set bg = ns_consistency.bg_colors.get(mac, "none") -%}
+            {{
+              {
+                "type": "custom:button-card",
+                "show_icon": false,
+                "show_name": false,
+                "styles": {
+                  "card": [
+                    {"height": "20px"},
+                    {"padding": "0px 8px"},
+                    {"border": "none"},
+                    {"box-shadow": "none"},
+                    {"background": bg}
+                  ],
+                  "grid": [
+                    {"grid-template-columns": "120px 1fr 1fr"},
+                    {"grid-template-areas": "'mac name locs'"}
+                  ],
+                  "custom_fields": {
+                    "mac": [
+                      {"font-size": "12px"},
+                      {"font-family": "monospace"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"}
+                    ],
+                    "name": [
+                      {"font-size": "11px"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"padding": "0 6px"},
+                      {"overflow": "hidden"},
+                      {"text-overflow": "ellipsis"}
+                    ],
+                    "locs": [
+                      {"font-size": "11px"},
+                      {"font-style": "italic"},
+                      {"opacity": "0.8"},
+                      {"justify-self": "start"},
+                      {"align-self": "center"},
+                      {"padding": "0 6px"},
+                      {"overflow": "hidden"},
+                      {"text-overflow": "ellipsis"}
+                    ]
+                  }
+                },
+                "custom_fields": {
+                  "mac": mac,
+                  "name": entry.name,
+                  "locs": entry.locs | join(', ')
+                },
+                "tap_action": {
+                  "action": "call-service",
+                  "service": "script.bt_beacon_toggle_all_locations_ignored",
+                  "data": {"mac": mac}
+                },
+                "double_tap_action": {
+                  "action": "call-service",
+                  "service": "script.bt_beacon_remove_from_all_fingerprints",
+                  "data": {"mac": mac}
+                },
+                "hold_action": {
+                  "action": "call-service",
+                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "data": {"mac": mac}
+                }
+              }
+            }},
+          {%- endfor -%}
+
+  location_matrix_template:
+    card:
+      type: custom:button-card
+      entity: sensor.bt_location_confusion_matrix
+      show_name: false
+      show_state: false
+      show_label: false
+      show_icon: false
+      tap_action:
+        action: none
+      variables:
+        color_destructive: *color_matrix_destructive
+        color_warning: *color_matrix_warning
+        color_success: *color_matrix_success
+        color_header: *color_matrix_header_bg
+      styles:
+        card:
+          - padding: 0px
+          - border: none
+          - box-shadow: none
+          - background: none
+        grid:
+          - grid-template-areas: '"matrix_table"'
+          - justify-items: start
+      grid:
+        matrix_table:
+          - justify-self: start
+          - width: 100%
+      custom_fields:
+        matrix_table: |
+          [[[
+            // Theme colors from YAML anchors (via button-card variables)
+            const colorHeaderBg = variables.color_header;
+            const colorSuccess = variables.color_success;
+            const colorWarning = variables.color_warning;
+            const colorDestructive = variables.color_destructive;
+
+            const data = states['sensor.bt_location_confusion_matrix']?.attributes?.matrix || [];
+            const locs = states['sensor.bt_location_array']?.attributes?.locations || [];
+
+            if (data.length === 0) {
+              return "<div style='padding: 16px; text-align: center; font-style: italic;'>No matrix data yet. Press 🔄 to calculate.</div>";
+            }
+
+            // Sort locations
+            const sortedLocs = [...locs].sort();
+
+            // Build table with outer border
+            let table = "<table style='width: auto; border-collapse: collapse; font-size: 0.9em; border: 1px solid var(--divider-color);'>";
+
+            // Header row
+            table += "<thead><tr>";
+            table += `<th style='text-align: right; background-color: white; padding: 6px 12px; border-right: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); font-weight: normal;'></th>`;
+            sortedLocs.forEach(loc => {
+              table += `<th style='text-align: center; background-color: ${colorHeaderBg}; padding: 6px 12px; border-right: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); font-weight: normal;'>${loc.charAt(0).toUpperCase() + loc.slice(1)}</th>`;
+            });
+            table += "</tr></thead>";
+
+            // Data rows
+            table += "<tbody>";
+            data.forEach(row => {
+              table += "<tr>";
+              table += `<td style='text-align: left; background-color: ${colorHeaderBg}; padding: 6px 12px; border-right: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color);'>${row.src.charAt(0).toUpperCase() + row.src.slice(1)}</td>`;
+
+              sortedLocs.forEach(loc => {
+                const score = row.scores[loc] || 0;
+                let bgColor = "transparent";
+
+                if (row.src === loc) {
+                  // Diagonal: highlight in red if score is not 1.0 (indicates problem)
+                  if (score !== 1.0) {
+                    bgColor = colorDestructive;  // red alarm
+                  }
+                } else {
+                  // Off-diagonal: traffic light colors
+                  if (score > 0.6) {
+                    bgColor = colorDestructive;  // red
+                  } else if (score > 0.3) {
+                    bgColor = colorWarning;  // amber
+                  } else {
+                    bgColor = colorSuccess;  // green
+                  }
+                }
+
+                table += `<td style='text-align: center; background-color: ${bgColor}; padding: 6px 12px; border-right: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color);'>${score.toFixed(2)}</td>`;
+              });
+
+              table += "</tr>";
+            });
+            table += "</tbody></table>";
+
+            return table;
+          ]]]
+      card_mod:
+        style: |
+          ha-card {
+            border: none;
+            box-shadow: none;
+            background: none;
+          }
+          .card-content {
+            padding: 0 !important;
+            display: block !important;
+          }
+
+# -------------------------------------------------------------------------------------
+# VIEWS
+# -------------------------------------------------------------------------------------
+
+views:
+  - path: guide
+    title: "Guide"
+    cards:
+      # 1. Intro and Quick Start
+      - type: markdown
+        content: |
+          ## Bluetooth Beacon Triangulation
+
+          **What it does:** Captures Bluetooth beacon signals at each charger location to detect phone position. These are stored as "fingerprints" representing the unique combination of beacon signals at each location.
+
+          **Real-world challenges:** In the ideal case this should be automatic. In practice, you will likely pick up irrelevant (alien/volatile) beacons such as neighbor devices, and also find that beacons overlap in several locations, making them hard to distinguish.
+
+          **Quick Start:**
+          1. Configure your location names
+          2. Place phone on charger at target location
+          3. Wait for Tasker BT scan to finish
+          4. View RSSI values in "Latest BT Scan" table
+          5. (Optional) Long-press any irrelevant beacons to mark them as globally ignored - these will be automatically filtered out in future captures
+          6. In "Fingerprint Details":
+             - **Hold location heading** to capture from scratch (replace entire fingerprint)
+             - **Tap location heading** to merge new beacons from scan into existing fingerprint
+          7. Repeat for all locations
+          8. Over time, revisit locations and refine fingerprints
+
+          **💡 Tip:** Beacon triangulation and curation are best done on a computer — the views become rather crowded on small phone screens.
+
+      # 2. Triangulation Guide
+      - type: markdown
+        content: |
+          ## Triangulation
+
+          **Automatic Filtering During Capture:**
+
+          When capturing or updating fingerprints, the system automatically ignores:
+          - Beacons below the weak signal threshold (prevents volatile weak signals from being stored)
+          - Beacons in the global ignored list (prevents known irrelevant devices from being stored)
+
+          This keeps fingerprints clean and focused on stable, useful signals without requiring manual cleanup.
+
+          **Refining Fingerprints:**
+
+          Review "Fingerprint Details" table for each location and identify overlapping beacons (beacons that appear in multiple locations with similar signal strength). Improve triangulation using these tools:
+
+          **In Fingerprint Details:**
+          - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is excluded from scoring. Easy to toggle on/off while experimenting.
+          - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
+          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and excluded everywhere, filtered out from future captures.
+
+          **In Latest BT Scan:**
+          - **Hold/long-press a beacon**: Ignore globally - quick way to mark irrelevant devices as globally ignored.
+
+          **Hint**: Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons.
+
+          **Visual Indicators:**
+
+          **Latest BT Scan table:**
+          - Weak signals: Italic and faded (below threshold - ignored in capture)
+          - Globally ignored: Grey text and strikethrough (ignored in capture and future scans)
+
+          **Fingerprint Details table:**
+          - **Bold text**: Overlapping beacon (appears in 2+ locations - potential confusion risk)
+          - **Locally ignored**: Strikethrough (ignored in this location only)
+          - **Strong match**: Green background (current scan RSSI within 5 dBm of fingerprint)
+          - **Match**: Blue background (current scan RSSI differs by >5 dBm from fingerprint)
+          - **Mismatch**: White background (beacon not found in current scan)
+          - **?**: Indicates an unresolved device name (loaded in BT scans)
+
+          **Location and Calibration Setup:**
+
+          - **Location Names**:
+            - Enter comma-separated names (`office, kitchen, garage` etc).
+            - **Maintain Order**
+              Fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints; the algorithm will match wrong locations. Once defined, keep the order fixed (renaming locations is OK). If you must change it, you will need to recapture all fingerprints from scratch.
+
+      # 3. Tuning Guide
+      - type: markdown
+        content: |
+          ## Tuning
+
+          **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
+
+          **How to use:**
+          - Adjust **Weak Signal Threshold** to set the minimum signal level for valid beacons (weaker signals are ignored)
+          - Adjust **RSSI Match Tolerance** (dBm) to control how closely scanned RSSI must match fingerprint RSSI to count as a match
+          - Toggle **Ignore Ghost Signals (0 dBm)** to ignore zero-strength beacons (treat as weak signals)
+          - Review the **Scores for Latest Scan** table to see how locations match and what scores they get
+
+          **Note on Updates:** Beacon coloring in Fingerprint Details updates immediately when you change slider settings. The Scores table requires manual refresh - press the refresh button in the table heading to recalculate with new parameters.
+
+      # 4. Review Guide
+      - type: markdown
+        content: |
+          ## Review
+
+          **What it does:** Provides three integrated analysis views for understanding beacon distribution and location overlap risks.
+
+          **Contents:**
+
+          1. **Location Cross-Reference Matrix** — Diagnoses location confusion at a glance:
+             - Each row = source location fingerprint being tested
+             - Each column = reference location to score against
+             - Score (0.0–1.0): how likely the source fingerprint would be confused with the reference location
+             - 🟢 Green (< 0.3): good separation — locations are distinct
+             - 🟡 Amber (0.3–0.6): caution — some overlap, potential for confusion
+             - 🔴 Red (> 0.6): high confusion risk — fingerprints are too similar
+             - **Diagonal cells:** should all be 1.0 (each location detects itself)
+               - White background (1.0): normal, location fingerprint healthy
+               - 🔴 Red background (≠ 1.0): alarm! — location's fingerprint doesn't detect itself, indicates a serious problem
+             - Adjust **RSSI Match Tolerance** in Tuning view to see how sensitivity affects overlap
+
+          2. **All Active Beacons** — Master reference of all beacons across locations:
+             - Shows every beacon currently in use (active, non-weak, non-ignored)
+             - Columns: MAC address | Device name | Which locations it appears in
+             - Background color indicates beacon discriminator quality:
+               - 🔴 Red: beacon appears in ALL locations with similar RSSI → poor discriminator (ambiguous everywhere)
+               - 🟢 Green: beacon has unique RSSI in every location where it appears → excellent discriminator (helps distinguish locations)
+               - White: beacon RSSI similar in some locations but unique in others → medium discriminator (can help in some pairs)
+             - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but excluded from scoring)
+             - **Double-tap any beacon** to permanently remove it from all location fingerprints where it appears (beacon disappears from this list)
+             - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
+             - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution
+
+          3. **Globally Ignored** — Management of globally ignored beacons:
+             - Lists all beacons you've marked as globally ignored
+             - Styled in grey with strikethrough to indicate ignored status
+             - **Hold any beacon** to restore it (remove from global ignore list)
+             - These beacons are excluded from all detection and filtered out during future fingerprint captures
+
+  - path: home
+    title: "Triangulation"
+    cards:
+      # Location Configuration, Weak Signal Threshold, and Management Buttons
+      - type: vertical-stack
+        cards:
+          - type: entities
+            title: "Location & Calibration Setup"
+            entities:
+              - entity: input_text.bt_calibration_locations
+                name: "Location Names"
+                icon: mdi:map-marker-multiple
+
+          - type: horizontal-stack
+            cards:
+              # Report beacon status button (lowest risk)
+              - type: custom:button-card
+                name: "Beacon Status"
+                tap_action:
+                  action: call-service
+                  service: script.report_beacon_status
+                styles:
+                  card:
+                    - background-color: *color_success
+                  name:
+                    - font-size: 12px
+
+              # Load from file button (medium risk)
+              - type: custom:button-card
+                name: "Load Fingerprints"
+                tap_action:
+                  action: call-service
+                  service: script.load_bt_fingerprints_from_file
+                styles:
+                  card:
+                    - background-color: *color_action_load
+                  name:
+                    - font-size: 12px
+
+              # Clear database button (highest risk)
+              - type: custom:button-card
+                name: "Clear Fingerprints"
+                tap_action:
+                  action: call-service
+                  service: script.clear_bt_fingerprints
+                styles:
+                  card:
+                    - background-color: *color_action_destructive
+                  name:
+                    - font-size: 12px
+
+      # Latest BT scan - interactive beacon list with tap-to-ignore
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: |
+              {%- set known = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
+              {%- set unknown = state_attr('sensor.bt_location_scores', 'unknown_beacons_in_scan') | int(0) -%}
+              Latest BT Scan ({{ known }}+{{ unknown }})
+            secondary: "{{ state_attr('sensor.bt_latest_scan_full', 'timestamp') | default('No scan yet') }}"
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: scan_list_template
+
+
+      # Fingerprint Details (auto-entities with button-cards)
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "Location Fingerprints"
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: beacon_list_template
+            variables:
+              - color_rssi_match: *color_beacon_rssi_match
+              - color_in_scan: *color_beacon_in_scan
+              - location_header_bg: *color_location_header_bg
+
+  # Algorithm Tuning View
+  - path: algorithm
+    title: "Tuning"
+    cards:
+      # Algorithm Settings
+      - type: entities
+        title: "Algorithm Settings"
+        entities:
+          - input_number.bt_location_detection_weak_signal_threshold
+          - input_number.bt_location_detection_rssi_tolerance
+          - input_boolean.bt_filter_zero_rssi_signals
+
+      # Scores for Latest Scan - Location Scoring
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "🔄 Scores for Latest Scan"
+            layout: horizontal
+            tap_action:
+              action: perform-action
+              perform_action: script.calculate_location_scores
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: markdown
+            content: |
+              {%- set scores_raw = state_attr('sensor.bt_location_scores', 'location_scores') or {} %}
+              {%- set scores = scores_raw | from_json if scores_raw is string else scores_raw %}
+              {%- set ns = namespace(max_val=-1) %}
+              {%- for location, metrics in scores | dictsort %}
+                {%- if metrics.total_score | float(-1) > ns.max_val %}
+                  {%- set ns.max_val = metrics.total_score | float(-1) %}
+                {%- endif %}
+              {%- endfor %}
+              | Location | Matched | Score |
+              |:---|---:|---:|
+              {%- if scores and scores | length > 0 %}
+                {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) %}
+                {%- for location, metrics in scores | dictsort %}
+              | {{ '🎯 **' if (metrics.total_score | float | round(3)) >= ns.max_val }}{{ location | capitalize }}{{ '**' if (metrics.total_score | float | round(3)) >= ns.max_val }} | `{{ metrics.matched | int }}/{{ metrics.matched | int + metrics.missing | int }} [{{ known_in_scan }}]` | `{{ metrics.total_score | float | round(3) }}` |
+                {%- endfor %}
+              {%- else %}
+              | _No data_ | _-_ | _-_ |
+              {%- endif %}
+
+              <sub>
+              Matched = matched beacons / total fingerprint beacons [known in scan] (e.g., 5/8 [6])<br>
+              Score = symmetric ratio result: (matched/fingerprint) × (matched/scan_valid)<br>
+              <b>Note</b>: Higher scores indicate better matches. [6] shows total known beacons in current scan for context.
+              </sub>
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                  padding-top: 0px !important;
+                }
+                markdown-table-row th {
+                  font-size: 0.9em;
+                }
+                ha-markdown {
+                  padding: 0px 16px 16px 16px !important;
+                }
+                table {
+                  width: 100%;
+                  border-collapse: collapse;
+                }
+                td, th {
+                  padding: 8px 0;
+                  border-bottom: 1px solid var(--divider-color);
+                }
+
+  # Review View
+  - path: review
+    title: "Review"
+    cards:
+      # Location Cross-Reference Matrix
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "🔄 Location Cross-Reference Matrix"
+            layout: horizontal
+            tap_action:
+              action: perform-action
+              perform_action: script.generate_confusion_matrix
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: location_matrix_template
+
+      # All Active Beacons
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: |
+              {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+              {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
+              {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
+              {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
+              {%- set ns_count = namespace(unique_macs={}) -%}
+              {%- for row in fingerprints_raw -%}
+                {%- set parts = row.split('|') -%}
+                {%- if parts | count == 2 -%}
+                  {%- for device in parts[1].split(',') -%}
+                    {%- if '=' in device -%}
+                      {%- set pair_stripped = device.rstrip(':X') -%}
+                      {%- set kv = pair_stripped.split('=') -%}
+                      {%- if kv | count == 2 -%}
+                        {%- set mac = kv[0] | trim | upper -%}
+                        {%- set rssi_val = kv[1] | trim | int(0) -%}
+                        {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
+                          {%- set ns_count.unique_macs = ns_count.unique_macs | combine({mac: true}) -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+              {%- endfor -%}
+              All Active Beacons ({{ ns_count.unique_macs | length }})
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: all_beacons_template
+            variables:
+              - color_overlap: *color_action_destructive
+              - color_discriminated: *color_success
+
+      # Globally Ignored Beacons
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: |
+              {%- set ignored_count = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | length -%}
+              Globally Ignored ({{ ignored_count }})
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: ignored_list_template
