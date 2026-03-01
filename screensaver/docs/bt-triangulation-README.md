@@ -8,7 +8,13 @@
 This guide assumes you have already:
 - Installed Home Assistant
 - Set up the main screensaver dashboard and packages (see `screensaver-README.md`)
-- Installed required HACS components: `button-card`, `card-mod`, `browser-mod`
+
+**Required HACS components** (if not already installed):
+- Core: `button-card`, `card-mod`, `browser-mod`, `decluttering-card`
+- UI: `mushroom-template-card`, `mushroom-chips-card`, `mushroom-title-card`, `stack-in-card`, `slider-entity-row`, `auto-entities`
+- Optional: `mini-media-player`, `config-template-card`, `scheduler-card`
+
+See the main screensaver README for detailed component descriptions.
 
 ### Installation Steps
 

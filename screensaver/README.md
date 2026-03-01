@@ -58,9 +58,25 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
    - See **"Customization & Local Adaptation"** section below for detailed guidance
 
 6. **Install required HACS components**
-   - `button-card`
-   - `card-mod`
-   - `browser-mod`
+
+   **Core (required for dashboard to function):**
+   - `button-card` — Custom button implementation with multiple features (tap actions, templates, styling)
+   - `card-mod` — CSS styling for Home Assistant cards
+   - `browser-mod` — Browser automation and device-aware actions (required for tap action routing)
+   - `decluttering-card` — Reusable card template system for reducing YAML duplication
+
+   **UI Components (required for visual design):**
+   - `mushroom-template-card` — Template-based card with icon/state display
+   - `mushroom-chips-card` — Compact chip-based button design
+   - `mushroom-title-card` — Consistent title styling
+   - `stack-in-card` — Card grouping and layout control
+   - `slider-entity-row` — Inline slider for numeric values
+   - `auto-entities` — Dynamic entity list generation based on filters
+
+   **Optional but used in this implementation:**
+   - `mini-media-player` — Compact media player display
+   - `config-template-card` — Jinja2 template support for complex cards
+   - `scheduler-card` — Automation scheduling interface
 
 ➡️ At this point, the screensaver dashboard itself works.
 
@@ -71,7 +87,7 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 To achieve **automatic activation, clean exit, and device-aware behavior**, additional Android automation is required:
 
 7. **Install additional HACS component**
-   - `kiosk-mode` (handles remaining chrome and edge cases in Fully Kiosk)
+   - `kiosk-mode` — Chrome removal and edge case handling for Fully Kiosk
 
 8. **Install Fully Kiosk Browser**
    - Required for REST API access and reliable kiosk-mode operation
