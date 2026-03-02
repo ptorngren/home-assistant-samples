@@ -20,19 +20,19 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
            icon: mdi:monitor-dashboard
            show_in_sidebar: true
 
-         dashboard-bt-location-calibration:  # Calibration: https://your-ha-url/dashboard-bt-location-calibration
+         dashboard-bt-triangulation:  # Triangulation: https://your-ha-url/dashboard-bt-triangulation
            mode: yaml
-           filename: dashboards/bt_location_calibration.yaml
-           title: BT Location Calibration
-           icon: mdi:cog
+           filename: dashboards/bt_triangulation.yaml
+           title: BT Triangulation
+           icon: mdi:bluetooth
            show_in_sidebar: true
      ```
    - **Main screensaver:** Accessible at `https://your-ha-url/dashboard-screensaver/home?kiosk`
      - Use `?kiosk` parameter to hide sidebar/header for clean display
-   - **Calibration dashboard:** Accessible at `https://your-ha-url/dashboard-bt-location-calibration`
+   - **Triangulation dashboard:** Accessible at `https://your-ha-url/dashboard-bt-triangulation`
      - Used for BT fingerprint collection, beacon curation, and location setup
      - No kiosk parameter needed (it's an admin/setup interface)
-     - See [bt-triangulation-README.md](docs/bt-triangulation-README.md) for a detailed guide and technical details
+     - See the Triangulation project README for a detailed guide and technical details
 
 2. **Copy the dashboard**
    - Import `screensaver.yaml` into your `dashboards/` directory.
@@ -753,7 +753,7 @@ The Bluetooth scan data received from Tasker is **stored in memory only** and is
 
 **What About Dashboard Display?**
 
-The latest scan is visible in the calibration dashboard (`/lovelace/bt-location-calibration`) under "Latest BT Scan" card, showing:
+The latest scan is visible in the triangulation dashboard (`/dashboard-bt-triangulation`) under "Latest BT Scan" card, showing:
 - All beacons detected in the current scan
 - RSSI values and device names
 - Weak signal indicators (italic + faded)
@@ -831,68 +831,14 @@ Note: the task can (should?) be embedded in the profile that starts the screensa
 
 #### Home Assistant Setup (Webhook Receiver & Triangulation)
 
-**Status:** Webhook receiver and location detection implemented in `packages/screensaver_local.yaml`. Simple testing and analysis procedure below.
+The Bluetooth triangulation system is fully documented as a standalone system with its own setup guide. See **the Triangulation project README** for complete instructions on:
+- Configuring location names
+- Capturing fingerprints
+- Verifying detection
+- Refining beacon selection
+- Advanced algorithm tuning
 
-##### Setup Process: Fingerprint Capture & Location Detection
-
-The location detection system uses **Bluetooth fingerprinting** — it captures the unique combination of beacon signals at each charger location and automatically learns to recognize them. Here's the workflow:
-
-**Step 1: Configure Location Names**
-
-Visit the screensaver dashboard settings at `/lovelace/bt-location-calibration`:
-
-1. Go to the **"Triangulation"** view
-2. Find the **"Location Configuration"** card
-3. Enter comma-separated location names (e.g., `office, kitchen, garage, bedroom`)
-4. Press Enter to save
-
-⚠️ **Important:** Location order is permanent. Once you capture fingerprints, changing the order will corrupt all data. Renaming locations is OK, but don't reorder them.
-
-**Step 2: Capture Fingerprints at Each Location**
-
-For each location where you have a wireless charger:
-
-1. Place phone on the charger (let it sit 5+ seconds to stabilize signals)
-2. Wait for auto-trigger (or trigger the Tasker "Phone Charging - BT Scan" task manually)
-3. In the screensaver dashboard, find the **"Fingerprint Details"** section
-4. Locate the location heading for the current location (e.g., "OFFICE", "KITCEHN", etc.)
-5. **Hold** the location heading to capture from scratch, OR **tap** to merge new beacons into existing fingerprint
-
-Repeat for all configured locations.
-
-**Step 3: Verify Detection via Fingerprint Details**
-
-The **"Fingerprint Details"** section is your main verification tool. Each location heading shows a **live match score** (e.g., `PEER 5/9 • 58%`):
-- **Matched count** (5/9): How many beacons from the fingerprint are in the latest scan
-- **Confidence %** (58%): Quality of the match (higher = more reliable detection)
-
-To verify fingerprints are working:
-1. After capturing fingerprints, check each location heading in Fingerprint Details
-2. Look for match scores > 50% to indicate reliable detection
-3. Beacons are color-coded by quality:
-   - Green background = strong signal match (RSSI within ±5 dBm of fingerprint)
-   - Blue background = weak signal match (large RSSI difference)
-   - Strikethrough = ignored beacons (locally or globally)
-   - Italic, faded = weak signals (below threshold, excluded)
-
-**Step 4: Refine Beacon Selection (Optional)**
-
-If match scores are low (<50%):
-- **Tap a beacon** in Fingerprint Details to locally ignore it (this location only)
-- **Hold a beacon** to globally ignore it (all locations)
-- Adjust **"Weak Signal Threshold"** (default: -95 dBm) if many weak signals interfere
-- Re-capture fingerprints at problematic locations
-
-**Step 5: Advanced Testing (Algorithm Tuning)**
-
-For detailed algorithm analysis:
-1. Go to the **"Algorithm Tuning"** view
-2. Click **"Test Algorithm Sanity"** to verify each fingerprint correctly detects its own location
-3. Click **"Algorithm Results"** to see location scores for the latest BT scan across all locations. Review the table to see match quality and identify any conflicting/ambiguous locations.
-
-**Expected Outcome:**
-- Phone placed at each charger → screensaver shows the correct location name
-- Location becomes available in your screensaver tap action scripts for location-aware scenario selection
+**Quick summary:** The system sends location data to `input_text.device_charger_locations`, which the screensaver can use for location-aware logic via tap action scripts. Full end-to-end setup (including Tasker configuration, HACS components, and fingerprint workflow) is documented in the triangulation README.
 
 </details>
 
@@ -1345,7 +1291,7 @@ The result is a versatile screensaver system that works equally well on wall-mou
 
 For detailed documentation on the **Bluetooth location detection system**, including algorithm selection, beacon curation, and troubleshooting, see:
 
-- **[bt-triangulation-README.md](docs/bt-triangulation-README.md)** — Technical reference guide covering:
+- **the Triangulation project README** — Complete guide covering:
   - Algorithm selection and comparative analysis
   - Beacon curation system for handling overlapping signals
   - How to ignore problematic beacons (per-location or globally)

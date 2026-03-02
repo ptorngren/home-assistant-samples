@@ -13,7 +13,7 @@ DATA_TYPE="$2"
 CONTENT="$3"
 
 # Path configuration
-BASE_DIR="/config/packages/screensaver/data"
+BASE_DIR="/config/packages/triangulation/data"
 
 # Ensure directory exists
 mkdir -p "$BASE_DIR"

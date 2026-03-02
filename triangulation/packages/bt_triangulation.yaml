@@ -1,7 +1,7 @@
-# Screensaver Generic Package
-# Reusable components for screensaver dashboard (device-agnostic)
-# Contains tap action scripts, location detection, and dashboard configuration
-# Local customizations (temperature sensors, weather mapping) go in screensaver_local.yaml
+# Bluetooth Triangulation Package
+# Reusable Bluetooth beacon triangulation system for device location detection
+# Provides fingerprint collection, RSSI matching, location scoring, and ambiguity diagnostics
+# Can be used standalone or integrated with screensaver (via screensaver_local.yaml bridge)
 # ------------------------------------------------------------------
 
 input_text:
@@ -52,13 +52,20 @@ input_number:
     # Beacon counts as match only if scan RSSI is within ±N dBm of fingerprint RSSI
     # Higher values = more lenient matching, lower values = stricter RSSI matching
 
+input_boolean:
+  bt_filter_zero_rssi_signals:
+    name: "Ignore Ghost Signals (0 dBm)"
+    icon: mdi:ghost-off
+    # When ON: exclude RSSI=0 beacons at ingestion (current behavior)
+    # When OFF: allow RSSI=0 beacons through for diagnostic visibility
+
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
 shell_command:
-  bt_fingerprint_database_write: /config/packages/screensaver/bt_fingerprints_persistor.sh write fingerprints {{ csv_content | base64_encode }}
-  bt_fingerprint_database_read: '/config/packages/screensaver/bt_fingerprints_persistor.sh read fingerprints'
-  bt_ignored_write: /config/packages/screensaver/bt_fingerprints_persistor.sh write ignored {{ csv_content | base64_encode }}
-  bt_ignored_read: '/config/packages/screensaver/bt_fingerprints_persistor.sh read ignored'
+  bt_fingerprint_database_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints {{ csv_content | base64_encode }}
+  bt_fingerprint_database_read: '/config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
+  bt_ignored_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored {{ csv_content | base64_encode }}
+  bt_ignored_read: '/config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
 
 # ------------------------------------------------------------------
 # BT SENSORS (Command-line integration)
@@ -70,7 +77,7 @@ command_line:
   - sensor:
       name: "BT Fingerprint Database File"
       unique_id: bt_fingerprint_database_file
-      command: 'bash /config/packages/screensaver/bt_fingerprints_persistor.sh read fingerprints'
+      command: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
       json_attributes:
         - fingerprints
       value_template: "{% if value_json.fingerprints %}ready{% else %}empty{% endif %}"
@@ -82,7 +89,7 @@ command_line:
   - sensor:
       name: "BT Ignored Beacons"
       unique_id: bt_ignored
-      command: 'bash /config/packages/screensaver/bt_fingerprints_persistor.sh read ignored'
+      command: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
       json_attributes:
         - ignored
       value_template: "{% if value_json.ignored %}{{ value_json.ignored | length }}{% else %}0{% endif %}"
@@ -145,25 +152,20 @@ template:
         unique_id: bt_latest_scan_full
         state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         attributes:
-          # Hard-filter RSSI=0 beacons (often dynamic MACs or echo devices with no valid signal)
-          # These provide no location information and pollute the fingerprint database
+          # Capture all devices including RSSI=0 beacons (ghost signals with no measurable distance)
+          # Filtering is applied at usage level based on toggle, not at ingestion
+          # This preserves raw data visibility while allowing toggle to control inclusion in scoring/matching
           devices: |
-            {%- set ns = namespace(filtered=[]) -%}
-            {%- for device in trigger.json.devices | default([]) -%}
-              {%- if device.rssi != 0 -%}
-                {%- set ns.filtered = ns.filtered + [device] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.filtered }}
+            {{ trigger.json.devices | default([]) }}
 
 
           # Count beacons in current scan that exist in active known beacons list
           # Uses dynamically calculated list from sensor.bt_active_known_beacons (auto-updates on fingerprint/ignore changes)
-          # NOTE: Uses trigger.json.devices directly to avoid race condition with attribute calculation
+          # Counts all captured devices including RSSI=0; filtering is applied at usage level by toggle
           known_beacons_in_scan: |
             {%- set ns = namespace(count=0) -%}
             {%- set active_beacons = state_attr('sensor.bt_active_known_beacons', 'active_beacons') | default([]) -%}
-            {%- set devices = trigger.json.devices | default([]) | selectattr('rssi', 'ne', 0) | list -%}
+            {%- set devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
             {%- for device in devices -%}
               {%- set mac = device.mac | upper -%}
               {%- if mac in active_beacons -%}
@@ -447,111 +449,6 @@ script:
         data:
           message: "Charger location detected: {{ detected_location | upper }} (Score: {{ detection_result.score }}, Confidence: {{ \"%.1f\" | format(detection_result.confidence * 100) }}%)"
           level: info
-
-  test_algorithm_sanity_check:
-    description: "Validate algorithm by testing against all saved fingerprints"
-    sequence:
-      # Read fingerprints from sensor (already returns array of lines)
-      - variables:
-          raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          passed_count: 0
-          failed_count: 0
-          log_lines: []
-
-      # Loop over all fingerprints
-      - repeat:
-          for_each: "{{ raw_fingerprints }}"
-          sequence:
-            # Parse current fingerprint data
-            - variables:
-                current_fingerprint: "{{ repeat.item | string }}"
-                fp_parts: "{{ current_fingerprint.split('|') if '|' in current_fingerprint else [] }}"
-                fp_index: "{{ fp_parts[0] | int(-1) if fp_parts | length == 2 else -1 }}"
-                fp_mac_rssi_str: "{{ fp_parts[1] | string if fp_parts | length == 2 else '' }}"
-
-            # Extract active beacons (filter out :X-marked ones)
-            - action: script.get_active_fingerprint_beacons
-              data:
-                mac_rssi_str: "{{ fp_mac_rssi_str }}"
-              response_variable: active_fp_str
-
-            # Build test_devices array from active beacons
-            - variables:
-                test_devices: |
-                  {%- set ns = namespace(devices=[]) -%}
-                  {%- if active_fp_str.fingerprint and active_fp_str.fingerprint | length > 0 -%}
-                    {%- for pair in active_fp_str.fingerprint.split(',') -%}
-                      {%- if '=' in pair -%}
-                        {%- set kv = pair.split('=') -%}
-                        {%- if kv | length == 2 -%}
-                          {%- set mac = kv[0] | trim | upper -%}
-                          {%- set rssi = kv[1] | trim | int(0) -%}
-                          {%- set ns.devices = ns.devices + [{"mac": mac, "name": "test_device", "rssi": rssi}] -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                  {%- endif -%}
-                  {{ ns.devices }}
-
-            # Determine expected location for fingerprint
-            - variables:
-                locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') }}"
-                expected_location: "{{ locations_list[fp_index] if fp_index >= 0 and fp_index < locations_list | length else 'unknown' }}"
-
-            # Call algorithm with test devices (don't persist scores during test)
-            - action: script.detect_location_from_signals
-              data:
-                devices: "{{ test_devices }}"
-                persist_scores: false
-                scan_context: "Fingerprint #{{ repeat.index }} ({{ expected_location | upper }})"
-              response_variable: algorithm_result
-
-            # Verify result matches fingerprint location
-            - variables:
-                is_match: "{{ algorithm_result.detected_location | lower == expected_location | lower }}"
-                status_icon: "{{ '✓' if is_match else '✗' }}"
-
-            # Update result counters and accumulate log line
-            - variables:
-                passed_count: "{{ passed_count + 1 if is_match else passed_count }}"
-                failed_count: "{{ failed_count + 1 if not is_match else failed_count }}"
-                log_line_entry: "{{ \"Fingerprint \" + (repeat.index + 1) | string + \" (\" + expected_location | upper + \"): \" + status_icon + \" \" + (\"PASS\" if is_match else \"FAIL\") + \" - Detected: \" + algorithm_result.detected_location + \" (Score: \" + algorithm_result.score | string + \")\" }}"
-
-            # Add detailed failure metrics if mismatch
-            - if: "{{ not is_match }}"
-              then:
-                - variables:
-                    expected_metrics: "{{ algorithm_result.scores_detail[expected_location] | default({}) }}"
-                    detected_metrics: "{{ algorithm_result.scores_detail[algorithm_result.detected_location] | default({}) }}"
-                    expected_detail: "- Expected ({{ expected_location | upper }}): matched={{ expected_metrics.get('matched') | int }} beacon%={{ expected_metrics.get('beacon_score') | float | round(1) }} rssi={{ expected_metrics.get('rssi_score') | float | round(1) }} missing={{ expected_metrics.get('missing') | int }} total={{ expected_metrics.get('total_score') | float | round(1) }}"
-                    detected_detail: "- Detected ({{ algorithm_result.detected_location | upper }}): matched={{ detected_metrics.get('matched') | int }} beacon%={{ detected_metrics.get('beacon_score') | float | round(1) }} rssi={{ detected_metrics.get('rssi_score') | float | round(1) }} missing={{ detected_metrics.get('missing') | int }} total={{ detected_metrics.get('total_score') | float | round(1) }}"
-                    log_lines: "{{ log_lines + [log_line_entry, expected_detail, detected_detail] }}"
-              else:
-                - variables:
-                    log_lines: "{{ log_lines + [log_line_entry] }}"
-
-      # Summary notification showing total pass/fail
-      - action: persistent_notification.create
-        data:
-          title: "🔬 Algorithm Sanity Check Complete"
-          message: |
-            ✓ {{ passed_count }} passed
-            ✗ {{ failed_count }} failed
-
-            See system log for details
-          notification_id: "bt_algorithm_summary"
-
-      # Log all results in single entry
-      - if: "{{ passed_count > 0 or failed_count > 0 }}"
-        then:
-          - action: system_log.write
-            data:
-              message: |
-                {% if failed_count > 0 %}Screensaver Location Detection Sanity Check: {{ passed_count }} passed, {{ failed_count }} failures{% else %}Screensaver Location Detection Sanity Check: {{ passed_count }} passed{% endif %}
-                {% for line in log_lines %}
-                {{ line }}
-                {% endfor %}
-              level: "{{ 'warning' if failed_count > 0 else 'info' }}"
 
 # ------------------------------------------------------------------
 # AUTOMATIONS
@@ -993,17 +890,17 @@ script:
         description: "Array of BT devices with MAC, name, and RSSI from Tasker scan"
         example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'name': 'Device Name', 'rssi': -65}]"
       persist_scores:
-        description: "Whether to write results to CSV file and update dashboard (default: true)"
+        description: "Whether to update dashboard sensor with location scores (default: true)"
         example: "true"
       scan_context:
         description: "Context for logging (e.g., 'Latest scan' or 'Fingerprint #2 (KÖK)') (default: 'Latest scan')"
         example: "Latest scan"
     variables:
-      # Control whether to persist scores to file/dashboard
+      # Control whether to update dashboard sensor with location scores
       persist_scores: "{{ persist_scores | default(true) }}"
       # Context for logging (latest scan or fingerprint number)
       scan_context: "{{ scan_context | default('Latest scan') }}"
-      # STEP 1: Parse fingerprint database into location-specific device sets
+      # Parse fingerprint database into location-specific device sets
       # Format: location_index|MAC1=rssi1,MAC2=rssi2,...
       locations_map: "{{ state_attr('sensor.bt_location_array', 'locations') | default(none) }}"
       raw_fingerprints: "{{ (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list }}"
@@ -1029,8 +926,8 @@ script:
         {{ ns.data }}
 
     sequence:
-      # STEP 2-4: Call algorithm proxy (routes to implementation in screensaver_local, allows algorithm swapping)
-      - service: script.bt_location_detect_algorithm_proxy
+      # Call location detection algorithm (Symmetric Ratio)
+      - service: script.bt_location_symmetric_ratio
         data:
           devices: "{{ devices }}"
           fingerprints_parsed: "{{ fingerprints_parsed }}"
@@ -1059,7 +956,7 @@ script:
               known_beacons_in_scan: "{{ result.known_beacons_in_scan }}"
               unknown_beacons_in_scan: "{{ result.unknown_beacons_in_scan }}"
 
-      - stop: "Location detected using similarity algorithm"
+      - stop: "Location detected"
         response_variable: result
 
   capture_bt_fingerprint:
