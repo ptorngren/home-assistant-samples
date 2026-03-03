@@ -7,6 +7,9 @@ Some Home Assistant examples and experiments that might be generally useful. Use
 ### [Screensaver](./screensaver/)
 Wall panel screensaver dashboard with weather display, anti-burn-in animations, and tap actions for Home Assistant.
 
+### [Bluetooth Triangulation](./triangulation/)
+Bluetooth beacon-based locating mobile devices. Can be used independently or integrated with the screensaver for location-aware automations.
+
 ### More?
 I've also been playing with setting up Home Assistant for my Yamaha MusicCast multi-room audio system and scheduling the car heaters. 
 Hope to publish these samples as well after some polishing.

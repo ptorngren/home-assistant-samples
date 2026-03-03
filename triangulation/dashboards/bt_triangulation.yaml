@@ -808,7 +808,7 @@ views:
 
           **Refining Fingerprints:**
 
-          Review "Fingerprint Details" table for each location and identify overlapping beacons (beacons that appear in multiple locations with similar signal strength). Improve triangulation using these tools:
+          Use the "Review" section to identify overlapping beacons (the "All Active Beacons" table shows which locations each beacon appears in and color-codes their discriminator quality). Once overlaps are identified, improve triangulation by managing beacons using these tools:
 
           **In Fingerprint Details:**
           - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is excluded from scoring. Easy to toggle on/off while experimenting.
@@ -829,8 +829,8 @@ views:
           **Fingerprint Details table:**
           - **Bold text**: Overlapping beacon (appears in 2+ locations - potential confusion risk)
           - **Locally ignored**: Strikethrough (ignored in this location only)
-          - **Strong match**: Green background (current scan RSSI within 5 dBm of fingerprint)
-          - **Match**: Blue background (current scan RSSI differs by >5 dBm from fingerprint)
+          - **Strong match**: Green background (current scan RSSI within RSSI Match Tolerance of fingerprint)
+          - **Match**: Blue background (current scan RSSI differs by more than RSSI Match Tolerance from fingerprint)
           - **Mismatch**: White background (beacon not found in current scan)
           - **?**: Indicates an unresolved device name (loaded in BT scans)
 
@@ -861,7 +861,7 @@ views:
         content: |
           ## Review
 
-          **What it does:** Provides three integrated analysis views for understanding beacon distribution and location overlap risks.
+          **What it does:** Provides integrated analysis views for understanding beacon distribution and location overlap risks.
 
           **Contents:**
 

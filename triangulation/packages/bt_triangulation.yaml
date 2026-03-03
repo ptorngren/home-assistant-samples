@@ -56,8 +56,8 @@ input_boolean:
   bt_filter_zero_rssi_signals:
     name: "Ignore Ghost Signals (0 dBm)"
     icon: mdi:ghost-off
-    # When ON: exclude RSSI=0 beacons at ingestion (current behavior)
-    # When OFF: allow RSSI=0 beacons through for diagnostic visibility
+    # When ON: exclude RSSI=0 beacons (zero-strength signals with no measurable distance)
+    # When OFF: include RSSI=0 beacons in scan processing
 
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names

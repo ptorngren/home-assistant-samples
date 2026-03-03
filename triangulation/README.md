@@ -106,10 +106,9 @@ The dashboard will be accessible at: `https://your-ha-url/dashboard-bt-triangula
 
 ### 2. Copy Dashboard & Package Files
 
-- Copy `dashboards/bt_triangulation.yaml` to your `dashboards/` directory
-- Copy all files from `packages/triangulation/` to your `packages/triangulation/` directory:
-  - `bt_triangulation.yaml`
-  - `bt_location_symmetric_ratio.yaml`
+- Copy files from `dashboards/` to your `dashboards/` directory
+- Copy all files from `packages/triangulation/` to your `packages/triangulation/` directory
+  - The `data/` subdirectory will be created automatically after the first scan
 
 ### 3. Verify Packages Are Loaded
 
