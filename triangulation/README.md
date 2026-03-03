@@ -133,6 +133,35 @@ In Home Assistant:
 
 ---
 
+## Package Structure
+
+The triangulation system consists of several YAML files that work together:
+
+### `bt_triangulation.yaml` (Core Package)
+Main orchestrator that sets up the webhook endpoint and coordinate detection logic:
+- **`automation:phone_charger_bt_location`** — Receives Tasker webhook with BT scan results, triggers location detection
+- **`automation:phone_charger_power_disconnect`** — Clears location when phone unplugged from charger
+- **`input_text.device_charger_locations`** — Stores detected location (e.g., "kitchen", "garage")
+- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip `_FKB` suffix)
+- **`script.detect_charger_location`** — Coordinates location detection by calling matching algorithms
+
+**You should NOT need to edit this file.**
+
+### `bt_location_symmetric_ratio.yaml` & `bt_location_similarity_match.yaml` (Algorithms)
+Alternative matching algorithms that analyze fingerprints:
+- Symmetric Ratio: Compares signal patterns using set intersection/union
+- Similarity Match: Calculates weighted similarity scores based on beacon strength
+
+**You should NOT need to edit these files.**
+
+### `data/` Directory (Fingerprints)
+- **`fingerprints.csv`** — Stores learned Bluetooth signal signatures for each location
+- **`ignored.csv`** — Beacons explicitly marked as unreliable or too noisy
+
+These files are updated automatically when you capture fingerprints in the dashboard. Do not edit manually unless you know what you're doing.
+
+---
+
 ## Scan Sources
 
 The triangulation system accepts Bluetooth scan data from any source that can POST JSON to a webhook endpoint. While Tasker on Android is the reference implementation, you can use any system capable of discovering Bluetooth devices and sending data to Home Assistant.
@@ -301,21 +330,6 @@ curl -X POST http://your-ha-ip:8123/api/webhook/phone_charger_bt \
   -H "Content-Type: application/json" \
   -d '{"devices": [{"mac": "AA:BB:CC:DD:EE:FF", "name": "Device", "rssi": -65}]}'
 ```
-
----
-
-## Configuration
-
-### Setting Up Location Names
-
-1. Open the **BT Location Calibration** dashboard (at `/dashboard-bt-triangulation`)
-2. Enter your location names in **Location Names** field (e.g., "kitchen, garage, bedroom")
-   - Comma-separated, lowercase preferred
-   - **Important:** Order is permanent. Once you capture fingerprints, changing the order corrupts data. Renaming is OK; reordering is not.
-3. Adjust **BT Weak Signal Threshold** if needed (beacons below this are filtered out; -85 dBm is a good starting point)
-4. Configure **Ignore Ghost Signals (0 dBm)** if needed:
-   - **ON:** Ignores RSSI=0 beacons in scoring (captured and visible but not used for triangulation)
-   - **OFF:** Includes RSSI=0 beacons in scoring like any other signal
 
 ---
 
@@ -533,11 +547,9 @@ To verify fingerprints are working:
 
 ### Step 4: Refine Beacon Selection (Optional)
 
-If match scores are low (<50%):
-- **Tap a beacon** in Fingerprint Details to locally ignore it (this location only)
-- **Hold a beacon** to globally ignore it (all locations)
-- Adjust **"Weak Signal Threshold"** if many weak signals interfere (-85 dBm is a good starting point)
-- Re-capture fingerprints at problematic locations
+If match scores are low, you can refine your fingerprints by ignoring confusing beacons for a specific location or globally (across all locations).
+
+See **"Common Tasks"** section below for detailed procedures and additional refinement options.
 
 ### Step 5: Advanced Testing (Algorithm Tuning)
 
@@ -608,13 +620,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 ### Refining Fingerprints
 
-Review "Fingerprint Details" table for each location and identify overlapping beacons (beacons that appear in multiple locations with similar signal strength). Improve triangulation using these tools:
-
-- **Tap a beacon** — Ignore in this location only (Fingerprint Details only) — block overlapping beacons from affecting this location (e.g., strong beacon in adjacent rooms). This preserves the beacon for other locations that need it. The beacon stays in the fingerprint but is excluded from scoring.
-- **Double-tap a beacon** — Remove permanently from this location's fingerprint — use when a beacon is no longer relevant to this location and you don't want it counted. The beacon is gone from the fingerprint — recapture or merge to add it back.
-- **Hold/long-press a beacon** — Ignore globally across all locations — remove irrelevant/volatile devices (e.g., neighbor's bluetooth party speaker). The beacon is removed from all fingerprints and excluded everywhere, filtered out from future captures.
-
-**Hint:** Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons. Use **tap** to temporarily ignore overlapping beacons while experimenting, **double-tap** to permanently remove beacons that don't belong, and **long-press** to mark truly irrelevant devices as globally ignored. Visit the **Review** tab to see all active beacons across locations, manage globally ignored beacons, and check the Location Cross-Reference Matrix to visualize overlapping locations.
+In the Fingerprint Details table, manage beacon which beacons to ignores to improve location detection.
 
 ### Task 1: Experiment with Overlapping Beacons (Single-Tap)
 
@@ -622,8 +628,7 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 2. **Tap the beacon** to toggle it ignored/active for that location
 3. Beacon remains in the fingerprint but is excluded from scoring
 4. Check the "Scores for Latest Scan" table to see if scores improve
-5. If satisfied, you're done — beacon stays in fingerprint for recapture/merging
-6. If unsure, leave it active for now — easy to toggle back
+5. If unsure, leave it active or ignored for now — easy to toggle back and forth
 
 ### Task 2: Permanently Remove a Beacon (Double-Tap)
 
@@ -638,7 +643,6 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 2. **Hold/long-press the beacon** in latest scan or in any location's fingerprint
 3. Beacon is removed from all locations' fingerprints and excluded everywhere
 4. Beacon never matches any location and is filtered from future captures
-5. All locations show that this MAC is ignored
 
 ### Task 4: Re-enable an Ignored Beacon
 
@@ -648,7 +652,7 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 3. Beacon now counts in scoring again for that location
 
 **Global ignore (long-press toggle):**
-1. Find the beacon in Latest BT Scan, Fingerprint Details, **Globally Ignored** table (Triangulation tab), or **All Active Beacons** table (Review tab)
+1. Find the beacon in Latest BT Scan, Fingerprint Details, or **Globally Ignored** table (Review tab)
 2. **Hold/long-press the beacon** to restore it (remove from global list)
 3. Beacon is removed from the Globally Ignored table
 4. Beacon no longer appears with strikethrough in Latest BT Scan and Fingerprint Details
@@ -656,20 +660,16 @@ Review "Fingerprint Details" table for each location and identify overlapping be
 
 ### Task 5: Check Current Ignore Status
 
-1. Check `sensor.bt_ignored_beacons` state (shows count)
-2. Go to `/dashboard-bt-triangulation`
-3. Check "Fingerprint Details" table for per-location `:X` suffixes (red highlight)
-4. Check "Beacon Coverage Summary" for active/ignored counts per location
-5. Run `script.report_ignored_beacons` for detailed report
+1. Click the **"Beacon Status"** button for a detailed report
+2. Check **"Fingerprint Details"** table for ignored beacons per location
+3. Check **"Globally Ignored"** table (Review tab) for beacons excluded across all locations
 
-### Task 6: Reset All Ignores
+### Task 6: Reset Ignores
 
-1. Clear global ignored file (delete or empty `.cache/bt_ignored.csv`)
-2. Recapture location fingerprints (removes `:X` suffixes):
-   - Open dashboard, go to each location, long-press location heading to recapture
-   - Or manually edit `.cache/bt_fingerprints.csv` and remove `:X` suffixes from each beacon
-3. Verify in "Beacon Coverage Summary" that all beacons show as active
-4. Check the "Scores for Latest Scan" table to confirm detection works with all beacons active
+1. Clear global ignored file (delete or empty `packages/triangulation/data/bt_ignored.csv`)
+2. Recapture location fingerprints
+   - go to each location and initiate a new scan, then long-press location heading to recapture
+   - Or manually edit ``packages/triangulation/data/bt_fingerprints.csv`` and remove `:X` suffixes from each beacon
 
 ---
 
@@ -981,7 +981,7 @@ AA:BB:CC:DD:EE:FF
 
 ### Per-Location Ignores
 
-**File:** `.cache/bt_fingerprints.csv` (same as fingerprints)
+**File:** ``packages/triangulation/data/bt_fingerprints.csv`` (same as fingerprints)
 
 **Format:**
 ```
@@ -1019,7 +1019,7 @@ Algorithm automatically uses updated list
 
 ### Filtering During Detection
 ```
-BT scan → script.detect_location_from_signals
+BT scan → script.detect_charger_location
   ↓ (loads fingerprints + global ignored)
   ↓ (filters out ignored beacons)
 script.bt_location_symmetric_ratio
@@ -1065,8 +1065,7 @@ for beacon in fingerprint:
 | `script.bt_beacon_toggle_location_ignored` | Toggle beacon ignored status at specific location (single-tap) | location_index, mac |
 | `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
 | `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
-| `script.report_ignored_beacons` | Check ignore status | (none) |
-| `script.test_algorithm_sanity_check` | Test with ignored beacons | (none) |
+| `script.report_beacon_status` | Check ignore status | (none) |
 
 ### Service Call Examples
 
@@ -1095,12 +1094,7 @@ data:
 
 **Report ignored beacons:**
 ```yaml
-service: script.report_ignored_beacons
-```
-
-**Test algorithm validation:**
-```yaml
-service: script.test_algorithm_sanity_check
+service: script.report_beacon_status
 ```
 
 </details>

@@ -38,10 +38,10 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
    - Import `screensaver.yaml` into your `dashboards/` directory.
 
 3. **Copy package files to packages/ directory**
-   - Copy `common.yaml`, `screensaver.yaml`, and `screensaver_local.yaml` into your `packages/` directory
+   - Copy `common.yaml` and `screensaver_local.yaml` into your `packages/` directory
    - `common.yaml` contains shared components (time/date sensor) used by multiple packages
-   - `bt_beacon_triangulation.yaml` contains generic/reusable logic for location detection, device mapping, etc.
    - `screensaver_local.yaml` contains local/customizable sensors, automations and entity mappings
+   - See the Triangulation project README for location detection package setup
 
 4. **Add packages directive to configuration.yaml**
    - If not already present, add this to your `configuration.yaml`:
@@ -136,17 +136,6 @@ Contains truly generic components used by multiple packages (screensaver, motorv
 
 **You should NOT need to edit this file.**
 
-### `bt_beacon_triangulation.yaml` (Generic / Reusable)
-Contains device-agnostic components specific to screensaver that work the same way for all users:
-- **`input_text.device_charger_locations`** — Helper that stores device-to-location mappings (updated by location detection)
-- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, eg to strip `_FKB` suffix)
-- **`script.detect_charger_location`** — Location detection logic that analyzes Bluetooth signals from Tasker
-- **Automations:**
-  - Phone Charger BT Location Detection — Receives Tasker webhook with BT scan results
-  - Phone Charger Power Disconnect Detection — Clears location when phone unplugged from charger
-
-**You should NOT need to edit this file.**
-
 ### `screensaver_local.yaml` (Local / Customizable)
 Contains sensors and automations specific to your setup that you will adapt:
 - **Temperature sensor** — Reads from your local temperature sensors (currently: `garage_framsidan`, `relax_baksidan`)
@@ -177,8 +166,7 @@ Contains sensors and automations specific to your setup that you will adapt:
    - Your browser_id values differ from examples (e.g., not using FKB suffix)
    - You want to customize tap action behavior
 
-3. **`bt_beacon_triangulation.yaml`** contains generic logic for location detection using Bluetooth triangulation:
-   - You should normally not need to edit this file
+3. **Location detection** is handled by the Triangulation package. See the Triangulation project README for setup and configuration.
 
 4. **`common.yaml`** — Contains shared components (like time/date sensor) used by multiple packages
    - You should normally not need to edit this file
@@ -340,11 +328,7 @@ Together, these create a true full-screen kiosk experience suitable for wall-mou
 
 ### User Interactions (Tap Actions)
 
-Despite being a passive screensaver, the dashboard supports intentional user interactions:
-
-- **Single Tap:** User-configurable action via `script.tablet_tap`
-- **Double Tap:** User-configurable action via `script.tablet_double_tap`
-- **Hold Action:** User-configurable action via `script.tablet_hold`
+Despite being a passive screensaver, the dashboard supports intentional user interactions via three customizable scripts: tap, double-tap, and hold actions. See **"Browser Mod Setup & Device Registration"** section below for detailed configuration and device-specific routing.
 
 ---
 
@@ -764,7 +748,7 @@ This is updated automatically when Tasker sends a new scan.
 **For Persistent Data (Fingerprints):**
 
 If you need data that survives Home Assistant restarts, the system uses **file-based storage with sensor attributes**:
-- Fingerprints: stored in `/config/.cache/bt_fingerprints.csv`
+- Fingerprints: stored in `/config/packages/triangulation/data/bt_fingerprints.csv`
 - Accessed via: `state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')`
 - Read on HA startup and whenever referenced
 
@@ -954,7 +938,7 @@ If the screensaver is running in FKB kiosk mode (no sidebar visible):
 
 **4. Script Configuration**
 
-Update the `tablet_tap`, `tablet_double_tap`, and `tablet_hold` scripts in your Home Assistant configuration to conditionally execute different actions based on `browser_id`:
+Update the `screensaver_tap`, `screensaver_double_tap`, and `screensaver_hold` scripts in your Home Assistant configuration to conditionally execute different actions based on `browser_id`:
 
 ```yaml
 script:
@@ -1165,9 +1149,9 @@ Replace entity references in JavaScript custom fields with your own sensors:
 ### Customizing Tap Actions
 
 Define the following scripts in your Home Assistant configuration to customize tap interactions:
-- `script.tablet_tap` — Called on single tap
-- `script.tablet_double_tap` — Called on double tap
-- `script.tablet_hold` — Called on long press
+- `script.screensaver_tap` — Called on single tap
+- `script.screensaver_double_tap` — Called on double tap
+- `script.screensaver_hold` — Called on long press
 
 If these scripts don't exist, taps will be silently ignored.
 
