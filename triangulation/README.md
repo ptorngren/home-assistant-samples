@@ -58,11 +58,15 @@ Ensure you have the triangulation package and dashboard in your Home Assistant c
 ```
 H:/
 ├── dashboards/
-│   └── bt_triangulation.yaml
+│   ├── bt_triangulation.yaml
+│   └── ...
 ├── packages/
 │   └── triangulation/
 │       ├── bt_triangulation.yaml
-│       └── bt_location_symmetric_ratio.yaml
+│       ├── bt_location_symmetric_ratio.yaml
+│       ├── data/
+│       │   └── ...
+│       └── ...
 └── www/
     └── docs/
         └── triangulation-README.md  (this file)
@@ -308,8 +312,8 @@ curl -X POST http://your-ha-ip:8123/api/webhook/phone_charger_bt \
 2. Enter your location names in **Location Names** field (e.g., "kitchen, garage, bedroom")
    - Comma-separated, lowercase preferred
    - **Important:** Order is permanent. Once you capture fingerprints, changing the order corrupts data. Renaming is OK; reordering is not.
-3. Adjust **BT Weak Signal Threshold** if needed (default -95 dBm; beacons below this are filtered out)
-4. Configure **Ignore Ghost Signals (0 dBm)** if needed (default: ON):
+3. Adjust **BT Weak Signal Threshold** if needed (beacons below this are filtered out; -85 dBm is a good starting point)
+4. Configure **Ignore Ghost Signals (0 dBm)** if needed:
    - **ON:** Ignores RSSI=0 beacons in scoring (captured and visible but not used for triangulation)
    - **OFF:** Includes RSSI=0 beacons in scoring like any other signal
 
@@ -532,7 +536,7 @@ To verify fingerprints are working:
 If match scores are low (<50%):
 - **Tap a beacon** in Fingerprint Details to locally ignore it (this location only)
 - **Hold a beacon** to globally ignore it (all locations)
-- Adjust **"Weak Signal Threshold"** (default: -95 dBm) if many weak signals interfere
+- Adjust **"Weak Signal Threshold"** if many weak signals interfere (-85 dBm is a good starting point)
 - Re-capture fingerprints at problematic locations
 
 ### Step 5: Advanced Testing (Algorithm Tuning)
@@ -560,7 +564,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 **What you see:**
 - **Location Names** — Editable list of rooms where you want location detection (kitchen, garage, office, etc.)
-- **BT Weak Signal Threshold** — Slider to ignore weak beacons that might cause false positives (-95 dBm is a fair starting point)
+- **BT Weak Signal Threshold** — Slider to ignore weak beacons that might cause false positives (-85 dBm is a good starting point)
 - **Management Buttons** — Report beacon status, load or clear stored data
 - **Latest BT Scan** — Bluetooth devices with signal strength (RSSI in dBm) and device names as reported by the most recent report
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
@@ -581,7 +585,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
-   - **Ignore Ghost Signals (0 dBm)** — Toggle to exclude RSSI=0 "ghost" beacons (devices with dynamic MACs or no valid signal). **ON by default** preserves data quality; toggle **OFF** temporarily for diagnostic purposes
+   - **Ignore Ghost Signals (0 dBm)** — Toggle to exclude RSSI=0 "ghost" beacons (devices with dynamic MACs or no valid signal); preserves data quality, toggle **OFF** temporarily for diagnostic purposes
 
 **Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction). If scores are similar across locations, refine your fingerprints by managing overlapping beacons.
 
@@ -739,7 +743,7 @@ If any step fails, check the Troubleshooting section below.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "Latest BT Scan" is empty; no devices showing | Webhook not triggered OR Tasker not sending data | Check Tasker logs; manually trigger "Send BT Raw Data" task; verify webhook URL is correct |
-| Fingerprints captured but very few beacons | Weak Signal Threshold too high (filtering out devices) | Lower threshold from -95 to -100 dBm; recapture fingerprints |
+| Fingerprints captured but very few beacons | Weak Signal Threshold too high (filtering out devices) | Lower the threshold; recapture fingerprints |
 | Match scores always low (<30%) even after capture | Beacon volatility or poor signal quality | Review "All Active Beacons" table; globally ignore volatile beacons; recapture when signals are stable |
 | Different locations score similarly (ambiguous) | Overlapping beacons with similar RSSI across rooms | Use Review tab "Location Cross-Reference Matrix" to identify overlapping pairs; locally ignore overlapping beacons |
 | Location detection works some days, fails other days | Environmental Bluetooth interference (neighbors, devices turning on/off) | Increase RSSI Match Tolerance; ignore temporarily unstable beacons; retest at different times of day |
