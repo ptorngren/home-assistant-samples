@@ -811,9 +811,9 @@ views:
           Use the "Review" section to identify overlapping beacons (the "All Active Beacons" table shows which locations each beacon appears in and color-codes their discriminator quality). Once overlaps are identified, improve triangulation by managing beacons using these tools:
 
           **In Fingerprint Details:**
-          - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is excluded from scoring. Easy to toggle on/off while experimenting.
+          - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is ignored in scoring. Easy to toggle on/off while experimenting.
           - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
-          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and excluded everywhere, filtered out from future captures.
+          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.
 
           **In Latest BT Scan:**
           - **Hold/long-press a beacon**: Ignore globally - quick way to mark irrelevant devices as globally ignored.
@@ -849,10 +849,17 @@ views:
           **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
 
           **How to use:**
-          - Adjust **Weak Signal Threshold** to set the minimum signal level for valid beacons (weaker signals are ignored)
-          - Adjust **RSSI Match Tolerance** (dBm) to control how closely scanned RSSI must match fingerprint RSSI to count as a match
-          - Toggle **Ignore Ghost Signals (0 dBm)** to ignore zero-strength beacons (treat as weak signals)
+          - Adjust **Weak Signal Threshold** (used only during fingerprint capture to keep anchors stable; not used during matching)
+          - Adjust **RSSI Match Tolerance** (dBm) to control how closely scanned RSSI must match fingerprint RSSI to count as a match (primary parameter for detection accuracy)
+          - Toggle **Ignore Ghost Signals (0 dBm)** to control whether 0 dBm signals are captured in fingerprints (does NOT affect matching):
+            - **ON:** Ignore 0 dBm signals during fingerprint capture (recommended for most users)
+            - **OFF:** Capture 0 dBm signals in fingerprints (useful if you have legitimate 0 dBm beacons)
           - Review the **Scores for Latest Scan** table to see how locations match and what scores they get
+
+          **Matching Logic:**
+          - All known beacons (registered in any location's fingerprint) are considered during matching, regardless of signal strength
+          - A beacon is matched if its scan RSSI is within ±N dBm of the fingerprint RSSI (where N is the RSSI Match Tolerance)
+          - Weak threshold only filters beacons during fingerprint capture; it does NOT filter during live detection
 
           **Note on Updates:** Beacon coloring in Fingerprint Details updates immediately when you change slider settings. The Scores table requires manual refresh - press the refresh button in the table heading to recalculate with new parameters.
 
@@ -884,7 +891,7 @@ views:
                - 🔴 Red: beacon appears in ALL locations with similar RSSI → poor discriminator (ambiguous everywhere)
                - 🟢 Green: beacon has unique RSSI in every location where it appears → excellent discriminator (helps distinguish locations)
                - White: beacon RSSI similar in some locations but unique in others → medium discriminator (can help in some pairs)
-             - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but excluded from scoring)
+             - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but ignored in scoring)
              - **Double-tap any beacon** to permanently remove it from all location fingerprints where it appears (beacon disappears from this list)
              - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
              - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution
@@ -893,7 +900,7 @@ views:
              - Lists all beacons you've marked as globally ignored
              - Styled in grey with strikethrough to indicate ignored status
              - **Hold any beacon** to restore it (remove from global ignore list)
-             - These beacons are excluded from all detection and filtered out during future fingerprint captures
+             - These beacons are ignored in all detection and filtered out during future fingerprint captures
 
   - path: home
     title: "Triangulation"

@@ -147,12 +147,13 @@ Main orchestrator that sets up the webhook endpoint and coordinate detection log
 
 **You should NOT need to edit this file.**
 
-### `bt_location_symmetric_ratio.yaml` & `bt_location_similarity_match.yaml` (Algorithms)
-Alternative matching algorithms that analyze fingerprints:
-- Symmetric Ratio: Compares signal patterns using set intersection/union
-- Similarity Match: Calculates weighted similarity scores based on beacon strength
+### `bt_location_symmetric_ratio.yaml` (Matching Algorithm)
+Analyzes fingerprints using the Symmetric Ratio algorithm:
+- Compares signal patterns using bidirectional beacon matching
+- Formula: `(matched / fingerprint_total) × (matched / scan_valid)`
+- Eliminates small-fingerprint bias and automatically penalizes unexpected beacons
 
-**You should NOT need to edit these files.**
+**You should NOT need to edit this file.**
 
 ### `data/` Directory (Fingerprints)
 - **`fingerprints.csv`** — Stores learned Bluetooth signal signatures for each location
@@ -371,15 +372,20 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 ```
 Score = (matched / fingerprint_total) × (matched / scan_valid)
 
-- matched: Number of beacons found in both fingerprint and current scan
-- fingerprint_total: Total unique beacons in this location's fingerprint
-- scan_valid: Number of beacons in current scan that exist in at least one location's fingerprint
+- matched: Number of beacons found in both fingerprint and current scan (within RSSI tolerance)
+- fingerprint_total: Number of known beacons in this location's fingerprint (ignoring locally marked beacons with `:X`)
+- scan_valid: Number of beacons in current scan that are known (exist in at least one fingerprint, not marked locally ignored with `:X`, and not on global ignore list)
 ```
 
 **This symmetric ratio approach:**
 - **First term (matched/fingerprint):** Measures recall—how many of this location's expected beacons were found
 - **Second term (matched/scan_valid):** Measures precision—how many beacons in the scan belong to this location
 - **Result:** Bidirectional matching eliminates small-fingerprint bias and automatically penalizes unexpected beacons
+
+**Matching Logic:**
+- **No weak threshold during matching** — All known beacons are considered, even weak ones (weak threshold only filters during fingerprint capture)
+- **Tolerance-based validity** — A beacon matches if `|scan_rssi - fingerprint_rssi| <= RSSI Match Tolerance`
+- **All fingerprinted beacons evaluated** — Even 0 dBm beacons in fingerprints participate in matching. If scan also shows 0 dBm, the diff is 0 ≤ tolerance → natural match
 
 Beacon curation improves these scores by removing beacons that hurt detection. Here are three worked examples:
 
@@ -485,23 +491,24 @@ In other words, **presence is confirmed, but distance is unknown.**
 - A 0 dBm signal from the Kitchen might be picked up by the Bedroom sensor
 - Treats weak/distorted signal the same as accurately measured ones, risking location ambiguity
 
-### How to Handle 0 dBm in Your Setup
+### How to Handle 0 dBm (Ghost Signals) in Your Setup
+
+The **Ignore Ghost Signals** toggle controls whether 0 dBm beacons are included when capturing fingerprints. It does NOT affect matching.
 
 1. **During Fingerprint Capture:**
-   - If you capture a 0 dBm reading, discard that packet and wait for a real RSSI value (e.g., -70, -85 dBm)
-   - Your master fingerprint should contain actual measured signal strengths, not glitched zeros
+   - **Ignore Ghost Signals ON:** 0 dBm readings are ignored during capture (recommended for most users)
+   - **Ignore Ghost Signals OFF:** 0 dBm readings are captured (useful if you have legitimate 0 dBm beacons)
+   - Your fingerprints will contain only the beacons that passed the capture filter
 
-2. **During Runtime (Location Detection):**
-   - All captured signals (including 0 dBm) are always visible in the latest scan
-   - Whether 0 dBm signals contribute to location matching depends on the **Ignore Ghost Signals** toggle:
-     - **ON:** 0 dBm signals are ignored in scoring/matching; presence is captured but not used for triangulation
-     - **OFF:** 0 dBm signals are treated like any other signal and contribute to location matching
+2. **During Runtime (Location Detection - Matching):**
+   - ALL beacons in your fingerprints participate in matching, including 0 dBm ones
+   - Matching uses RSSI tolerance: if scan shows 0 dBm and fingerprint shows 0 dBm, the diff is 0 ≤ tolerance → matches
+   - 0 dBm beacons are treated the same as any other beacon; the toggle's job was done at capture time
 
-3. **The Algorithm's Special Rule:**
-   - When a 0 dBm signal is included (toggle OFF), treat it as a "Logical Match" but a "Distance Outlier"
-   - Count it in matched_beacons: `+1` (presence confirmed)
-   - Skip RSSI tolerance checking: if `scan_rssi == 0`, automatically count as matched
-   - This way: `matched_beacons` stays high → location score stays stable
+3. **Why This Design:**
+   - The toggle controls data quality at capture time, not runtime behavior
+   - If you captured a 0 dBm beacon (whether by mistake or intentionally), it should participate in matching
+   - This keeps the matching algorithm simple and predictable: "match all known beacons"
 
 ---
 
@@ -597,7 +604,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
-   - **Ignore Ghost Signals (0 dBm)** — Toggle to exclude RSSI=0 "ghost" beacons (devices with dynamic MACs or no valid signal); preserves data quality, toggle **OFF** temporarily for diagnostic purposes
+   - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
 
 **Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction). If scores are similar across locations, refine your fingerprints by managing overlapping beacons.
 
@@ -626,7 +633,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 1. Identify locations where beacon causes ambiguity (similar RSSI values)
 2. **Tap the beacon** to toggle it ignored/active for that location
-3. Beacon remains in the fingerprint but is excluded from scoring
+3. Beacon remains in the fingerprint but is ignored in scoring
 4. Check the "Scores for Latest Scan" table to see if scores improve
 5. If unsure, leave it active or ignored for now — easy to toggle back and forth
 
@@ -641,7 +648,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 1. Identify beacon that's generally unwanted (neighbor device noise, volatile)
 2. **Hold/long-press the beacon** in latest scan or in any location's fingerprint
-3. Beacon is removed from all locations' fingerprints and excluded everywhere
+3. Beacon is removed from all locations' fingerprints and added to global ignore list
 4. Beacon never matches any location and is filtered from future captures
 
 ### Task 4: Re-enable an Ignored Beacon
@@ -662,7 +669,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 1. Click the **"Beacon Status"** button for a detailed report
 2. Check **"Fingerprint Details"** table for ignored beacons per location
-3. Check **"Globally Ignored"** table (Review tab) for beacons excluded across all locations
+3. Check **"Globally Ignored"** table (Review tab) for beacons on global ignore list
 
 ### Task 6: Reset Ignores
 
