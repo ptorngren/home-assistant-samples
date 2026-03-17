@@ -36,9 +36,9 @@ template:
           {% set b = states('sensor.relax_baksidan_temperature') | float(none) %}
           {% if f is not none and b is not none %}
             {% if (f - b) | abs < 2 %}
-              {{ ((f + b) / 2) | round(1) }}
+              [{{ ((f + b) / 2) | round(1) }}]
             {% else %}
-              {{ [f, b] | min | round(1) }} | {{ [f, b] | max | round(1) }}
+              [{{ [f, b] | min | round(1) }}, {{ [f, b] | max | round(1) }}]
             {% endif %}
           {% else %}
             unavailable

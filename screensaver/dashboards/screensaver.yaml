@@ -43,11 +43,9 @@ font_sizes:
   climate_details: &font_climate_details 7vw
   alarm: &font_alarm 5vw
 
-# Temperature display configuration
-# - char_limit: 13 chars = "-3.8 | -1.4°" (longest normal format)
-# - If temp string exceeds 13 chars, font shrinks from 18vw to 14vw to prevent overflow
-# - Value must match the hardcoded threshold in the temp custom_field JavaScript below
-# -------------------------------------------------------------------------------------
+# Temperature display thresholds
+# - If temp string exceeds char_limit, font shrinks to prevent overflow
+temp_char_limit: &char_limit 14  # Trigger font shrink, eg "-35.6 / -32.8°" (14 chars)
 
 # -------------------------------------------------------------------------------------
 # DECLUTTERING TEMPLATES
@@ -56,9 +54,12 @@ decluttering_templates:
   screensaver_template:
     card:
       type: custom:button-card
-      # Pass the anchor value into a card variable
+      # Pass the anchor values into card variables
       variables:
         locale: '[[locale]]'
+        char_limit: '[[char_limit]]'
+        font_temp: '[[font_temp]]'
+        font_temp_small: '[[font_temp_small]]'
         # browser_id is resolved dynamically at runtime via JavaScript from browser_mod localStorage
       card_mod:
         style: >
@@ -105,13 +106,15 @@ decluttering_templates:
           [[[ return states['sensor.time']?.state ?? ''; ]]]
         
         # Temperature display with conditional font sizing
-        # Uses temperature config anchors passed via variables
+        # State is always an array: [avg] or [lo, hi], allowing for any number of temperatures
         temp: |
           [[[
-            const tempState = states['sensor.screensaver_display_temperature']?.state ?? '';
-            const tempDisplay = tempState + '°';
-            const charLimit = 13;  // Must match temperature char_limit in comments above
-            const fontSize = tempDisplay.length > charLimit ? '14vw' : '18vw';
+            const tempState = states['sensor.screensaver_display_temperature']?.state ?? 'unavailable';
+            const temps = JSON.parse(tempState);
+            const tempDisplay = temps.map(t => `${t}°`).join(' / ');
+
+            const charLimit = parseInt(variables.char_limit);
+            const fontSize = tempDisplay.length > charLimit ? variables.font_temp_small : variables.font_temp;
             return `<div style="font-size: ${fontSize};">${tempDisplay}</div>`;
           ]]]
         
@@ -355,6 +358,8 @@ views:
           - font_time: *font_time
           - font_date: *font_date
           - font_temp: *font_temp
+          - font_temp_small: *font_temp_small
+          - char_limit: *char_limit
           - font_climate: *font_climate
           - font_climate_details: *font_climate_details
           - font_alarm: *font_alarm
