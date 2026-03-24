@@ -385,6 +385,7 @@ Score = (matched / fingerprint_total) × (matched / scan_valid)
 **Matching Logic:**
 - **No weak threshold during matching** — All known beacons are considered, even weak ones (weak threshold only filters during fingerprint capture)
 - **Tolerance-based validity** — A beacon matches if `|scan_rssi - fingerprint_rssi| <= RSSI Match Tolerance`
+- **Averaged fingerprint RSSI** — Each time you merge a fingerprint (tap the location heading), stored RSSI values are averaged with the new scan (running mean). A single outlier scan moves the stored value halfway rather than fully replacing it, dampening the effect of signal noise without requiring multiple captures.
 - **All fingerprinted beacons evaluated** — Even 0 dBm beacons in fingerprints participate in matching. If scan also shows 0 dBm, the diff is 0 ≤ tolerance → natural match
 
 Beacon curation improves these scores by removing beacons that hurt detection. Here are three worked examples:
@@ -534,6 +535,7 @@ For each location where you want to detect presence:
 3. In the **Fingerprint Details** section of the dashboard
 4. Locate the location heading for the current location (e.g., "OFFICE", "KITCHEN", etc.)
 5. **Hold (long-press)** the location heading to capture from scratch, OR **tap** to merge new beacons into existing fingerprint
+   - When merging, each beacon's stored RSSI is averaged with the new scan value (running mean). A single outlier scan moves the stored value halfway rather than replacing it entirely, reducing sensitivity to single-scan noise.
 
 Repeat for all configured locations.
 

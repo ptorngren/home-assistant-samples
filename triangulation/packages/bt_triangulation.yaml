@@ -1139,11 +1139,18 @@ script:
 
           - variables:
               # Merge: start with existing beacons, update RSSI from scan (preserving :X suffix), add new scan beacons
+              # For existing beacons: average stored and new RSSI (running mean) to reduce single-scan outlier sensitivity
               merged_beacons: |
                 {%- set ns = namespace(merged=existing_beacons) -%}
                 {%- for mac, rssi in scan_map.items() -%}
                   {%- set was_locally_ignored = ns.merged.get(mac, '') | string | select('contains', ':X') | list | length > 0 -%}
-                  {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                  {%- if mac in ns.merged -%}
+                    {%- set stored_rssi = ns.merged[mac] | string | replace(':X', '') | int -%}
+                    {%- set avg_rssi = ((stored_rssi + rssi) / 2) | round | int -%}
+                    {%- set new_rssi = avg_rssi | string ~ ':X' if was_locally_ignored else avg_rssi | string -%}
+                  {%- else -%}
+                    {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                  {%- endif -%}
                   {%- set ns.merged = ns.merged | combine({mac: new_rssi}) -%}
                 {%- endfor -%}
                 {{ ns.merged }}

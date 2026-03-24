@@ -198,9 +198,9 @@ script:
 
   screensaver_hold:
     description: "Screensaver hold - volume control popup via browser_id and location"
-    # Long press (hold) shows a browser_mod popup with volume control for the scenario's master zone
-    # Popup shows: Volume Down/Up buttons for master zone volume control
-    # Only shows popup if master zone is available and powered on
+    # Long press (hold) shows a browser_mod popup with volume control for the scenario's master player
+    # Popup shows: Volume Down/Up buttons for master player volume control
+    # Only shows popup if master player is available and powered on
     sequence:
       - action: script.screensaver_resolve_scenario
         data:
@@ -213,20 +213,20 @@ script:
             sequence:
               - variables:
                   scenario_entity: "binary_sensor.scenario_{{ resolved.target_scenario }}"
-                  master_zone: "{{ state_attr(scenario_entity, 'master') }}"
+                  master_player: "{{ state_attr(scenario_entity, 'master') }}"
               - choose:
                   - conditions:
                       - condition: template
-                        value_template: "{{ master_zone not in [none, 'unknown', 'unavailable'] }}"
+                        value_template: "{{ master_player not in [none, 'unknown', 'unavailable'] }}"
                       - condition: template
-                        value_template: "{{ states(master_zone) not in ['unavailable', 'unknown'] }}"
+                        value_template: "{{ states(master_player) not in ['unavailable', 'unknown'] }}"
                       - condition: template
-                        value_template: "{{ states(master_zone) != 'off' }}"
+                        value_template: "{{ states(master_player) != 'off' }}"
                     sequence:
                       - action: browser_mod.popup
                         data:
                           browser_id: "{{ browser_id }}"
-                          title: "Volume - {{ state_attr(master_zone, 'friendly_name') }}"
+                          title: "Volume - {{ state_attr(master_player, 'friendly_name') }}"
                           content:
                             type: horizontal-stack
                             cards:
@@ -236,7 +236,7 @@ script:
                                   action: call-service
                                   service: script.musiccast_adjust_volume
                                   data:
-                                    entity_id: "{{ master_zone }}"
+                                    entity_id: "{{ master_player }}"
                                     direction: "down"
                               - type: button
                                 icon: "mdi:plus"
@@ -244,7 +244,7 @@ script:
                                   action: call-service
                                   service: script.musiccast_adjust_volume
                                   data:
-                                    entity_id: "{{ master_zone }}"
+                                    entity_id: "{{ master_player }}"
                                     direction: "up"
 
 # ------------------------------------------------------------------
