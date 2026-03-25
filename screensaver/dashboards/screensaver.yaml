@@ -44,8 +44,8 @@ font_sizes:
   alarm: &font_alarm 5vw
 
 # Temperature display thresholds
-# - If temp string exceeds char_limit, font shrinks to prevent overflow
-temp_char_limit: &char_limit 14  # Trigger font shrink, eg "-35.6 / -32.8°" (14 chars)
+# - If temp string exceeds char_limit, font shrinks to prevent overflow, eg "-35.6 / -32.8°" (14 chars)
+temp_char_limit: &char_limit 12
 
 # -------------------------------------------------------------------------------------
 # DECLUTTERING TEMPLATES
@@ -109,13 +109,15 @@ decluttering_templates:
         # State is always an array: [avg] or [lo, hi], allowing for any number of temperatures
         temp: |
           [[[
-            const tempState = states['sensor.screensaver_display_temperature']?.state ?? 'unavailable';
-            const temps = JSON.parse(tempState);
-            const tempDisplay = temps.map(t => `${t}°`).join(' / ');
-
-            const charLimit = parseInt(variables.char_limit);
-            const fontSize = tempDisplay.length > charLimit ? variables.font_temp_small : variables.font_temp;
-            return `<div style="font-size: ${fontSize};">${tempDisplay}</div>`;
+            try {
+              const temps = JSON.parse(states['sensor.screensaver_display_temperature']?.state);
+              const tempDisplay = temps.map(t => `${t}°`).join(' / ');
+              const charLimit = parseInt(variables.char_limit);
+              const fontSize = tempDisplay.length > charLimit ? variables.font_temp_small : variables.font_temp;
+              return `<div style="font-size: ${fontSize};">${tempDisplay}</div>`;
+            } catch (e) {
+              return '--°';
+            }
           ]]]
         
         # Weather description
