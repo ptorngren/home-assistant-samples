@@ -767,145 +767,57 @@ decluttering_templates:
 # -------------------------------------------------------------------------------------
 
 views:
-  - path: guide
-    title: "Guide"
-    cards:
-      # 1. Intro and Quick Start
-      - type: markdown
-        content: |
-          ## Bluetooth Beacon Triangulation
-
-          **What it does:** Captures Bluetooth beacon signals at each charger location to detect phone position. These are stored as "fingerprints" representing the unique combination of beacon signals at each location.
-
-          **Real-world challenges:** In the ideal case this should be automatic. In practice, you will likely pick up irrelevant (alien/volatile) beacons such as neighbor devices, and also find that beacons overlap in several locations, making them hard to distinguish.
-
-          **Quick Start:**
-          1. Configure your location names
-          2. Place phone on charger at target location
-          3. Wait for Tasker BT scan to finish
-          4. View RSSI values in "Latest BT Scan" table
-          5. (Optional) Long-press any irrelevant beacons to mark them as globally ignored - these will be automatically filtered out in future captures
-          6. In "Fingerprint Details":
-             - **Hold location heading** to capture from scratch (replace entire fingerprint)
-             - **Tap location heading** to merge new beacons from scan into existing fingerprint
-          7. Repeat for all locations
-          8. Over time, revisit locations and refine fingerprints
-
-          **💡 Tip:** Beacon triangulation and curation are best done on a computer — the views become rather crowded on small phone screens.
-
-      # 2. Triangulation Guide
-      - type: markdown
-        content: |
-          ## Triangulation
-
-          **Automatic Filtering During Capture:**
-
-          When capturing or updating fingerprints, the system automatically ignores:
-          - Beacons below the weak signal threshold (prevents volatile weak signals from being stored)
-          - Beacons in the global ignored list (prevents known irrelevant devices from being stored)
-
-          This keeps fingerprints clean and focused on stable, useful signals without requiring manual cleanup.
-
-          **Refining Fingerprints:**
-
-          Use the "Review" section to identify overlapping beacons (the "All Active Beacons" table shows which locations each beacon appears in and color-codes their discriminator quality). Once overlaps are identified, improve triangulation by managing beacons using these tools:
-
-          **In Fingerprint Details:**
-          - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is ignored in scoring. Easy to toggle on/off while experimenting.
-          - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
-          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.
-
-          **In Latest BT Scan:**
-          - **Hold/long-press a beacon**: Ignore globally - quick way to mark irrelevant devices as globally ignored.
-
-          **Hint**: Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons.
-
-          **Visual Indicators:**
-
-          **Latest BT Scan table:**
-          - Weak signals: Italic and faded (below threshold - ignored in capture)
-          - Globally ignored: Grey text and strikethrough (ignored in capture and future scans)
-
-          **Fingerprint Details table:**
-          - **Bold text**: Overlapping beacon (appears in 2+ locations - potential confusion risk)
-          - **Locally ignored**: Strikethrough (ignored in this location only)
-          - **Strong match**: Green background (current scan RSSI within RSSI Match Tolerance of fingerprint)
-          - **Match**: Blue background (current scan RSSI differs by more than RSSI Match Tolerance from fingerprint)
-          - **Mismatch**: White background (beacon not found in current scan)
-          - **?**: Indicates an unresolved device name (loaded in BT scans)
-
-          **Location and Calibration Setup:**
-
-          - **Location Names**:
-            - Enter comma-separated names (`office, kitchen, garage` etc).
-            - **Maintain Order**
-              Fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints; the algorithm will match wrong locations. Once defined, keep the order fixed (renaming locations is OK). If you must change it, you will need to recapture all fingerprints from scratch.
-
-      # 3. Tuning Guide
-      - type: markdown
-        content: |
-          ## Tuning
-
-          **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
-
-          **How to use:**
-          - Adjust **Weak Signal Threshold** (used only during fingerprint capture to keep anchors stable; not used during matching)
-          - Adjust **RSSI Match Tolerance** (dBm) to control how closely scanned RSSI must match fingerprint RSSI to count as a match (primary parameter for detection accuracy)
-          - Toggle **Ignore Ghost Signals (0 dBm)** to control whether 0 dBm signals are captured in fingerprints (does NOT affect matching):
-            - **ON:** Ignore 0 dBm signals during fingerprint capture (recommended for most users)
-            - **OFF:** Capture 0 dBm signals in fingerprints (useful if you have legitimate 0 dBm beacons)
-          - Review the **Scores for Latest Scan** table to see how locations match and what scores they get
-
-          **Matching Logic:**
-          - All known beacons (registered in any location's fingerprint) are considered during matching, regardless of signal strength
-          - A beacon is matched if its scan RSSI is within ±N dBm of the fingerprint RSSI (where N is the RSSI Match Tolerance)
-          - Weak threshold only filters beacons during fingerprint capture; it does NOT filter during live detection
-
-          **Note on Updates:** Beacon coloring in Fingerprint Details updates immediately when you change slider settings. The Scores table requires manual refresh - press the refresh button in the table heading to recalculate with new parameters.
-
-      # 4. Review Guide
-      - type: markdown
-        content: |
-          ## Review
-
-          **What it does:** Provides integrated analysis views for understanding beacon distribution and location overlap risks.
-
-          **Contents:**
-
-          1. **Location Cross-Reference Matrix** — Diagnoses location confusion at a glance:
-             - Each row = source location fingerprint being tested
-             - Each column = reference location to score against
-             - Score (0.0–1.0): how likely the source fingerprint would be confused with the reference location
-             - 🟢 Green (< 0.3): good separation — locations are distinct
-             - 🟡 Amber (0.3–0.6): caution — some overlap, potential for confusion
-             - 🔴 Red (> 0.6): high confusion risk — fingerprints are too similar
-             - **Diagonal cells:** should all be 1.0 (each location detects itself)
-               - White background (1.0): normal, location fingerprint healthy
-               - 🔴 Red background (≠ 1.0): alarm! — location's fingerprint doesn't detect itself, indicates a serious problem
-             - Adjust **RSSI Match Tolerance** in Tuning view to see how sensitivity affects overlap
-
-          2. **All Active Beacons** — Master reference of all beacons across locations:
-             - Shows every beacon currently in use (active, non-weak, non-ignored)
-             - Columns: MAC address | Device name | Which locations it appears in
-             - Background color indicates beacon discriminator quality:
-               - 🔴 Red: beacon appears in ALL locations with similar RSSI → poor discriminator (ambiguous everywhere)
-               - 🟢 Green: beacon has unique RSSI in every location where it appears → excellent discriminator (helps distinguish locations)
-               - White: beacon RSSI similar in some locations but unique in others → medium discriminator (can help in some pairs)
-             - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but ignored in scoring)
-             - **Double-tap any beacon** to permanently remove it from all location fingerprints where it appears (beacon disappears from this list)
-             - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
-             - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution
-
-          3. **Globally Ignored** — Management of globally ignored beacons:
-             - Lists all beacons you've marked as globally ignored
-             - Styled in grey with strikethrough to indicate ignored status
-             - **Hold any beacon** to restore it (remove from global ignore list)
-             - These beacons are ignored in all detection and filtered out during future fingerprint captures
-
   - path: home
     title: "Triangulation"
+    icon: mdi:crosshairs-gps
     cards:
-      # Location Configuration, Weak Signal Threshold, and Management Buttons
+      # Latest BT scan - interactive beacon list with tap-to-ignore
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: |
+              {%- set known = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
+              {%- set unknown = state_attr('sensor.bt_location_scores', 'unknown_beacons_in_scan') | int(0) -%}
+              Latest BT Scan ({{ known }}+{{ unknown }})
+            secondary: "{{ state_attr('sensor.bt_latest_scan_full', 'timestamp') | default('No scan yet') }}"
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: scan_list_template
+
+
+      # Fingerprint Details (auto-entities with button-cards)
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "Location Fingerprints"
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: custom:decluttering-card
+            template: beacon_list_template
+            variables:
+              - color_rssi_match: *color_success
+              - color_in_scan: *color_info
+              - location_header_bg: *color_header_bg
+
+  # Algorithm Settings View
+  - path: algorithm
+    title: "Settings"
+    icon: mdi:tune-variant
+    cards:
+      # Location Configuration and Management Buttons
       - type: vertical-stack
         cards:
           - type: entities
@@ -953,51 +865,6 @@ views:
                   name:
                     - font-size: 12px
 
-      # Latest BT scan - interactive beacon list with tap-to-ignore
-      - type: custom:stack-in-card
-        cards:
-          - type: custom:mushroom-template-card
-            primary: |
-              {%- set known = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
-              {%- set unknown = state_attr('sensor.bt_location_scores', 'unknown_beacons_in_scan') | int(0) -%}
-              Latest BT Scan ({{ known }}+{{ unknown }})
-            secondary: "{{ state_attr('sensor.bt_latest_scan_full', 'timestamp') | default('No scan yet') }}"
-            card_mod:
-              style: |
-                ha-card {
-                  border: none;
-                  box-shadow: none;
-                  background: none;
-                }
-
-          - type: custom:decluttering-card
-            template: scan_list_template
-
-
-      # Fingerprint Details (auto-entities with button-cards)
-      - type: custom:stack-in-card
-        cards:
-          - type: custom:mushroom-template-card
-            primary: "Location Fingerprints"
-            card_mod:
-              style: |
-                ha-card {
-                  border: none;
-                  box-shadow: none;
-                  background: none;
-                }
-
-          - type: custom:decluttering-card
-            template: beacon_list_template
-            variables:
-              - color_rssi_match: *color_success
-              - color_in_scan: *color_info
-              - location_header_bg: *color_header_bg
-
-  # Algorithm Tuning View
-  - path: algorithm
-    title: "Tuning"
-    cards:
       # Algorithm Settings
       - type: entities
         title: "Algorithm Settings"
@@ -1075,6 +942,7 @@ views:
   # Review View
   - path: review
     title: "Review"
+    icon: mdi:magnify
     cards:
       # Location Cross-Reference Matrix
       - type: custom:stack-in-card
@@ -1156,3 +1024,138 @@ views:
 
           - type: custom:decluttering-card
             template: ignored_list_template
+
+  - path: guide
+    title: "Guide"
+    icon: mdi:help-circle-outline
+    cards:
+      # 1. Intro and Quick Start
+      - type: markdown
+        content: |
+          ## Bluetooth Beacon Triangulation
+
+          **What it does:** Captures Bluetooth beacon signals at each charger location to detect phone position. These are stored as "fingerprints" representing the unique combination of beacon signals at each location.
+
+          **Real-world challenges:** In the ideal case this should be automatic. In practice, you will likely pick up irrelevant (alien/volatile) beacons such as neighbor devices, and also find that beacons overlap in several locations, making them hard to distinguish.
+
+          **Quick Start:**
+          1. Configure your location names
+          2. Place phone on charger at target location
+          3. Wait for Tasker BT scan to finish
+          4. Open the **Triangulation** view
+             - In "Latest BT Scan" table: View RSSI values
+               - (Optional) Long-press any irrelevant beacons to mark them as globally ignored — these will be automatically filtered out in future captures
+             - In "Fingerprint Details":
+               - **Hold location heading** to capture beacons from scratch (replace entire fingerprint)
+               - **Tap location heading** to merge beacons from scan into existing fingerprint
+          5. Repeat for all locations
+          6. Over time, revisit locations and refine fingerprints
+
+          **💡 Tip:** Beacon triangulation and curation are best done on a computer — the views become rather crowded on small phone screens.
+
+          Detailed instructions for each view are on the cards below.
+
+      # 2. Triangulation Guide
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:crosshairs-gps"></ha-icon> Triangulation
+
+          **What it does:** The main working view for capturing and curating location fingerprints. Place your phone at a location, run a BT scan, then capture or update the fingerprint here. Revisit over time to refine as beacon signals change.
+
+          **Automatic Filtering During Capture:**
+
+          When capturing or updating fingerprints, the system automatically ignores:
+          - Beacons below the weak signal threshold (prevents volatile weak signals from being stored)
+          - Beacons in the global ignored list (prevents known irrelevant devices from being stored)
+
+          This keeps fingerprints clean and focused on stable, useful signals without requiring manual cleanup.
+
+          **Refining Fingerprints:**
+
+          Use the "Review" section to identify overlapping beacons (the "All Active Beacons" table shows which locations each beacon appears in and color-codes their discriminator quality). Once overlaps are identified, improve triangulation by managing beacons using these tools:
+
+          **In Fingerprint Details:**
+          - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is ignored in scoring. Easy to toggle on/off while experimenting.
+          - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
+          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.
+
+          **In Latest BT Scan:**
+          - **Hold/long-press a beacon**: Ignore globally - quick way to mark irrelevant devices as globally ignored.
+
+          **Hint**: Since BT beacons are inherently volatile, they will most likely change over time. By opening the settings and checking the fingerprints every now and then, you can gradually refine them by managing overlapping beacons.
+
+          **Visual Indicators:**
+
+          **Latest BT Scan table:**
+          - Weak signals: Italic and faded (below threshold - ignored in capture)
+          - Globally ignored: Grey text and strikethrough (ignored in capture and future scans)
+
+          **Fingerprint Details table:**
+          - **Bold text**: Overlapping beacon (appears in 2+ locations - potential confusion risk)
+          - **Locally ignored**: Strikethrough (ignored in this location only)
+          - **Strong match**: Green background (current scan RSSI within RSSI Match Tolerance of fingerprint)
+          - **Match**: Blue background (current scan RSSI differs by more than RSSI Match Tolerance from fingerprint)
+          - **Mismatch**: White background (beacon not found in current scan)
+          - **?**: Indicates an unresolved device name (loaded in BT scans)
+
+      # 3. Settings Guide
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:tune-variant"></ha-icon> Settings
+
+          **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
+
+          **How to use:**
+          - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). ⚠️ **Maintain order** — fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints. Once defined, keep the order fixed (renaming is OK); if you must reorder, recapture all fingerprints from scratch.
+          - Adjust **Weak Signal Threshold** to ignore weak beacons when capturing fingerprints (used to keep anchors stable; not used during matching)
+          - Adjust **RSSI Match Tolerance** (dBm) to control how closely scanned RSSI must match fingerprint RSSI to count as a match (primary parameter for detection accuracy)
+          - Toggle **Ignore Ghost Signals (0 dBm)** to control whether 0 dBm signals are captured in fingerprints (does NOT affect matching):
+            - **ON:** Ignore 0 dBm signals during fingerprint capture (recommended for most users)
+            - **OFF:** Capture 0 dBm signals in fingerprints (useful if you have legitimate 0 dBm beacons)
+          - Review the **Scores for Latest Scan** table to see how locations match and what scores they get
+
+          **Matching Logic:**
+          - All known beacons (registered in any location's fingerprint) are considered during matching, regardless of signal strength
+          - A beacon is matched if its scan RSSI is within ±N dBm of the fingerprint RSSI (where N is the RSSI Match Tolerance)
+          - Weak threshold only filters beacons during fingerprint capture; it does NOT filter during live detection
+
+          **Note on Updates:** Beacon coloring in Fingerprint Details updates immediately when you change slider settings. The Scores table requires manual refresh - press the refresh button in the table heading to recalculate with new parameters.
+
+      # 4. Review Guide
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:magnify"></ha-icon> Review
+
+          **What it does:** Integrated analysis tools for understanding beacon quality and location overlap. Use these views to diagnose detection issues and decide which beacons to keep, ignore, or remove.
+
+          **Contents:**
+
+          1. **Location Cross-Reference Matrix** — Diagnoses location confusion at a glance:
+             - Each row = source location fingerprint being tested
+             - Each column = reference location to score against
+             - Score (0.0–1.0): how likely the source fingerprint would be confused with the reference location
+             - 🟢 Green (< 0.3): good separation — locations are distinct
+             - 🟡 Amber (0.3–0.6): caution — some overlap, potential for confusion
+             - 🔴 Red (> 0.6): high confusion risk — fingerprints are too similar
+             - **Diagonal cells:** should all be 1.0 (each location detects itself)
+               - White background (1.0): normal, location fingerprint healthy
+               - 🔴 Red background (≠ 1.0): alarm! — location's fingerprint doesn't detect itself, indicates a serious problem
+             - Adjust **RSSI Match Tolerance** in Settings view to see how sensitivity affects overlap
+
+          2. **All Active Beacons** — Master reference of all beacons across locations:
+             - Shows every beacon currently in use (active, non-weak, non-ignored)
+             - Columns: MAC address | Device name | Which locations it appears in
+             - Background color indicates beacon discriminator quality:
+               - 🔴 Red: beacon appears in ALL locations with similar RSSI → poor discriminator (ambiguous everywhere)
+               - 🟢 Green: beacon has unique RSSI in every location where it appears → excellent discriminator (helps distinguish locations)
+               - White: beacon RSSI similar in some locations but unique in others → medium discriminator (can help in some pairs)
+             - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but ignored in scoring)
+             - **Double-tap any beacon** to permanently remove it from all location fingerprints where it appears (beacon disappears from this list)
+             - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
+             - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution
+
+          3. **Globally Ignored** — Management of globally ignored beacons:
+             - Lists all beacons you've marked as globally ignored
+             - Styled in grey with strikethrough to indicate ignored status
+             - **Hold any beacon** to restore it (remove from global ignore list)
+             - These beacons are ignored in all detection and filtered out during future fingerprint captures
