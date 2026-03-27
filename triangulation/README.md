@@ -581,7 +581,7 @@ For detailed algorithm analysis:
 
 This is the main interface for setting up and managing BT location detection. You configure locations, capture fingerprints, and monitor beacon signals here.
 
-![BT Location Calibration Dashboard](triangulation.jpg)
+![BT Location Calibration Dashboard](docs/triangulation.jpg)
 
 **What you see:**
 - **Location Names** — Editable list of rooms where you want location detection (kitchen, garage, office, etc.)
@@ -595,7 +595,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
 
-![Algorithm Tuning & Validation](tuning.jpg)
+![Algorithm Tuning & Validation](docs/tuning.jpg)
 
 **How to use:**
 
@@ -614,7 +614,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 **What it does:** Provides three integrated analysis views for understanding beacon distribution across locations and diagnosing location overlap risks.
 
-![Review Analysis Views](review.jpg)
+![Review Analysis Views](docs/review.jpg)
 
 **What you see:**
 - **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
@@ -756,6 +756,25 @@ If any step fails, check the Troubleshooting section below.
 | Match scores always low (<30%) even after capture | Beacon volatility or poor signal quality | Review "All Active Beacons" table; globally ignore volatile beacons; recapture when signals are stable |
 | Different locations score similarly (ambiguous) | Overlapping beacons with similar RSSI across rooms | Use Review tab "Location Cross-Reference Matrix" to identify overlapping pairs; locally ignore overlapping beacons |
 | Location detection works some days, fails other days | Environmental Bluetooth interference (neighbors, devices turning on/off) | Increase RSSI Match Tolerance; ignore temporarily unstable beacons; retest at different times of day |
+
+---
+
+## Known Limitations
+
+<details>
+<summary><strong>Single-scan detection</strong></summary>
+
+Each location update is based on one Bluetooth scan, taken when the phone connects to a charger. This is intentional: the system is optimized for the "phone on charger" trigger rather than continuous monitoring. The tradeoff is that a noisy scan (interference, a beacon momentarily missing) can produce an incorrect location reading. If this is a problem in practice, temporal smoothing (see Potential Enhancements) is the candidate fix.
+
+</details>
+
+---
+
+## Potential Enhancements
+
+- **Temporal smoothing** — Exponential smoothing across consecutive scans to reduce location flickering caused by signal variance. Rather than committing to a new location on a single scan, the system would weight recent history and only switch when the evidence is consistent across multiple readings.
+
+- **Confusion matrix statistical range** — The current confusion matrix shows one score per location pair based on nominal fingerprint values. A future enhancement would show a range — best case (signals diverge within RSSI tolerance) and worst case (signals converge) — revealing hidden ambiguity risks that only surface under real-world signal variance.
 
 ---
 

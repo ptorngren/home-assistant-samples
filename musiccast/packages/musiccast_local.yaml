@@ -1,0 +1,112 @@
+# -------------------------------------------------------------------------------
+# MUSICCAST LOCAL: Miscellaneous musiccast automations
+# -------------------------------------------------------------------------------
+
+automation:
+  # Alarm-triggered automation
+  - id: belysning_huset_larmat_musik_off
+    alias: Huset larmat -> Musik OFF
+    description: Slå av alla MusicCast enheter när huset larmas
+    triggers:
+      - trigger: state
+        entity_id: alarm_control_panel.verisure_alarm
+        to: armed_away
+    conditions: []
+    actions:
+      - action: media_player.turn_off
+        target:
+          entity_id: all
+      - action: notify.mobile_app_peers_mobil
+        data:
+          message: Huset larmat,  musik OFF
+          title: Musik OFF
+        enabled: false
+    mode: single
+
+  # Garage LUX-triggered automation
+  - id: musiccast_lux_garage_low_musik_off
+    alias: Garage LUX låg -> Musik OFF
+    description: Slå av media players garage och skidverkstad när ljuset släcks i garaget
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.lux_garage_illuminance
+        below: 10
+        for:
+          seconds: 15
+    conditions: []
+    actions:
+      - action: media_player.turn_off
+        target:
+          entity_id:
+            - media_player.garage
+            - media_player.skidverkstad
+    mode: single
+
+  # Kitchen TV automation
+  - id: musiccast_stop_on_kitchen_tv
+    alias: "MusicCast: Stop music when kitchen TV turns on"
+    description: "Stop music playback when Android TV in kitchen is powered on"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: media_player.smart_koks_tv
+        to:
+          - "playing"
+          - "paused"
+          - "idle"
+    action:
+      - choose:
+          # Case 1: Active scenario includes kitchen players
+          - conditions:
+              - condition: template
+                value_template: >
+                  {%- set scenario = states('input_text.active_scenario') -%}
+                  {%- set players = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('players', []) -%}
+                  {{ 'media_player.kok' in players or 'media_player.kok_lilla' in players }}
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    MusicCast: Kitchen TV powered on while {{ states('input_text.active_scenario') }} scenario is playing.
+                    Stopping music.
+                  level: info
+
+              # Stop music on all kitchen players
+              - action: media_player.media_stop
+                continue_on_error: true
+                target:
+                  entity_id:
+                    - media_player.kok
+                    - media_player.kok_lilla
+
+              # Clear active scenario
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.active_scenario
+                data:
+                  value: ""
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.active_scenario_source_caption
+                data:
+                  value: ""
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.active_scenario_source_uri
+                data:
+                  value: ""
+
+        # Fallback: No kitchen scenario active - turn off kitchen speakers individually
+        default:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Kitchen TV powered on. No kitchen scenario active - turning off kitchen speakers."
+              level: info
+
+          - action: media_player.turn_off
+            target:
+              entity_id:
+                - media_player.kok
+                - media_player.kok_lilla

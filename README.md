@@ -10,9 +10,11 @@ Wall panel screensaver dashboard with weather display, anti-burn-in animations, 
 ### [Bluetooth Triangulation](./triangulation/)
 Bluetooth beacon-based locating mobile devices. Can be used independently or integrated with the screensaver for location-aware automations.
 
+### [MusicCast Multi-Room Audio](./musiccast/)
+Scenario-based multi-room audio control for Yamaha MusicCast. Define named listening contexts (morning news, dinner music, background work), link players on demand, and let the system randomize presets — all managed from a dashboard without touching YAML.
+
 ### More?
-I've also been playing with setting up Home Assistant for my Yamaha MusicCast multi-room audio system and scheduling the car heaters. 
-Hope to publish these samples as well after some polishing.
+Still working on car heater scheduling. Hope to publish that as well after some polishing.
 
 ## Environment & Context
 
@@ -46,13 +48,13 @@ as a long-time (now retired) software developer, I found the learning threshold 
 While experienced in traditional programming, the Home Assistant domain is new territory, 
 particularly its YAML configuration language, templating patterns, and HACS components.
 
-Rather than learning entirely through trial-and-error, this project was developed with heavy 
-reliance on AI tools to accelerate learning and code generation:
+Rather than learning entirely through trial-and-error and reading the docs, this project was developed with heavy
+reliance on AI tools — both to accelerate learning and code generation, and as an experiment in vibe coding:
 
 - **Claude Code** — Primary development tool with Home Assistant MCP integration and IntelliJ IDEA plugin
 - **Gemini** — Supplementary tool for specific technical questions and alternative approaches
 - **Microsoft Copilot** — for a second opinion and review on technical matters
-- **ChatGPT** — for a second opinion and review, especially texts
+- **ChatGPT** — initially used for a second opinion and review, especially texts
 - **Github Copilot** — initially used for coding in VS Code until replaced by Claude Code in IntelliJ
 
 This approach allowed rapid prototyping and iteration while focusing intellectual energy on architecture and design rather than language syntax. 

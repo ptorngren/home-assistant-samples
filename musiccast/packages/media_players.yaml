@@ -1,0 +1,392 @@
+# ================================================================
+# MUSICCAST: Media Player Discovery & Dynamic Lookup
+# ================================================================
+# Network scanning, entity-to-IP mapping, preset fetching, admin selection state
+# Companion to orchestrator.yaml (scenario logic)
+
+# ================================================================
+# PLAYER GROUP
+# ================================================================
+
+group:
+  musiccast_players:
+    name: MusicCast Players
+    entities: !include data/media_players.include
+
+# ================================================================
+# SHELL COMMANDS
+# ================================================================
+
+shell_command:
+  musiccast_network_scan: /config/packages/musiccast/media_players_writer.sh "{{ start_ip }}" "{{ end_ip }}" "{{ entities | tojson | base64_encode }}" "{{ output_csv }}" "{{ output_include }}"
+
+  # Toggle a player in/out of the exclude list (media_players.exclude)
+  # Input: entity_id (e.g. media_player.peer_vanster)
+  # Effect: adds if absent, removes if present — file created if missing
+  musiccast_toggle_player_exclude: |
+    python3 -c '
+    import sys
+    entity = sys.argv[1]
+    path = "/config/packages/musiccast/data/media_players.exclude"
+    try:
+        lines = [l.strip() for l in open(path) if l.strip() and not l.startswith("#")]
+    except FileNotFoundError:
+        lines = []
+    if entity in lines:
+        lines.remove(entity)
+    else:
+        lines.append(entity)
+    with open(path, "w") as f:
+        f.write("# MusicCast player exclusion list — entities to skip when writing media_players.include\n")
+        f.write("# Managed via long-press on player buttons in the Admin view\n")
+        f.write("# Format: one media_player entity_id per line\n")
+        f.write("# NOTE: .exclude suffix prevents HA package loader from treating this as a package definition\n")
+        if lines:
+            f.write("\n".join(lines) + "\n")
+    ' {{ entity_id }}
+
+  # Regenerate media_players.include from current CSV + exclude list
+  # Call after toggling exclusions to apply changes without a full rescan
+  musiccast_regenerate_include: |
+    python3 -c "
+    import datetime
+    csv_path = '/config/packages/musiccast/data/media_players.csv'
+    excl_path = '/config/packages/musiccast/data/media_players.exclude'
+    incl_path = '/config/packages/musiccast/data/media_players.include'
+    try:
+        excluded = set(l.strip() for l in open(excl_path) if l.strip() and not l.startswith('#'))
+    except FileNotFoundError:
+        excluded = set()
+    try:
+        seen = set()
+        entities = []
+        for line in open(csv_path):
+            line = line.strip()
+            if '=' in line:
+                _, entity = line.split('=', 1)
+                if entity not in seen:
+                    seen.add(entity)
+                    entities.append(entity)
+    except FileNotFoundError:
+        print('CSV not found'); exit(1)
+    ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with open(incl_path, 'w') as f:
+        f.write('# MusicCast player list — single source of truth for group.musiccast_players and automation triggers\n')
+        f.write('# Edit this file and reload HA (Groups + Automations) when players are added or removed\n')
+        f.write('# NOTE: .include suffix (not .yaml) prevents HA package loader from treating this as a package definition\n')
+        f.write('# Auto-updated by musiccast_toggle_exclude — ' + ts + '\n')
+        for entity in entities:
+            if entity not in excluded:
+                f.write('- ' + entity + '\n')
+    "
+
+
+# ================================================================
+# COMMAND LINE SENSORS
+# ================================================================
+
+command_line:
+  - sensor:
+      name: "MusicCast Excluded Players"
+      unique_id: musiccast_excluded_players
+      command: |
+        python3 -c "
+        import json
+        try:
+            lines = [l.strip() for l in open('/config/packages/musiccast/data/media_players.exclude') if l.strip() and not l.startswith('#')]
+        except FileNotFoundError:
+            lines = []
+        print(json.dumps({'excluded': lines}))
+        "
+      json_attributes:
+        - excluded
+      value_template: "{{ value_json.excluded | length }}"
+      # Reads media_players.exclude and exposes the list for dashboard styling
+      # Access via: state_attr('sensor.musiccast_excluded_players', 'excluded')
+
+  - sensor:
+      name: "MusicCast Scenarios"
+      unique_id: musiccast_scenarios
+      command: |
+        python3 -c "
+        import glob, json, os
+        result = {}
+        for f in sorted(glob.glob('/config/packages/musiccast/data/scenario_*.csv')):
+            name = os.path.basename(f).replace('scenario_', '').replace('.csv', '')
+            lines = [l.strip() for l in open(f) if l.strip() and ':' in l]
+            if lines:
+                players = [l.split(':')[0] for l in lines]
+                result[name] = {'master': players[0], 'players': players}
+        print(json.dumps({'scenarios': result}))
+        "
+      json_attributes:
+        - scenarios
+      value_template: "{{ value_json.scenarios | length }}"
+      scan_interval: 86400
+      # Reads all scenario_*.csv files — first line = master, rest = members+master (all players)
+      # Access: state_attr('sensor.musiccast_scenarios', 'scenarios').get(scenario, {})
+
+  - sensor:
+      name: "MusicCast Scenario Config"
+      unique_id: musiccast_scenario_config
+      command: |
+        python3 -c "
+        import json
+        data = json.load(open('/config/packages/musiccast/data/scenarios.json'))
+        print(json.dumps(data))
+        "
+      json_attributes:
+        - scenarios
+      value_template: "{{ value_json.scenarios | length }}"
+      scan_interval: 86400
+      # Reads scenarios.json — display names + icons keyed by scenario_id
+      # Access: state_attr('sensor.musiccast_scenario_config', 'scenarios').get(scenario_id, {})
+
+  - sensor:
+      name: "MusicCast Media Players"
+      unique_id: musiccast_media_players
+      command: 'bash /config/packages/musiccast/media_players_reader.sh'
+      json_attributes:
+        - matched
+        - unmatched
+      value_template: "{% set m = value_json.matched | default([]) %}{% set u = value_json.unmatched | default([]) %}{{ m | length }} / {{ (m | length) + (u | length) }}"
+      # Reads entity-to-IP mappings from CSV file and exposes as JSON attributes
+      # Format: IP=entity_id (matched) or 0.0.0.0=entity_id (unmatched)
+      # Provides matched array and unmatched array for dashboard display
+      # Access via: state_attr('sensor.musiccast_media_players', 'matched') and 'unmatched'
+
+  - sensor:
+      name: "MusicCast Media Player Presets"
+      unique_id: musiccast_media_player_presets
+      command: 'bash /config/packages/musiccast/musiccast_presets_fetcher.sh'
+      json_attributes:
+        - presets
+      value_template: "{{ value_json.presets | length }}"
+      scan_interval: 86400
+      # Pre-fetches getPresetInfo for ALL players from media_players.csv in parallel
+      # Survives HA restarts — HA persists command_line sensor state
+      # Refresh via: homeassistant.update_entity on sensor.musiccast_media_player_presets
+      # Access: state_attr('sensor.musiccast_media_player_presets', 'presets').get('media_player.sauna', [])
+
+# ================================================================
+# HELPERS
+# ================================================================
+
+input_number:
+  musiccast_scan_start_ip:
+    name: "MusicCast Scan Start IP (last octet)"
+    min: 1
+    max: 254
+    step: 1
+    unit_of_measurement: ""
+
+  musiccast_scan_end_ip:
+    name: "MusicCast Scan End IP (last octet)"
+    min: 1
+    max: 254
+    step: 1
+    unit_of_measurement: ""
+
+# ================================================================
+# SENSORS - Player Discovery & IP Mapping
+# ================================================================
+# CRITICAL: Polling and trigger-based sensors in SAME template: block
+# but as separate list items (- sensor: and - trigger:)
+# See: HA template integration documentation
+
+template:
+  # --- State-Based Polling Sensors ---
+  - sensor:
+
+      # Discovery: Auto-detect all MusicCast players
+      # -------------------------------------------------------
+      # Queries MusicCast integration for all discovered media_player entities
+      # Extracts: entity_id, friendly_name for each player
+      # Source: HA's documented integration_entities() API (NOT internal files)
+      # No hardcoding, fully dynamic
+      - name: musiccast_entities
+        unique_id: musiccast_entities
+        state: "{{ integration_entities('yamaha_musiccast') | select('match', 'media_player') | list | length }}"
+        attributes:
+          entities: >
+            {%- set mc_entities = integration_entities('yamaha_musiccast') | select('match', 'media_player') | list -%}
+            {%- set ns = namespace(result=[]) -%}
+            {%- for entity_id in mc_entities -%}
+              {%- set friendly_name = state_attr(entity_id, 'friendly_name') | default('Unknown', true) -%}
+              {%- set ns.result = ns.result + [{'entity_id': entity_id, 'friendly_name': friendly_name}] -%}
+            {%- endfor -%}
+            {{ ns.result | tojson }}
+
+      # Player IP mapping from network scan results
+      # -------------------------------------------------------
+      # Maps player short names (kok, altan, etc.) to their IP addresses
+      # Built from sensor.musiccast_media_players matched entries
+      # Access via: state_attr('sensor.musiccast_player_ips', 'by_entity') | default({})
+      # Example: player_ips.get('kok', 'unknown')
+      - name: musiccast_player_ips
+        unique_id: musiccast_player_ips
+        state: >
+          {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') | default([]) -%}
+          {{ matched | length }}
+        attributes:
+          by_entity: >
+            {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') | default([]) -%}
+            {%- set ns = namespace(result={}) -%}
+            {%- for item in matched | default([]) -%}
+              {%- set player = item.entity.split('.')[1] -%}
+              {%- set ns.result = ns.result | combine({player: item.ip}) -%}
+            {%- endfor -%}
+            {{ ns.result | tojson }}
+
+  # --- Trigger-Based Sensors ---
+  # Separate list item because:
+  # - Polling sensors load immediately on startup/reload
+  # - Trigger-based sensors only evaluate when event fires
+  # - Mixing them in same block breaks the polling sensors during reload
+  # Admin player selection state (no persistence needed — resets on reload)
+  # -------------------------------------------------------
+  # Stores the list of media_player entity IDs currently selected
+  # in the Admin view for preset comparison.
+  # Updated by script.musiccast_toggle_preset_player via event.
+  - trigger:
+      - platform: event
+        event_type: "musiccast_preset_player_toggled"
+    sensor:
+      - name: "MusicCast Preset Players"
+        unique_id: musiccast_preset_players
+        icon: mdi:format-list-checks
+        state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        attributes:
+          players: "{{ trigger.event.data.players }}"
+
+# ================================================================
+# SCRIPTS - Player Discovery & Selection
+# ================================================================
+
+script:
+
+  # Toggle a player in/out of the Admin view selection
+  # -------------------------------------------------------
+  # Reads current selection from sensor.musiccast_preset_players,
+  # adds or removes the given entity_id, then fires event to update sensor.
+  musiccast_toggle_preset_player:
+    alias: "MusicCast: Toggle Admin Player Selection"
+    mode: queued
+    fields:
+      entity_id:
+        description: "media_player entity_id to toggle"
+        selector:
+          entity:
+            domain: media_player
+    sequence:
+      - variables:
+          current: "{{ state_attr('sensor.musiccast_preset_players', 'players') | default([], true) }}"
+          updated: >
+            {% if entity_id in current %}
+              {{ current | reject('eq', entity_id) | list }}
+            {% else %}
+              {{ current + [entity_id] }}
+            {% endif %}
+      - event: musiccast_preset_player_toggled
+        event_data:
+          players: "{{ updated }}"
+
+  # Toggle a player in/out of the exclusion list
+  # -------------------------------------------------------
+  # Calls shell command to add/remove entity from media_players.exclude,
+  # then refreshes sensor.musiccast_excluded_players so the Admin view
+  # immediately reflects the new state.
+  musiccast_toggle_exclude_player:
+    alias: "MusicCast: Toggle Player Exclusion"
+    mode: queued
+    fields:
+      entity_id:
+        description: "media_player entity_id to exclude/include"
+        selector:
+          entity:
+            domain: media_player
+    sequence:
+      - action: shell_command.musiccast_toggle_player_exclude
+        data:
+          entity_id: "{{ entity_id }}"
+      - action: shell_command.musiccast_regenerate_include
+      - action: group.reload
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.musiccast_excluded_players
+
+  # Resolve entity IPs via network scan and matching
+  # -------------------------------------------------------
+  # Orchestrates full discovery process:
+  # 1. Reads entities from MusicCast integration
+  # 2. Scans network for devices
+  # 3. Matches entities to IPs
+  # 4. Writes CSV file for persistent use
+  musiccast_scan_media_players:
+    alias: "MusicCast: Scan Media Players"
+    mode: single
+    description: "Scan network and match entities to IP addresses"
+    sequence:
+      # Get entities from integration and IP range from helpers
+      - variables:
+          entities: "{{ state_attr('sensor.musiccast_entities', 'entities') | default([], true) }}"
+          entity_count: "{{ entities | length }}"
+          output_csv: "/config/packages/musiccast/data/media_players.csv"
+          output_include: "/config/packages/musiccast/data/media_players.include"
+          start_ip: "{{ states('input_number.musiccast_scan_start_ip') | int(1) }}"
+          end_ip: "{{ states('input_number.musiccast_scan_end_ip') | int(254) }}"
+
+      # Notify user that discovery is starting
+      - action: persistent_notification.create
+        data:
+          title: "MusicCast: IP Discovery Started"
+          message: |
+            🔍 Starting network scan and entity matching...
+
+            Scanning IP range: 192.168.1.{{ start_ip }} to 192.168.1.{{ end_ip }}
+            This process may take some time.
+
+      # Run network scan script
+      - action: shell_command.musiccast_network_scan
+        data:
+          start_ip: "192.168.1.{{ start_ip }}"
+          end_ip: "192.168.1.{{ end_ip }}"
+          entities: "{{ entities }}"
+          output_csv: "{{ output_csv }}"
+          output_include: "{{ output_include }}"
+
+      # Refresh mappings sensor to pick up results
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.musiccast_media_players
+
+      # Refresh presets — IPs may have changed, re-fetch from all players
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.musiccast_media_player_presets
+
+      # Log that scan completed
+      - action: system_log.write
+        data:
+          message: >
+            MusicCast IP Discovery: Scan completed
+            Entities scanned: {{ entity_count }}
+            Output: {{ output_csv }}
+          level: info
+
+      # Notify user that discovery is complete
+      - action: persistent_notification.create
+        data:
+          title: "MusicCast: IP Discovery Complete"
+          message: |
+            ✅ Network scan and entity matching finished.
+
+            Entities scanned: {{ entity_count }}
+
+            Saved to:
+              {{ output_csv }}
+              {{ output_include }}
+
+            ⚠️ **Reload required!**
+            (Developer Tools → YAML → Reload Groups + Automations)
+

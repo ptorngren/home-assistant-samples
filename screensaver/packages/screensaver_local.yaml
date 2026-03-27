@@ -172,7 +172,7 @@ script:
               - condition: template
                 value_template: "{{ resolved.target_scenario != 'unknown' }}"
             sequence:
-              - action: script.scenario_toggle_mc
+              - action: script.musiccast_scenario_toggle
                 data:
                   scenario: "{{ resolved.target_scenario }}"
 
@@ -190,7 +190,7 @@ script:
               - condition: template
                 value_template: "{{ states('binary_sensor.scenario_' + resolved.target_scenario) == 'on' }}"
             sequence:
-              - action: script.scenario_mixer_mc
+              - action: script.musiccast_scenario_mixer
                 data:
                   scenario: "{{ resolved.target_scenario }}"
                   force_randomize: true

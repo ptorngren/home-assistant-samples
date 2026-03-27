@@ -1,0 +1,1391 @@
+# ==============================================================================
+# STYLING CONSTANTS (YAML Anchors - Single Source of Truth)
+# ==============================================================================
+# Update these values once, and all references throughout the file will update.
+# Use &anchor_name to define, *anchor_name to reference.
+#
+# COLOR PALETTE:
+active_fg: &active_fg '#2196f3'                               # Active text/icons (blue)
+active_bg: &active_bg rgba(33,150,243,0.2)                    # Active backgrounds (blue)
+active_border: &active_border '#2196f3'                       # Active borders (blue)
+idle_fg: &idle_fg '#424242'                                   # Idle text/icons (dark grey)
+idle_bg: &idle_bg rgba(255,255,255,0.1)                       # Idle backgrounds (white)
+idle_border: &idle_border rgba(128,128,128,0.4)               # Idle borders
+disabled_bg: &disabled_bg rgba(200,200,200,0.1)               # Disabled/excluded backgrounds
+disabled_fg: &disabled_fg '#b0b0b0'                           # Disabled/excluded text
+secondary_text: &secondary_text '#424242'                     # Secondary/hint text
+primary_text_fg: &primary_text_fg '#000000'                   # Primary text/headers
+#
+# TYPOGRAPHY (defined inline - YAML anchors for lists cause unpacking issues):
+#   Title/Header: 14px, 600 weight
+#   Button/Card Label: 12px, 500 weight
+#   Secondary/Hint: 11px, 400 weight
+#   Tips/Meta: 10px, 400 weight
+#
+# ICON SIZES:
+icon_large: &icon_large 32px
+icon_medium: &icon_medium 28px
+icon_small: &icon_small 24px
+#
+# RANDOMIZATION STATE CODES (for preset lock/exclude status):
+# ⚠️  SOURCE OF TRUTH: packages/musiccast/mixer.yaml (RANDOMIZATION STATE CONSTANTS section)
+#     These must match the codes defined there. If they change in mixer.yaml, update here too.
+preset_locked: &preset_locked 'L'                             # Locked preset (always selected)
+preset_excluded: &preset_excluded 'X'                         # Excluded preset (never randomized)
+lock_icon: &lock_icon '🔒'                                    # Icon for locked presets/scenarios
+excluded_icon: &excluded_icon '⊘'                             # Icon for excluded presets
+# ==============================================================================
+
+# ------------------------------------------------------
+# DECLUTTERING TEMPLATES
+# ------------------------------------------------------
+decluttering_templates:
+  
+  # MusicCast player tile with volume controls and link toggle
+  # ------------------------------------------------------
+  musiccast_player_tile:
+    card:
+      type: custom:button-card
+      entity: '[[entity]]'
+      triggers_update:
+        - '[[entity]]'
+        - input_text.active_scenario
+        - sensor.musiccast_scenarios
+      variables:
+        active_fg: *active_fg
+        idle_fg: *idle_fg
+        active_bg: *active_bg
+        idle_bg: *idle_bg
+        disabled_fg: *disabled_fg
+        disabled_bg: *disabled_bg
+        # Active scenario master player entity_id (from sensor.musiccast_scenarios)
+        player_scenarioMaster: |
+          [[[
+            const scenario = states['input_text.active_scenario']?.state;
+            if (!scenario || scenario === 'None' || scenario === '') return null;
+            const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+            return sc[scenario]?.master || null;
+          ]]]
+        # True when this player is the master in the current scenario
+        player_isMaster: |
+          [[[
+            const gm = entity.attributes.group_members || [];
+            return entity.entity_id === variables.player_scenarioMaster && gm.length > 1;
+          ]]]
+        # True when joined to master (non-master that contains master in group_members)
+        player_isLinked: |
+          [[[
+            const gm = entity.attributes.group_members || [];
+            return entity.entity_id !== variables.player_scenarioMaster && gm.includes(variables.player_scenarioMaster);
+          ]]]
+        # Convenience flag: master or linked
+        player_isActive: |
+          [[[
+            return variables.player_isMaster || variables.player_isLinked;
+          ]]]
+      styles:
+        card:
+          - border-radius: 8px
+          - padding: 4px 8px
+          - height: 45px
+          - background-color: |
+              [[[
+                if (entity.state === 'unavailable') return variables.disabled_bg;
+                const isOn = entity.state !== 'off' && entity.state !== 'unavailable';
+                if (isOn) return variables.active_bg;
+                return variables.idle_bg;
+              ]]]
+          - border: |
+              [[[
+                if (variables.player_isMaster) return '3px solid ' + variables.active_fg;
+                return '1px solid ' + variables.idle_border;
+              ]]]
+        grid:
+          - grid-template-areas: '"i n controls"'
+          - grid-template-columns: 35px minmax(60px, 1fr) 1.5fr
+          - align-items: center
+        icon:
+          - width: 20px
+          - color: |
+              [[[
+                return variables.player_isActive ? variables.active_fg : variables.idle_fg;
+              ]]]
+        name:
+          - justify-self: start
+          - font-size: 13px
+          - font-weight: bold
+          - white-space: nowrap
+          - overflow: hidden
+          - text-overflow: ellipsis
+          - color: |
+              [[[
+                return variables.player_isActive ? variables.active_fg : variables.idle_fg;
+              ]]]
+
+      custom_fields:
+        controls:
+          card:
+            type: custom:button-card
+            styles:
+              card:
+                - background: none
+                - box-shadow: none
+                - border: none
+                - padding: 0
+              grid:
+                - grid-template-areas: '"mute slider volume"'
+                - grid-template-columns: 35px 1fr 35px
+                - column-gap: 5px
+                - align-items: center
+            custom_fields:
+              mute:
+                card:
+                  type: custom:button-card
+                  entity: '[[entity]]'
+                  show_name: false
+                  icon: >
+                    [[[
+                      return entity.attributes.is_volume_muted ? 'mdi:volume-off' : 'mdi:volume-high';
+                    ]]]
+                  styles:
+                    card:
+                      - width: 30px
+                      - height: 30px
+                      - background: none
+                      - box-shadow: none
+                      - border: none
+                    icon:
+                      - width: 18px
+                      - color: >
+                          [[[
+                            return entity.attributes.is_volume_muted ? variables.disabled_fg : variables.idle_fg;
+                          ]]]
+                  tap_action:
+                    action: perform-action
+                    perform_action: media_player.volume_mute
+                    data:
+                      entity_id: '[[entity]]'
+                      is_volume_muted: >
+                        [[[ return !entity.attributes.is_volume_muted ]]]
+              # Volume slider bound to volume_level attribute
+              slider:
+                card:
+                  type: custom:slider-entity-row
+                  entity: '[[entity]]'
+                  full_row: true
+                  hide_state: true
+                  attribute: volume_level
+              # Volume percentage display
+              volume: |
+                [[[
+                  const vol = entity.attributes.volume_level;
+                  const volStr = vol === undefined || vol === null ? '—' : Math.round(vol * 100) + '%';
+                  return `<div style="text-align: center; font-size: 11px; font-weight: 600; color: #000000; padding: 0 5px;">${volStr}</div>`;
+                ]]]
+
+      # Single tap: Toggle link/unlink this player to the active scenario master
+      tap_action:
+        action: perform-action
+        perform_action: script.musiccast_toggle_link
+        data:
+          target_player: '[[entity]]'
+  
+      # Double tap: Power toggle (on/off) for this player
+      double_tap_action:
+        action: perform-action
+        perform_action: media_player.toggle
+        target:
+          entity_id: '[[entity]]'
+
+      # Long press: Unlink and power off this player
+      hold_action:
+        action: perform-action
+        perform_action: script.musiccast_unlink_and_power_off_player
+        data:
+          target_player: '[[[ return entity.entity_id ]]]'
+        haptic: heavy
+
+  # Admin preset player selector button
+  # STYLING: Matches scenario_button pattern (Light Grey inactive + Light Blue active)
+  #          Neutral Grey text/icons (inactive) + Primary Blue (active)
+  #          Button/Card typography (12px/500 weight)
+  # -----------------------------------------------------------------------
+  # Entity: media_player.* (passed via auto-entities)
+  # Active state: derived from sensor.musiccast_preset_players attribute (JS)
+  # Tap: calls script.musiccast_toggle_preset_player
+  admin_preset_button:
+    card:
+      type: custom:button-card
+      entity: '[[entity]]'
+      variables:
+        active_fg: *active_fg
+        active_bg: *active_bg
+        active_border: *active_border
+        idle_fg: *idle_fg
+        idle_bg: *idle_bg
+        idle_border: *idle_border
+        disabled_fg: *disabled_fg
+        disabled_bg: *disabled_bg
+      styles:
+        card:
+          - background-color: >
+              [[[
+                const excluded = states["sensor.musiccast_excluded_players"]?.attributes?.excluded || [];
+                if (excluded.includes(entity.entity_id)) return variables.disabled_bg;
+                const players = states["sensor.musiccast_preset_players"]?.attributes?.players || [];
+                return players.includes(entity.entity_id) ? variables.active_bg : variables.idle_bg;
+              ]]]
+          - border: >
+              [[[
+                const excluded = states["sensor.musiccast_excluded_players"]?.attributes?.excluded || [];
+                if (excluded.includes(entity.entity_id)) return `1px solid ${variables.idle_border}`;
+                const players = states["sensor.musiccast_preset_players"]?.attributes?.players || [];
+                return players.includes(entity.entity_id) ? `2px solid ${variables.active_border}` : `1px solid ${variables.idle_border}`;
+              ]]]
+          - border-radius: 6px
+          - padding: 8px
+        icon:
+          - width: *icon_small
+          - color: >
+              [[[
+                const excluded = states["sensor.musiccast_excluded_players"]?.attributes?.excluded || [];
+                if (excluded.includes(entity.entity_id)) return variables.disabled_fg;
+                const players = states["sensor.musiccast_preset_players"]?.attributes?.players || [];
+                return players.includes(entity.entity_id) ? variables.active_fg : variables.idle_fg;
+              ]]]
+        name:
+          - font-size: 12px
+          - font-weight: 500
+          - color: >
+              [[[
+                const excluded = states["sensor.musiccast_excluded_players"]?.attributes?.excluded || [];
+                if (excluded.includes(entity.entity_id)) return variables.disabled_fg;
+                const players = states["sensor.musiccast_preset_players"]?.attributes?.players || [];
+                return players.includes(entity.entity_id) ? variables.active_fg : variables.idle_fg;
+              ]]]
+      tap_action:
+        action: perform-action
+        perform_action: script.musiccast_toggle_preset_player
+        data:
+          entity_id: '[[[ return entity.entity_id ]]]'
+      hold_action:
+        action: perform-action
+        perform_action: script.musiccast_toggle_exclude_player
+        data:
+          entity_id: '[[[ return entity.entity_id ]]]'
+        haptic: heavy
+      double_tap_action:
+        action: perform-action
+        perform_action: homeassistant.update_entity
+        target:
+          entity_id: sensor.musiccast_media_player_presets
+      card_mod:
+        style: |
+          ha-card {
+            --paper-button-flat-focus-color: transparent !important;
+            --ripple-color: transparent !important;
+          }
+
+# ------------------------------------------------------
+# BUTTON CARD TEMPLATES
+# ------------------------------------------------------
+# Common Pattern (idle → active states):
+#   Idle: White background + grey border, dark grey icons/text
+#   Active: Green background + green border, green icons/text
+#   Font: 12px / 500 weight for labels
+#   Spacing: 6px border-radius, 1px or 2px border
+#
+# All templates reference the STYLING CONSTANTS at the top of this file.
+# Update constants there for dashboard-wide color/font changes.
+# ==============================================================================
+button_card_templates:
+
+  # template for a MusicCast scenario button
+  # ------------------------------------------------------
+  # TODO: Visual feedback for scenario actions in progress
+  # Ideas:
+  #  - Input boolean + "Working..." label when action running
+  #  - Spinner icon overlay (mdi:loading with CSS animation)
+  #  - Opacity fade/pulse during delays
+  #  - Progress bar based on script step
+  #  - Native HA loading indicator if available
+  scenario_button:
+    # STYLING: Uses Light Grey Background (inactive) + Light Blue Background (active)
+    #          Neutral Grey text/icons (inactive) + Primary Blue (active)
+    #          Button/Card typography (12px/500 weight)
+    #          Shows master player name as small subtitle
+    triggers_update:
+      - input_text.active_scenario
+      - sensor.musiccast_randomization_locks
+
+    variables:
+      lock_icon: *lock_icon
+      active_fg: *active_fg
+      active_bg: *active_bg
+      idle_fg: *idle_fg
+      idle_bg: *idle_bg
+      idle_border: *idle_border
+      scenario: null        # Friendly name shown on button
+      scenario_id: |        # Internal key derived from friendly name — used for file/entity lookups
+        [[[
+          return (variables.scenario || '').normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+            .replace(/[^a-z0-9_]/g, '')
+            .replace(/_+/g, '_');
+        ]]]
+
+    show_name: true
+    show_icon: true
+    show_label: true
+
+    name: |
+      [[[
+        const locks = states['sensor.musiccast_randomization_locks']?.attributes?.locks || {};
+        const lockIcon = locks[variables.scenario_id] ? ' ' + variables.lock_icon : '';
+        return variables.scenario + lockIcon;
+      ]]]
+
+    label: |
+      [[[
+        const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+        const cfg = sc[variables.scenario_id] || {};
+        const master = cfg.master || '';
+        const friendlyName = master
+          ? (states[master]?.attributes?.friendly_name || master.replace('media_player.', '').replace(/_/g, ' '))
+          : '—';
+        const players = cfg.players || [];
+        const linkedCount = players.length - 1; // Subtract 1 for the master itself
+        const countText = linkedCount > 0 ? ` (+${linkedCount})` : '';
+        return friendlyName + countText;
+      ]]]
+
+    styles:
+      card:
+        - height: 75px
+        - padding: 8px
+        - border-radius: 6px
+        - background-color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_bg : variables.idle_bg;
+            ]]]
+        - border: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
+            ]]]
+      grid:
+        - grid-template-areas: '"i" "n" "l"'
+        - grid-template-columns: 1fr
+        - row-gap: 2px
+        - align-items: center
+        - justify-items: center
+      icon:
+        - width: *icon_medium
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+      name:
+        - font-size: 12px
+        - font-weight: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? 600 : 500;
+            ]]]
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+        - text-align: center
+        - line-height: 1.2
+      label:
+        - font-size: 10px
+        - font-weight: 400
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+        - text-align: center
+        - line-height: 1
+
+    # Single tap → toggle (link+mix OR unlink+power off)
+    tap_action:
+      action: perform-action
+      perform_action: script.musiccast_scenario_toggle
+      data:
+        scenario: '[[[ return variables.scenario_id; ]]]'
+      haptic: light
+
+    # Double tap → force rerun mixer (ignore locks)
+    double_tap_action:
+      action: perform-action
+      perform_action: script.musiccast_scenario_mixer
+      data:
+        scenario: '[[[ return variables.scenario_id; ]]]'
+        force_randomize: true
+      haptic: light
+
+    # Long press → capture current volume levels for all actively playing players
+    hold_action:
+      action: perform-action
+      perform_action: script.musiccast_capture_volumes
+      data:
+        scenario: '[[[ return variables.scenario_id; ]]]'
+      haptic: heavy
+
+  # Admin scenario button — same visual design as scenario_button, different actions:
+  #   tap         → rename (prompt for new name)
+  #   double-tap  → change icon (prompt for mdi icon)
+  #   long press  → delete (no confirm in v1)
+  # Variables: scenario_id, scenario_name, scenario_icon (all passed directly from auto-entities)
+  # -------------------------------------------------------
+  admin_scenario_button:
+    triggers_update:
+      - input_text.active_scenario
+      - sensor.musiccast_scenario_config
+
+    variables:
+      active_fg: *active_fg
+      active_bg: *active_bg
+      idle_fg: *idle_fg
+      idle_bg: *idle_bg
+      idle_border: *idle_border
+      scenario_id: null
+      scenario_name: null
+      scenario_icon: mdi:music
+
+    show_name: true
+    show_icon: true
+    show_label: true
+
+    name: '[[[ return variables.scenario_name; ]]]'
+
+    label: |
+      [[[
+        const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+        const cfg = sc[variables.scenario_id] || {};
+        const master = cfg.master || '';
+        const friendlyName = master
+          ? (states[master]?.attributes?.friendly_name || master.replace('media_player.', '').replace(/_/g, ' '))
+          : '—';
+        const players = cfg.players || [];
+        const linkedCount = players.length - 1;
+        const countText = linkedCount > 0 ? ` (+${linkedCount})` : '';
+        return friendlyName + countText;
+      ]]]
+
+    styles:
+      card:
+        - height: 75px
+        - padding: 8px
+        - border-radius: 6px
+        - background-color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_bg : variables.idle_bg;
+            ]]]
+        - border: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
+            ]]]
+      grid:
+        - grid-template-areas: '"i" "n" "l"'
+        - grid-template-columns: 1fr
+        - row-gap: 2px
+        - align-items: center
+        - justify-items: center
+      icon:
+        - width: *icon_medium
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+      name:
+        - font-size: 12px
+        - font-weight: 500
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+        - text-align: center
+        - line-height: 1.2
+      label:
+        - font-size: 10px
+        - font-weight: 400
+        - color: |
+            [[[
+              return states['input_text.active_scenario']?.state === variables.scenario_id
+                ? variables.active_fg : variables.idle_fg;
+            ]]]
+        - text-align: center
+        - line-height: 1
+
+    tap_action:
+      action: perform-action
+      perform_action: script.musiccast_scenario_editor_open
+      data:
+        browser_id: '[[[ return window.browser_mod.browserID; ]]]'
+        scenario_id: '[[[ return variables.scenario_id; ]]]'
+        current_name: '[[[ return variables.scenario_name; ]]]'
+        current_icon: '[[[ return variables.scenario_icon; ]]]'
+        current_master: |
+          [[[
+            const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+            const masterEntityId = sc[variables.scenario_id]?.master || '';
+            return states[masterEntityId]?.attributes?.friendly_name || '';
+          ]]]
+      haptic: light
+
+    hold_action:
+      action: perform-action
+      perform_action: script.musiccast_scenario_delete
+      data:
+        scenario: '[[[ return variables.scenario_id; ]]]'
+      haptic: heavy
+
+  # preset button
+  # ------------------------------------------------------
+  preset_button_template:
+    triggers_update:
+      - input_text.active_scenario_source_caption
+      - input_text.musiccast_presets_state
+      - sensor.musiccast_media_player_presets
+      - input_text.active_scenario
+    variables:
+      index: 0 # Overridden by each button
+      # Color constants from style anchors (used in JavaScript)
+      active_bg: *active_bg
+      idle_bg: *idle_bg
+      active_fg: *active_fg
+      idle_fg: *idle_fg
+      idle_border: *idle_border
+      disabled_bg: *disabled_bg
+      disabled_fg: *disabled_fg
+      # Randomization state codes (from anchors at top)
+      preset_locked: *preset_locked
+      preset_excluded: *preset_excluded
+      lock_icon: *lock_icon
+      excluded_icon: *excluded_icon
+      # Computed once per render, referenced in all blocks below
+      active_scenario: |
+        [[[ return states['input_text.active_scenario']?.state || ''; ]]]
+      preset_text: |
+        [[[
+          const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[variables.active_scenario]?.master || '';
+          const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
+          return presets[variables.index - 1]?.text || '';
+        ]]]
+      preset_input: |
+        [[[
+          const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[variables.active_scenario]?.master || '';
+          const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
+          return presets[variables.index - 1]?.input || 'unknown';
+        ]]]
+      preset_state: |
+        [[[
+          const s = states['input_text.musiccast_presets_state']?.state || '{}';
+          return JSON.parse(s)[variables.index] || 'normal';
+        ]]]
+    show_icon: false
+    layout: horizontal
+    styles:
+      card:
+        - height: 24px
+        - padding: 0 6px
+        - margin: 0
+        - border-radius: 4px
+        - background: |
+            [[[
+              if (variables.preset_state === variables.preset_excluded) return variables.disabled_bg;
+              const caption = states['input_text.active_scenario_source_caption']?.state || '';
+              return (variables.preset_text && caption && variables.preset_text === caption) ? variables.active_bg : variables.idle_bg;
+            ]]]
+        - border: |
+            [[[
+              return (variables.preset_state === variables.preset_locked) ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
+            ]]]
+        - display: |
+            [[[
+              return (variables.preset_text !== '' && variables.preset_input !== 'unknown') ? 'flex' : 'none';
+            ]]]
+      name:
+        - justify-self: start
+        - font-size: 11px
+        - font-weight: 500
+        - color: |
+            [[[
+              if (variables.preset_state === variables.preset_excluded) return variables.disabled_fg;
+              const caption = states['input_text.active_scenario_source_caption']?.state || '';
+              return (variables.preset_text && caption && variables.preset_text === caption) ? variables.active_fg : variables.idle_fg;
+            ]]]
+        - padding-left: 4px
+        - line-height: 1
+    name: |
+      [[[
+        let icon = '';
+        if (variables.preset_state === variables.preset_locked) icon = ' ' + variables.lock_icon;
+        else if (variables.preset_state === variables.preset_excluded) icon = ' ' + variables.excluded_icon;
+        return variables.preset_text + icon;
+      ]]]
+    tap_action:
+      action: perform-action
+      perform_action: script.musiccast_play_preset_by_index
+      data:
+        preset_index: "[[[ return variables.index ]]]"
+      haptic: light
+    double_tap_action:
+      action: perform-action
+      perform_action: script.musiccast_toggle_excluded
+      data:
+        scenario: "[[[ return variables.active_scenario ]]]"
+        preset_num: "[[[ return variables.index ]]]"
+      haptic: light
+    hold_action:
+      action: perform-action
+      perform_action: script.musiccast_lock_favorite
+      data:
+        scenario: "[[[ return variables.active_scenario ]]]"
+        preset_num: "[[[ return variables.index ]]]"
+      haptic: heavy
+
+# ------------------------------------------------------
+# VIEWS
+# ------------------------------------------------------
+views:
+
+  # ------------------------------------------------------
+  # VIEW 1: ROUTINES / QUICK SELECT
+  # ------------------------------------------------------
+  - title: Now Playing
+    icon: mdi:play-circle
+    cards:
+      # --- SCENARIOS ---
+      - type: vertical-stack
+        cards:
+          - type: custom:button-card
+            triggers_update:
+              - input_text.active_scenario
+              - input_text.active_scenario_source_caption
+              - input_text.active_scenario_source_uri
+              - group.musiccast_players
+
+            variables:
+              # Compute player power state once (DRY principle)
+              players_on_count: |
+                [[[
+                  const groupState = states['group.musiccast_players'];
+                  const players = groupState?.attributes?.entity_id || [];
+                  return players.filter(z => {
+                    const e = states[z];
+                    return e && e.state !== 'off' && e.state !== 'unavailable';
+                  }).length;
+                ]]]
+              any_player_on: |
+                [[[
+                  return variables.players_on_count > 0;
+                ]]]
+              # Color constants (from YAML anchors, passed to JavaScript)
+              color_bg_inactive: *idle_bg
+              color_bg_active: *active_bg
+              color_primary_blue: *active_fg
+              color_border_grey: *idle_border
+
+            name: "🎭 Scenarios"
+            show_label: true
+
+            label: |
+              [[[
+                const activeScenario = states['input_text.active_scenario']?.state;
+                if (!activeScenario || activeScenario === 'None' || activeScenario === '') {
+                  return variables.any_player_on 
+                    ? `<ha-icon icon="mdi:power" style="width: 18px; height: 18px; vertical-align: 10%; margin-bottom: 2px;"></ha-icon>${variables.players_on_count}` 
+                    : 'Select scenario';
+                }
+
+                const caption = states['input_text.active_scenario_source_caption']?.state || '';
+                const uri = states['input_text.active_scenario_source_uri']?.state || '';
+                const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+                const masterEntityId = sc[activeScenario]?.master;
+
+                let masterName = '';
+                if (masterEntityId) {
+                  const mp = states[masterEntityId];
+                  if (mp?.attributes?.friendly_name) {
+                    masterName = mp.attributes.friendly_name;
+                  }
+                }
+
+                // Determine source icon and text
+                let sourceIcon = '🎵'; // Spotify Playlist default
+                let sourceText = 'Spotify Playlist';
+                if (uri.includes('net_radio')) {
+                  sourceIcon = '📻';
+                  sourceText = 'Net Radio';
+                }
+                else if (uri.includes('spotify:artist')) {
+                  sourceIcon = '👤';
+                  sourceText = 'Spotify Artist';
+                }
+
+                // Build two-line label
+                if (!caption) {
+                  // Scenario active but no caption (MC app changed source)
+                  return variables.any_player_on
+                    ? `<ha-icon icon="mdi:power" style="width: 18px; height: 18px; vertical-align: 10%; margin-bottom: 2px;"></ha-icon>${variables.players_on_count}`
+                    : (masterName || 'Select scenario');
+                }
+
+                const topLine = sourceIcon + ' ' + caption;
+                const bottomLine = (masterName || 'Select scenario') + ' | ' + sourceText;
+
+                return `<div style="display: flex; flex-direction: column; gap: 2px; line-height: 1.1;">
+                  <div style="font-size: 13px; font-weight: 500;">${topLine}</div>
+                  <div style="font-size: 10px; opacity: 0.8;">${bottomLine}</div>
+                </div>`;
+              ]]]
+
+            styles:
+              card:
+                - height: 80px
+                - padding: 12px
+                - border-radius: 6px
+                - background-color: |
+                    [[[
+                      const activeScenario = states['input_text.active_scenario']?.state;
+                      return variables.any_player_on ? variables.color_bg_active : variables.color_bg_inactive;
+                    ]]]
+                - border: |
+                    [[[
+                      const activeScenario = states['input_text.active_scenario']?.state;
+
+                      if (!activeScenario || activeScenario === 'None' || activeScenario === '') {
+                        return variables.any_player_on ? `2px solid ${variables.color_primary_blue}` : `1px solid ${variables.color_border_grey}`;
+                      }
+                      return variables.any_player_on ? `2px solid ${variables.color_primary_blue}` : `1px solid ${variables.color_border_grey}`;
+                    ]]]
+              name:
+                - font-size: 14px
+                - font-weight: 600
+              label:
+                - font-size: 12px
+                - margin-top: 4px
+                - color: var(--secondary-text-color)
+
+            # Single tap: Unlink and power off all
+            tap_action:
+              action: perform-action
+              perform_action: script.musiccast_unlink_and_power_off_all
+              haptic: light
+
+      - type: custom:auto-entities
+        card:
+          type: grid
+          columns: 3
+          square: false
+        card_param: cards
+        filter:
+          template: >
+            {% set meta = state_attr('sensor.musiccast_scenario_config', 'scenarios') or {} %}
+            {% set ns = namespace(cards=[]) %}
+            {% for sc_id, data in meta.items() %}
+              {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'scenario_button',
+                  'entity': 'input_text.active_scenario', 'icon': data.icon,
+                  'variables': {'scenario': data.name, 'scenario_id': sc_id}}] %}
+            {% endfor %}
+            {{ ns.cards | tojson }}
+
+      # --- NOW PLAYING ---
+      - type: custom:config-template-card
+        entities:
+          - sensor.musiccast_scenario_now_playing
+        card:
+          type: custom:mini-media-player
+          entity: ${states['sensor.musiccast_scenario_now_playing'].attributes.master || states['group.musiccast_players']?.attributes?.entity_id?.[0]}
+          artwork: material
+          hide:
+            power: true
+            source: true
+            sound_mode: true
+          card_mod:
+            # Hide if updating OR if the master attribute is missing/empty
+            style: |
+              :host {
+              {% set master = state_attr('sensor.musiccast_scenario_now_playing', 'master') %}
+              {% set updating = is_state('input_boolean.scenario_updating', 'on') %}
+                {% if updating or master is none or master == "" %}
+                  display: none !important;
+                {% endif %}
+              }
+
+      # --- PRESET LIST ---
+      - type: conditional
+        conditions:
+          - entity: input_text.active_scenario
+            state_not: ""
+        card:
+          type: vertical-stack
+          spacing: 4
+          cards:
+            # Preset buttons in compact grid
+            - type: grid
+              columns: 1
+              square: false
+              card_mod:
+                style:
+                  grid:
+                    gap: 4px
+              cards:
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 1
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 2
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 3
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 4
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 5
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 6
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 7
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 8
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 9
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 10
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 11
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 12
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 13
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 14
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 15
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 16
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 17
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 18
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 19
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 20
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 21
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 22
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 23
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 24
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 25
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 26
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 27
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 28
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 29
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 30
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 31
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 32
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 33
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 34
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 35
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 36
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 37
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 38
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 39
+                - type: custom:button-card
+                  template: preset_button_template
+                  variables:
+                    index: 40
+
+
+  # ------------------------------------------------------
+  # VIEW 2: PLAYER MATRIX (LINK/UNLINK)
+  # ------------------------------------------------------
+  - title: Players
+    icon: mdi:speaker-multiple
+    type: sections
+    max_columns: 3 # Forces up to 3 columns on wide screens
+    sections:
+      - title: ""
+        cards:
+          - type: custom:auto-entities
+            filter:
+              include:
+                - group: group.musiccast_players
+                  options:
+                    type: custom:config-template-card
+                    entities:
+                      - input_text.active_scenario
+                      - sensor.musiccast_scenarios
+                      - this.entity_id
+                      - input_boolean.scenario_updating
+                    card:
+                      type: custom:decluttering-card
+                      template: musiccast_player_tile
+                      variables:
+                        - entity: this.entity_id
+            card:
+              type: vertical-stack
+            card_param: cards
+                
+
+  # ------------------------------------------------------
+  # VIEW 3: ADMIN - PRESETS
+  # ------------------------------------------------------
+  - title: Settings
+    icon: mdi:tune
+    cards:
+
+      # --- SCENARIO MANAGEMENT ---
+      - type: custom:button-card
+        name: Scenarios
+        icon: mdi:drama-masks
+        show_label: true
+        label: |
+          [[[
+            return 'Tap to create a new scenario.<br>Scenario: tap=edit, hold=delete';
+          ]]]
+        styles:
+          card:
+            - height: 90px
+            - padding: 12px
+            - border-radius: 6px
+            - background-color: *idle_bg
+            - border: 1px solid *idle_border
+            - box-shadow: none
+          grid:
+            - grid-template-areas: '"i n" "i l"'
+            - grid-template-columns: 50px 1fr
+            - grid-template-rows: auto 1fr
+            - align-items: start
+            - row-gap: 4px
+          icon:
+            - width: *icon_large
+            - color: *primary_text_fg
+          name:
+            - font-size: 12px
+            - font-weight: 500
+            - color: *primary_text_fg
+            - justify-self: start
+          label:
+            - font-size: 11px
+            - font-weight: 400
+            - color: *secondary_text
+            - justify-self: start
+            - text-align: left
+            - line-height: 1.3
+        tap_action:
+          action: perform-action
+          perform_action: script.musiccast_scenario_editor_open
+          data:
+            browser_id: '[[[ return window.browser_mod.browserID; ]]]'
+            scenario_id: ''
+            current_name: ''
+            current_icon: 'mdi:music'
+            current_master: ''
+          haptic: light
+
+      - type: custom:auto-entities
+        card:
+          type: grid
+          columns: 3
+          square: false
+        card_param: cards
+        filter:
+          template: >
+            {% set meta = state_attr('sensor.musiccast_scenario_config', 'scenarios') or {} %}
+            {% set ns = namespace(cards=[]) %}
+            {% for sc_id, data in meta.items() %}
+              {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'admin_scenario_button',
+                  'entity': 'input_text.active_scenario', 'icon': data.icon,
+                  'variables': {'scenario_id': sc_id, 'scenario_name': data.name, 'scenario_icon': data.icon}}] %}
+            {% endfor %}
+            {{ ns.cards | tojson }}
+
+      # Header card
+      - type: custom:button-card
+        name: Media Players
+        icon: mdi:tune
+        show_label: true
+        label: |
+          [[[
+            return 'Tap a player to show presets<br>Double-tap to refresh all presets<br>Hold to exclude/include';
+          ]]]
+        styles:
+          card:
+            - height: 90px
+            - padding: 12px
+            - border-radius: 6px
+            - border: 1px solid *idle_border
+            - box-shadow: none
+          grid:
+            - grid-template-areas: '"i n" "i l"'
+            - grid-template-columns: 50px 1fr
+            - grid-template-rows: auto 1fr
+            - align-items: start
+            - row-gap: 4px
+          icon:
+            - width: *icon_large
+            - color: *primary_text_fg
+          name:
+            - font-size: 12px
+            - font-weight: 500
+            - color: *primary_text_fg
+            - justify-self: start
+          label:
+            - font-size: 11px
+            - font-weight: 400
+            - color: *secondary_text
+            - justify-self: start
+            - text-align: left
+            - line-height: 1.3
+
+      # Player selector buttons (dynamic grid)
+      - type: custom:auto-entities
+        filter:
+          include:
+            - integration: yamaha_musiccast
+              domain: media_player
+              options:
+                type: custom:decluttering-card
+                template: admin_preset_button
+                variables:
+                  - entity: this.entity_id
+        sort:
+          method: friendly_name
+        card:
+          type: grid
+          columns: 3
+          square: false
+        card_param: cards
+
+      # Dynamic preset display - single card for all active players
+      - type: markdown
+        content: |
+          {% set all_presets = state_attr('sensor.musiccast_media_player_presets', 'presets') | default({}) %}
+          {% set selected_players = state_attr('sensor.musiccast_preset_players', 'players') | default([]) %}
+          {% set mc_entities = state_attr('sensor.musiccast_entities', 'entities') | default([]) %}
+          {% if selected_players | length > 0 %}
+          *📻 Net Radio  •  👤 Artist  •  🎵 Playlist*
+            {% for entity_id in selected_players %}
+              {% set presets = all_presets.get(entity_id, []) %}
+              {% set ns = namespace(friendly_name=entity_id) %}
+              {% for ent in mc_entities %}
+                {% if ent.entity_id == entity_id %}{% set ns.friendly_name = ent.friendly_name %}{% endif %}
+              {% endfor %}
+          ### {{ ns.friendly_name }}
+              {% set filtered = presets | rejectattr('text', 'eq', '') | rejectattr('input', 'eq', 'unknown') | list %}
+              {% if filtered | length > 0 %}
+                {% for preset in filtered %}
+          **{{ loop.index }}.** {{ preset.text }} {% if preset.input == 'net_radio' %}📻{% elif 'spotify' in preset.input %}🎵{% else %}🎶{% endif %}
+                {% endfor %}
+              {% else %}
+          *No presets configured*
+              {% endif %}
+            {% endfor %}
+          {% else %}
+          *Select one or more players to show presets*
+          {% endif %}
+
+  # ------------------------------------------------------
+  # VIEW 4: DISCOVERY
+  # ------------------------------------------------------
+  - title: Discovery
+    icon: mdi:radar
+    cards:
+      # Resolve Entity IPs button
+      - type: custom:button-card
+        name: Scan for media players
+        icon: mdi:magnify-scan
+        show_label: true
+        label: |
+          [[[
+            return 'Tap to scan the local network for players<br><br>⚠️ <b>Reload YAML after scanning</b> ⚠️';
+          ]]]
+        tap_action:
+          action: perform-action
+          perform_action: script.musiccast_scan_media_players
+        styles:
+          card:
+            - height: 80px
+            - padding: 12px
+            - border-radius: 6px
+            - border: 1px solid *idle_border
+            - background-color: *active_bg
+            - box-shadow: none
+          grid:
+            - grid-template-areas: '"i n" "i l"'
+            - grid-template-columns: 50px 1fr
+            - grid-template-rows: auto 1fr
+            - align-items: start
+            - row-gap: 4px
+          icon:
+            - width: *icon_medium
+            - color: *active_fg
+          name:
+            - font-size: 12px
+            - font-weight: 500
+            - color: *primary_text_fg
+            - justify-self: start
+          label:
+            - font-size: 11px
+            - font-weight: 400
+            - color: *secondary_text
+            - justify-self: start
+            - text-align: left
+            - line-height: 1.3
+
+      # IP Range Configuration
+      - type: entities
+        title: IP scan range (192.168.1.x)
+        show_header: true
+        entities:
+          - entity: input_number.musiccast_scan_start_ip
+            name: First
+          - entity: input_number.musiccast_scan_end_ip
+            name: Last
+
+      # Matched Entities
+      - type: markdown
+        content: |
+          {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') or [] %}
+          {%- if matched | length > 0 %}
+          **✅ Matched devices** ({{ matched | length }})
+
+          | IP address | Entity |
+          |:---|:---|
+          {%- for item in matched %}
+          | `{{ item.ip }}` | `{{ item.entity }}` |
+          {%- endfor %}
+          {%- else %}
+          *No matched devices*
+          {%- endif %}
+        card_mod:
+          style: |
+            ha-card {
+              border: none;
+              box-shadow: none;
+              background: none;
+              padding-top: 0px !important;
+            }
+            ha-markdown {
+              padding: 12px 16px 12px 16px !important;
+            }
+
+      # Unmatched Entities
+      - type: markdown
+        content: |
+          {%- set unmatched = state_attr('sensor.musiccast_media_players', 'unmatched') or [] %}
+          {%- if unmatched | length > 0 %}
+          **⚠️ Unmatched devices** ({{ unmatched | length }})
+
+          | Entity |
+          |:---|
+          {%- for item in unmatched %}
+          | `{{ item.entity }}` |
+          {%- endfor %}
+          {%- else %}
+          **✅ All devices matched!**
+          {%- endif %}
+        card_mod:
+          style: |
+            ha-card {
+              border: none;
+              box-shadow: none;
+              background: none;
+              padding-top: 0px !important;
+            }
+            ha-markdown {
+              padding: 12px 16px 12px 16px !important;
+            }
+
+  # ------------------------------------------------------
+  # VIEW 5: GUIDE
+  # ------------------------------------------------------
+  - path: guide
+    title: Guide
+    icon: mdi:help-circle-outline
+    cards:
+
+      # --- MAIN VIEW ---
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:play-circle"></ha-icon> Now Playing
+
+          **Top card (Scenarios header):**
+          - **Tap:** Unlink all zones and power off.
+          - **Status:** Shows active scenario source and master speaker; otherwise number of powered-on zones; "Select scenario" when idle.
+
+          **Scenario buttons:**
+          - **Tap:** Activate/deactivate scenario with a random preset.
+          - **Double-tap:** Pick a new random preset.
+          - **Hold:** Save current volume configuration.
+          - **Blue background:** Active scenario (playing now).
+          - **Grey background:** Inactive scenario.
+          - **🔒 icon:** A preset is locked — it always plays when this scenario starts.
+
+          **Presets (favorites):**
+          - **Tap:** Play preset immediately.
+          - **Double-tap:** Exclude preset from random playback.
+          - **Hold:** Lock preset — always played when scenario activates.
+          - **🔒 with blue border:** Locked (always plays).
+          - **⊘ with grey background:** Excluded (never randomized).
+          - **Blue background:** Currently playing.
+
+      # --- PLAYERS VIEW ---
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:speaker-multiple"></ha-icon> Players
+
+          Shows all MusicCast zones. Tap a zone to link or unlink it to the active scenario's master player for multi-room audio.
+
+          - **Tap:** Link or unlink zone to/from master player.
+          - **Double-tap:** Toggle power.
+          - **Hold:** Unlink and power off.
+          - **White background:** Powered off (standby).
+          - **Blue background:** Powered on (active).
+          - **Grey background:** Unavailable (not connected).
+          - **Blue border:** Master zone.
+          - **Blue icon/text:** Linked to master.
+          - **Grey icon/text:** Unlinked.
+
+      # --- SETTINGS VIEW ---
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:tune"></ha-icon> Settings
+
+          **Scenarios section:**
+          - **Tap header:** Create a new scenario (name, icon, master player).
+          - **Tap scenario tile:** Edit name, icon, or master player.
+          - **Hold scenario tile:** Delete scenario.
+
+          **Media Players section:**
+          - **Tap player:** Show presets for that player.
+          - **Double-tap player:** Refresh all presets from device.
+          - **Hold player:** Exclude/include player from the active scenario group.
+
+          **Presets list:** Shows all presets for selected players.
+          - 📻 Net Radio  •  👤 Spotify Artist  •  🎵 Spotify Playlist
+
+      # --- DISCOVERY VIEW ---
+      - type: markdown
+        content: |
+          ## <ha-icon icon="mdi:radar"></ha-icon> Discovery
+
+          Scans the local network to find MusicCast devices and match them to Home Assistant entities. Run this once after initial setup, or again if you add or replace a device.
+
+          The scan checks a configurable IP range (default: all of 192.168.1.x) and identifies devices by matching their network name against the friendly names registered in HA. Matched devices are shown with their IP address and entity ID.
+          
+          If any devices appear under Unmatched, they were found on the network but could not be linked to a known entity — check that the device's network name matches its friendly name in HA.
+
+          The scan also immediately refreshes the preset list, so presets in the Settings view are always up to date after a scan.
+
+          **After scanning:** reload YAML (Developer Tools → YAML → Reload all) to apply the updated IP mappings. No restart required.
