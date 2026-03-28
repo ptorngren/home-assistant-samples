@@ -77,26 +77,12 @@ decluttering_templates:
           {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
           {# Extract fingerprints into named variable #}
           {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
-          {# Build MAC → active-location-count map for overlap highlighting #}
+          {# Build MAC → active-location-count map for overlap highlighting (from sensor) #}
+          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+          {%- set mac_locs_data = mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw -%}
           {%- set ns_overlap = namespace(mac_loc_count={}) -%}
-          {%- for row in fingerprints_raw -%}
-            {%- set parts = row.split('|') -%}
-            {%- if parts | count == 2 -%}
-              {%- for device in parts[1].split(',') -%}
-                {%- if '=' in device -%}
-                  {%- set pair_stripped = device.rstrip(':X') -%}
-                  {%- set kv = pair_stripped.split('=') -%}
-                  {%- if kv | count == 2 -%}
-                    {%- set mac = kv[0] | trim | upper -%}
-                    {%- set rssi_val = kv[1] | trim | int(0) -%}
-                    {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
-                      {%- set cur = ns_overlap.mac_loc_count.get(mac, 0) -%}
-                      {%- set ns_overlap.mac_loc_count = ns_overlap.mac_loc_count | combine({mac: cur + 1}) -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                {%- endif -%}
-              {%- endfor -%}
-            {%- endif -%}
+          {%- for mac, data in mac_locs_data.items() -%}
+            {%- set ns_overlap.mac_loc_count = ns_overlap.mac_loc_count | combine({mac: data.locs | length}) -%}
           {%- endfor -%}
           {# Loop over beacons #}
           {%- for row in fingerprints_raw -%}
@@ -342,7 +328,8 @@ decluttering_templates:
             {%- set device_name = device.name | default('unknown') -%}
             {%- set is_globally_ignored = mac in global_list -%}
             {%- set is_weak_signal = rssi_value == 0 or rssi_value < weak_threshold -%}
-            {%- set active_known_beacons = state_attr('sensor.bt_active_known_beacons', 'active_beacons') | default([]) -%}
+            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+            {%- set active_known_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
             {%- set is_known = mac in active_known_beacons -%}
             {{
               {
@@ -506,79 +493,18 @@ decluttering_templates:
             }
       filter:
         template: |
-          {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
-          {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
-          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
-          {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
           {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
           {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
           {# Color scheme (injected via decluttering variables from _colors anchors) #}
           {%- set color_beacon_overlap = "[[color_overlap]]" -%}
           {%- set color_beacon_discriminated = "[[color_discriminated]]" -%}
-          {# Pass 1: Build MAC → {name, locs} dict for all active beacons #}
-          {%- set ns_build = namespace(mac_locs={}) -%}
-          {%- for row in fingerprints_raw -%}
-            {%- set parts = row.split('|') -%}
-            {%- if parts | count == 2 -%}
-              {%- set location_index = parts[0] | trim | int(-1) -%}
-              {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else '' -%}
-              {%- if location_name -%}
-                {%- for device in parts[1].split(',') -%}
-                  {%- if '=' in device -%}
-                    {%- set pair_stripped = device.rstrip(':X') -%}
-                    {%- set kv = pair_stripped.split('=') -%}
-                    {%- if kv | count == 2 -%}
-                      {%- set mac = kv[0] | trim | upper -%}
-                      {%- set rssi_val = kv[1] | trim | int(0) -%}
-                      {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
-                        {%- if mac not in ns_build.mac_locs -%}
-                          {%- set ns_build.mac_locs = ns_build.mac_locs | combine({mac: {'name': device_names[mac] | default('?'), 'locs': [], 'rssi_list': []}}) -%}
-                        {%- endif -%}
-                        {%- set cur_locs = ns_build.mac_locs[mac].locs -%}
-                        {%- set cur_rssi = ns_build.mac_locs[mac].rssi_list -%}
-                        {%- if location_name not in cur_locs -%}
-                          {%- set ns_build.mac_locs = ns_build.mac_locs | combine({mac: {'name': ns_build.mac_locs[mac].name, 'locs': cur_locs + [location_name], 'rssi_list': cur_rssi + [rssi_val]}}) -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                {%- endfor -%}
-              {%- endif -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {# Pass 1.5: Calculate RSSI consistency for each beacon #}
-          {%- set total_locations = locations_list | length -%}
-          {%- set ns_consistency = namespace(bg_colors={}) -%}
-          {%- for mac in ns_build.mac_locs.keys() -%}
-            {%- set rssi_list = ns_build.mac_locs[mac].rssi_list -%}
-            {%- set n = rssi_list | length -%}
-            {%- if n <= 1 -%}
-              {%- set bg = "none" -%}
-            {%- else -%}
-              {%- set ns_c = namespace(pairs_within=0, pairs_total=0) -%}
-              {%- for i in range(n) -%}
-                {%- for j in range(i+1, n) -%}
-                  {%- set ns_c.pairs_total = ns_c.pairs_total + 1 -%}
-                  {%- if (rssi_list[i] - rssi_list[j]) | abs <= rssi_tolerance -%}
-                    {%- set ns_c.pairs_within = ns_c.pairs_within + 1 -%}
-                  {%- endif -%}
-                {%- endfor -%}
-              {%- endfor -%}
-              {%- if n == total_locations and ns_c.pairs_within == ns_c.pairs_total -%}
-                {%- set bg = color_beacon_overlap -%}
-              {%- elif ns_c.pairs_within == 0 -%}
-                {%- set bg = color_beacon_discriminated -%}
-              {%- else -%}
-                {%- set bg = "none" -%}
-              {%- endif -%}
-            {%- endif -%}
-            {%- set ns_consistency.bg_colors = ns_consistency.bg_colors | combine({mac: bg}) -%}
-          {%- endfor -%}
-          {# Pass 2: Render button-cards sorted by MAC #}
-          {%- for mac in ns_build.mac_locs.keys() | sort -%}
-            {%- set entry = ns_build.mac_locs[mac] -%}
-            {%- set bg = ns_consistency.bg_colors.get(mac, "none") -%}
+          {# Load active beacons with discriminator from sensor (single source of truth) #}
+          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+          {%- set mac_locs = mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw -%}
+          {# Render button-cards sorted by MAC #}
+          {%- for mac in mac_locs.keys() | sort -%}
+            {%- set entry = mac_locs[mac] -%}
+            {%- set bg = color_beacon_overlap if entry.discriminator < 0 else (color_beacon_discriminated if entry.discriminator > 0 else 'none') -%}
             {{
               {
                 "type": "custom:button-card",
@@ -625,7 +551,7 @@ decluttering_templates:
                 },
                 "custom_fields": {
                   "mac": mac,
-                  "name": entry.name,
+                  "name": device_names.get(mac, '?'),
                   "locs": entry.locs | join(', ')
                 },
                 "tap_action": {
@@ -973,6 +899,8 @@ views:
               {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list %}
               {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) %}
               {%- set locations_map = state_attr('sensor.bt_location_array', 'locations') | default([]) %}
+              {%- set names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') %}
+              {%- set names_map = names_raw | from_json if names_raw is string else names_raw %}
               {%- set ns = namespace(scan_map={}, loc_list=[], fp_beacons={}) %}
               {%- for d in scan_devices %}
                 {%- set ns.scan_map = ns.scan_map | combine({d.mac | upper: d.rssi}) %}
@@ -988,8 +916,8 @@ views:
               ---
               **{{ loc.name | capitalize }}** `{{ loc.matched }}/{{ loc.total }} [{{ known_in_scan }}]` `{{ loc.score | round(3) }}`
 
-              | Beacon | FP | Scan | Δ | |
-              |:---|---:|---:|---:|:---:|
+              | Beacon | FP | Scan | Δ | | Name |
+              |:---|---:|---:|---:|:---:|:---|
               {%- set ns.fp_beacons = {} %}
               {%- for entry in fp_raw %}
                 {%- if '|' in entry %}
@@ -1014,12 +942,19 @@ views:
                 {%- endif %}
               {%- endfor %}
               {%- for mac, fp in ns.fp_beacons.items() %}
-                {%- if fp.x or mac in global_ignored %}
+                {%- if mac in global_ignored %}
+                {%- elif fp.x %}
+                  {%- if mac in ns.scan_map %}
+                    {%- set bname = names_map.get(mac, '') %}
+              | `{{ mac }}` | | `{{ ns.scan_map[mac] }}` | | ❌ | {{ bname }} |
+                  {%- endif %}
                 {%- elif mac in ns.scan_map %}
                   {%- set diff = (ns.scan_map[mac] - fp.rssi) | abs %}
-              | `{{ mac }}` | `{{ fp.rssi }}` | `{{ ns.scan_map[mac] }}` | `{{ diff }}` | {{ '✅' if diff <= tolerance else '⚠️' }} |
+                  {%- set bname = names_map.get(mac, '') %}
+              | `{{ mac }}` | `{{ fp.rssi }}` | `{{ ns.scan_map[mac] }}` | `{{ diff }}` | {{ '✅' if diff <= tolerance else '⚠️' }} | {{ bname }} |
                 {%- else %}
-              | `{{ mac }}` | `{{ fp.rssi }}` | `-` | `-` | ❌ |
+                  {%- set bname = names_map.get(mac, '') %}
+              | `{{ mac }}` | `{{ fp.rssi }}` | | | ❌ | {{ bname }} |
                 {%- endif %}
               {%- endfor %}
               {%- endfor %}
@@ -1073,31 +1008,7 @@ views:
       - type: custom:stack-in-card
         cards:
           - type: custom:mushroom-template-card
-            primary: |
-              {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
-              {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
-              {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-              {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
-              {%- set ns_count = namespace(unique_macs={}) -%}
-              {%- for row in fingerprints_raw -%}
-                {%- set parts = row.split('|') -%}
-                {%- if parts | count == 2 -%}
-                  {%- for device in parts[1].split(',') -%}
-                    {%- if '=' in device -%}
-                      {%- set pair_stripped = device.rstrip(':X') -%}
-                      {%- set kv = pair_stripped.split('=') -%}
-                      {%- if kv | count == 2 -%}
-                        {%- set mac = kv[0] | trim | upper -%}
-                        {%- set rssi_val = kv[1] | trim | int(0) -%}
-                        {%- if not device.endswith(':X') and mac not in global_list and rssi_val != 0 and rssi_val >= weak_threshold -%}
-                          {%- set ns_count.unique_macs = ns_count.unique_macs | combine({mac: true}) -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-              {%- endfor -%}
-              All Active Beacons ({{ ns_count.unique_macs | length }})
+            primary: "All Active Beacons ({{ states('sensor.bt_active_known_beacons') }})"
             card_mod:
               style: |
                 ha-card {
@@ -1224,7 +1135,7 @@ views:
           - Use **Beacon Breakdown** (below Scores) to see per-beacon match detail for the top N scoring locations. Use the slider to choose how many locations to compare. For each beacon: FP RSSI, scan RSSI, delta, and match status:
             - ✅ within RSSI tolerance (counts as matched)
             - ⚠️ present in scan but RSSI drifted outside tolerance (counts as missed)
-            - ❌ absent from scan entirely
+            - ❌ not matched — blank Scan = present in fingerprint, absent from scan; blank FP = present in scan, absent from fingerprint
             - Ignored beacons are excluded; only beacons that affect scoring are shown
 
           **Matching Logic:**

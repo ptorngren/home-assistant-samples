@@ -592,18 +592,18 @@ The main working view for capturing and curating location fingerprints. Place yo
 
 **What it does:** Define your locations and tune the detection algorithm. Configure location names, adjust algorithm parameters, and review how well each location's fingerprint matches the current scan.
 
-<img src="docs/tuning.jpg" width="20%" alt="Algorithm Tuning & Validation">
+<img src="docs/settings.jpg" width="20%" alt="Settings">
 
 **How to use:**
 
 1. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan:
    - **matched/fp-total [known-in-scan]** — matched beacons over fingerprint total; brackets show how many known beacons were present in the scan
    - **Score** — symmetric ratio: (matched/fp) × (matched/scan) — higher is better
-2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). For each beacon in the fingerprint: FP RSSI, scan RSSI, difference, and match status:
+2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). For each beacon: FP RSSI, scan RSSI, difference, match status, and friendly name:
    - ✅ = within RSSI tolerance (counts as matched)
    - ⚠️ = present in scan but RSSI drifted outside tolerance (counts as missed)
-   - ❌ = absent from scan entirely
-   - Ignored beacons are excluded from the table and do not affect scoring
+   - ❌ = not matched — blank Scan = present in fingerprint, absent from scan; blank FP = present in scan, absent from fingerprint (locally ignored for this location but counted as a known beacon, reducing score)
+   - Globally ignored beacons are excluded; locally ignored beacons appear when present in scan
    - Use this to diagnose why a location scores below expected, or why the wrong location wins
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
@@ -620,7 +620,7 @@ The main working view for capturing and curating location fingerprints. Place yo
 
 **What you see:**
 - **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
-- **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; helps identify overlapping beacons
+- **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; color-coded by discriminator quality: 🟢 green = strong discriminator (RSSI differs well across locations), 🔴 red = weak discriminator (similar RSSI in all locations — ambiguous), no color = neutral
 - **Globally Ignored Beacons** — Centralized view of all beacons marked as globally ignored with quick toggle to restore them
 
 **Use this to:** Identify overlapping beacons (appearing in multiple locations with similar RSSI), detect location pairs that might confuse the algorithm, and manage global beacon ignores.

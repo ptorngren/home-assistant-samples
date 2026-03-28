@@ -117,6 +117,95 @@ template:
           browser_id_transform_pattern: "^(.+?)(?:_fkb)?$"
           alarm_id_replacement: "sensor.$1_next_alarm"
 
+      # Active Known Beacons - single source of truth for which beacons are active
+      # A beacon is active if it appears non-ignored (:X) in at least one location fingerprint
+      # Auto-updates when fingerprints or ignore list change
+      - name: "BT Active Known Beacons"
+        unique_id: bt_active_known_beacons
+        icon: mdi:bluetooth
+        state: >
+          {%- set ns = namespace(macs=[]) -%}
+          {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
+          {%- set raw_fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) | list -%}
+          {%- for entry in raw_fingerprints -%}
+            {%- if entry and '|' in entry -%}
+              {%- set parts = entry.split('|') -%}
+              {%- if parts | length == 2 -%}
+                {%- for pair in parts[1].split(',') -%}
+                  {%- if '=' in pair and not pair.endswith(':X') -%}
+                    {%- set mac = pair.split('=')[0] | trim | upper -%}
+                    {%- if mac not in global_ignored and mac not in ns.macs -%}
+                      {%- set ns.macs = ns.macs + [mac] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.macs | length }}
+        attributes:
+          mac_locs: >
+            {%- set ns = namespace(mac_locs={}) -%}
+            {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
+            {%- set raw_fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) | list -%}
+            {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
+            {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
+            {%- set total_locations = locations_list | length -%}
+            {# Pass 1: Build mac_locs with locs and rssi_list per beacon #}
+            {%- for entry in raw_fingerprints -%}
+              {%- if entry and '|' in entry -%}
+                {%- set parts = entry.split('|') -%}
+                {%- if parts | length == 2 -%}
+                  {%- set loc_idx = parts[0] | int(-1) -%}
+                  {%- set loc_name = locations_list[loc_idx] if loc_idx >= 0 and loc_idx < locations_list | length else '' -%}
+                  {%- if loc_name -%}
+                    {%- for pair in parts[1].split(',') -%}
+                      {%- if '=' in pair and not pair.endswith(':X') -%}
+                        {%- set mac = pair.split('=')[0] | trim | upper -%}
+                        {%- set rssi_val = pair.split('=')[1] | trim | int(0) -%}
+                        {%- if mac not in global_ignored -%}
+                          {%- if mac not in ns.mac_locs -%}
+                            {%- set ns.mac_locs = ns.mac_locs | combine({mac: {'locs': [], 'rssi_list': []}}) -%}
+                          {%- endif -%}
+                          {%- if loc_name not in ns.mac_locs[mac].locs -%}
+                            {%- set ns.mac_locs = ns.mac_locs | combine({mac: {'locs': ns.mac_locs[mac].locs + [loc_name], 'rssi_list': ns.mac_locs[mac].rssi_list + [rssi_val]}}) -%}
+                          {%- endif -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {# Pass 2: Compute discriminator strength, drop rssi_list from output #}
+            {%- set ns2 = namespace(result={}) -%}
+            {%- for mac, data in ns.mac_locs.items() -%}
+              {%- set rssi_list = data.rssi_list -%}
+              {%- set n = rssi_list | length -%}
+              {%- if n <= 1 -%}
+                {%- set discriminator = 0 -%}
+              {%- else -%}
+                {%- set ns_c = namespace(pairs_within=0, pairs_total=0) -%}
+                {%- for i in range(n) -%}
+                  {%- for j in range(i+1, n) -%}
+                    {%- set ns_c.pairs_total = ns_c.pairs_total + 1 -%}
+                    {%- if (rssi_list[i] - rssi_list[j]) | abs <= rssi_tolerance -%}
+                      {%- set ns_c.pairs_within = ns_c.pairs_within + 1 -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {%- if n == total_locations and ns_c.pairs_within == ns_c.pairs_total -%}
+                  {%- set discriminator = -1 -%}
+                {%- elif ns_c.pairs_within == 0 -%}
+                  {%- set discriminator = 1 -%}
+                {%- else -%}
+                  {%- set discriminator = 0 -%}
+                {%- endif -%}
+              {%- endif -%}
+              {%- set ns2.result = ns2.result | combine({mac: {'locs': data.locs, 'discriminator': discriminator}}) -%}
+            {%- endfor -%}
+            {{ ns2.result | to_json }}
+
       # BT Location Array - Parses input_text.bt_calibration_locations into indexable array
       # User edits comma-separated locations in input_text, this sensor stores as array in attributes
       # Access via: state_attr('sensor.bt_location_array', 'locations')[index]
@@ -173,7 +262,8 @@ template:
           # Counts all captured devices including RSSI=0; filtering is applied at usage level by toggle
           known_beacons_in_scan: |
             {%- set ns = namespace(count=0) -%}
-            {%- set active_beacons = state_attr('sensor.bt_active_known_beacons', 'active_beacons') | default([]) -%}
+            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+            {%- set active_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
             {%- set devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
             {%- for device in devices -%}
               {%- set mac = device.mac | upper -%}
@@ -219,58 +309,6 @@ template:
           active_beacons_in_scan: "{{ trigger.event.data.active_beacons_in_scan | int(0) }}"
           known_beacons_in_scan: "{{ trigger.event.data.known_beacons_in_scan | int(0) }}"
           unknown_beacons_in_scan: "{{ trigger.event.data.unknown_beacons_in_scan | int(0) }}"
-
-      # Active Known Beacons - dynamically calculated from fingerprints, excluding globally ignored
-      # Updates whenever fingerprints change OR ignore list changes
-      # Single source of truth for "which beacons should be considered in location detection"
-      - name: "BT Active Known Beacons"
-        unique_id: bt_active_known_beacons
-        icon: mdi:bluetooth
-        state: >
-          {%- set ns = namespace(active_beacons=[]) -%}
-          {%- set global_ignored_raw = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set global_ignored_list = global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] -%}
-          {%- set raw_fingerprints = (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list -%}
-          {%- for entry in raw_fingerprints -%}
-            {%- if entry and '|' in entry -%}
-              {%- set parts = entry.split('|') -%}
-              {%- if parts | length == 2 -%}
-                {%- set mac_rssi_str = parts[1] -%}
-                {%- for pair in mac_rssi_str.split(',') -%}
-                  {%- if '=' in pair -%}
-                    {%- set mac = pair.split('=')[0] | upper -%}
-                    {%- if mac not in ns.active_beacons and mac not in global_ignored_list -%}
-                      {%- set ns.active_beacons = ns.active_beacons + [mac] -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                {%- endfor -%}
-              {%- endif -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ ns.active_beacons | length }}
-        attributes:
-          active_beacons: >
-            {%- set ns = namespace(active_beacons=[]) -%}
-            {%- set global_ignored_raw = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-            {%- set global_ignored_list = global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] -%}
-            {%- set raw_fingerprints = (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list -%}
-            {%- for entry in raw_fingerprints -%}
-              {%- if entry and '|' in entry -%}
-                {%- set parts = entry.split('|') -%}
-                {%- if parts | length == 2 -%}
-                  {%- set mac_rssi_str = parts[1] -%}
-                  {%- for pair in mac_rssi_str.split(',') -%}
-                    {%- if '=' in pair -%}
-                      {%- set mac = pair.split('=')[0] | upper -%}
-                      {%- if mac not in ns.active_beacons and mac not in global_ignored_list -%}
-                        {%- set ns.active_beacons = ns.active_beacons + [mac] -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endfor -%}
-            {{ ns.active_beacons }}
 
   # BT Location Confusion Matrix - Stores pre-calculated similarity scores
   # Updated by script.generate_confusion_matrix when fingerprints/locations/tolerance change
