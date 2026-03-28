@@ -31,22 +31,22 @@ template:
       # This pattern maintains a minimalist display while providing context when meaningful
       - name: "Screensaver Display Temperature"
         unique_id: screensaver_display_temperature
+        availability: >
+          {{ states('sensor.garage_framsidan_temperature') | float(none) is not none
+             and states('sensor.relax_baksidan_temperature') | float(none) is not none }}
         state: |
-          {% set f = states('sensor.garage_framsidan_temperature') | float(none) %}
-          {% set b = states('sensor.relax_baksidan_temperature') | float(none) %}
-          {% if f is not none and b is not none %}
-            {% if (f - b) | abs < 2 %}
-              [{{ ((f + b) / 2) | round(1) }}]
-            {% else %}
-              [{{ [f, b] | min | round(1) }}, {{ [f, b] | max | round(1) }}]
-            {% endif %}
+          {% set f = states('sensor.garage_framsidan_temperature') | float %}
+          {% set b = states('sensor.relax_baksidan_temperature') | float %}
+          {% if (f - b) | abs < 2 %}
+            [{{ ((f + b) / 2) | round(1) }}]
           {% else %}
-            unavailable
+            [{{ [f, b] | min | round(1) }}, {{ [f, b] | max | round(1) }}]
           {% endif %}
 
       # Weather description from forecast entity (mapped to local language)
       - name: "Screensaver Display Weather"
         unique_id: screensaver_display_weather
+        availability: "{{ states('weather.forecast_home') not in ['unknown', 'unavailable'] }}"
         state: >
           {% set s = states('weather.forecast_home') %}
           {% set mapper = {
@@ -73,19 +73,19 @@ template:
             'windy-variant': 'Hård vind',
             'exceptional': 'Varning'
           } %}
-          {{ mapper.get(s, s) if s not in ['unknown', 'unavailable'] else 'unavailable' }}
+          {{ mapper.get(s, s) }}
 
       - name: "Screensaver Display Humidity"
         unique_id: screensaver_display_humidity
         unit_of_measurement: '%'
-        state: "{{ states('sensor.relax_baksidan_humidity') }}"
+        availability: "{{ states('sensor.relax_baksidan_humidity') | float(none) is not none }}"
+        state: "{{ states('sensor.relax_baksidan_humidity') | float }}"
 
       - name: "Screensaver Display Wind Speed"
         unique_id: screensaver_display_wind_speed
         unit_of_measurement: 'm/s'
-        state: >
-          {% set w = states('sensor.relax_vindmatare_wind_speed') | float(-1) %}
-          {{ (w / 3.6) | round(1) if w > 0.1 else 'unavailable' }}
+        availability: "{{ states('sensor.relax_vindmatare_wind_speed') | float(-1) > 0.1 }}"
+        state: "{{ (states('sensor.relax_vindmatare_wind_speed') | float / 3.6) | round(1) }}"
 
 # ------------------------------------------------------------------
 # SCRIPTS
