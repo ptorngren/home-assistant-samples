@@ -44,7 +44,6 @@ decluttering_templates:
           {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
           {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
           {%- set rssi_match_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int -%}
-          {%- set prev_location = '' -%}
           {# Color scheme (injected via decluttering variables from _colors anchors) #}
           {%- set color_beacon_rssi_match = "[[color_rssi_match]]" -%}
           {%- set color_beacon_in_scan = "[[color_in_scan]]" -%}
@@ -84,16 +83,47 @@ decluttering_templates:
           {%- for mac, data in mac_locs_data.items() -%}
             {%- set ns_overlap.mac_loc_count = ns_overlap.mac_loc_count | combine({mac: data.locs | length}) -%}
           {%- endfor -%}
-          {# Loop over beacons #}
+          {# Pre-pass 1: collect unique locations with scores #}
+          {%- set ns_locs = namespace(list=[], seen=[]) -%}
           {%- for row in fingerprints_raw -%}
+            {%- set parts = row.split('|') -%}
+            {%- if parts | count == 2 -%}
+              {%- set location_index = parts[0] | trim | int(-1) -%}
+              {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else (location_index | string) -%}
+              {%- if location_index >= 0 and location_index not in ns_locs.seen -%}
+                {%- set ns_locs.seen = ns_locs.seen + [location_index] -%}
+                {%- set loc_data = scores.get(location_name, {}) -%}
+                {%- set loc_score = loc_data.get('total_score', -1) | float -%}
+                {%- set ns_locs.list = ns_locs.list + [{'index': location_index, 'name': location_name, 'score': loc_score}] -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set sorted_locs = ns_locs.list | sort(attribute='score', reverse=true) -%}
+          {# Pre-pass 2: reorder fingerprint rows by score (best match first) #}
+          {%- set ns_sorted = namespace(rows=[]) -%}
+          {%- for loc in sorted_locs -%}
+            {%- for row in fingerprints_raw -%}
+              {%- set parts = row.split('|') -%}
+              {%- if parts | count == 2 and parts[0] | trim | int(-1) == loc.index -%}
+                {%- set ns_sorted.rows = ns_sorted.rows + [row] -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+
+          {# Loop over beacons (sorted by best match) #}
+          {%- set prev_location = '' -%}
+          {%- for row in ns_sorted.rows -%}
             {%- set parts = row.split('|') -%}
             {%- if parts | count == 2 -%}
               {%- set location_index = parts[0] | trim | int(-1) -%}
               {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else (location_index | string) -%}
               {%- set devices = parts[1].split(',') -%}
               {%- if location_name != prev_location -%}
-                {%- set loc_metrics = scores[location_name] if location_name in scores else {} -%}
-                {%- set loc_score = loc_metrics.total_score | default(-1) | float -%}
+                {%- set loc_metrics = scores.get(location_name, {}) -%}
+                {%- set matched = loc_metrics.get('matched', 0) | int -%}
+                {%- set missing = loc_metrics.get('missing', 0) | int -%}
+                {%- set total = matched + missing -%}
+                {%- set loc_score = loc_metrics.get('total_score', -1) | float -%}
                 {%- set confidence_pct = ((loc_score * 100) | round(0) | int) if loc_score >= 0 else -1 -%}
                 {{
                   {
@@ -101,7 +131,7 @@ decluttering_templates:
                     "layout": "vertical",
                     "show_icon": false,
                     "show_name": true,
-                    "name": location_name | upper ~ " " ~ loc_metrics.matched ~ "/" ~ (loc_metrics.matched + loc_metrics.missing) ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
+                    "name": location_name | upper ~ " " ~ matched ~ "/" ~ total ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
                     "tap_action": {
                       "action": "call-service",
                       "service": "script.merge_bt_fingerprint",
@@ -171,7 +201,7 @@ decluttering_templates:
               {%- set no_match = ns_beacons.list | selectattr('match_status', 'equalto', 2) | sort(attribute='sort_rssi', reverse=true) | list -%}
               {%- set devices_sorted = match + weak_match + no_match -%}
               {%- for beacon_obj in devices_sorted -%}
-          
+
               {%- set device = beacon_obj.device -%}
                 {%- set device_stripped = device.rstrip(':X') -%}
                 {%- set dev_parts = device_stripped.split('=') -%}

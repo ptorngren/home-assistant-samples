@@ -541,7 +541,7 @@ Repeat for all configured locations.
 
 ### Step 3: Verify Detection via Fingerprint Details
 
-The **Fingerprint Details** section is your main verification tool. Each location heading shows a **live match score** (e.g., `OFFICE 5/9 • 58%`):
+The **Fingerprint Details** section is your main verification tool. Locations are sorted by match score — the best-matching location appears at the top. Each location heading shows a **live match score** (e.g., `OFFICE 5/9 • 58%`):
 - **Matched count** (5/9): How many beacons from the fingerprint are in the latest scan
 - **Confidence %** (58%): Quality of the match (higher = more reliable detection)
 
