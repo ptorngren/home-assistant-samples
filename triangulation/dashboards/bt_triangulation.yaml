@@ -1208,7 +1208,7 @@ views:
         content: |
           ## <ha-icon icon="mdi:tune-variant"></ha-icon> Settings
 
-          **What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
+          **What it does:** Define your locations and tune the detection algorithm. Configure location names, adjust algorithm parameters, and review how well each location's fingerprint matches the current scan.
 
           **How to use:**
           - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). ⚠️ **Maintain order** — fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints. Once defined, keep the order fixed (renaming is OK); if you must reorder, recapture all fingerprints from scratch.
