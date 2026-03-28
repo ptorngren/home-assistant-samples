@@ -73,8 +73,7 @@ input_select:
   scenario_editor_master:
     name: Scenario Editor — Master Player
     options:
-      - placeholder
-    initial: placeholder
+      - ---
 
 input_number:
   musiccast_volume_sync_delta:
@@ -153,9 +152,16 @@ automation:
           entity_id: input_select.scenario_editor_master
         data:
           options: >
-            {{ expand('group.musiccast_players')
+            {{ ['---'] + (expand('group.musiccast_players')
                | map(attribute='attributes.friendly_name')
-               | list }}
+               | list) }}
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.scenario_editor_master
+        data:
+          option: >
+            {% set valid = expand('group.musiccast_players') | map(attribute='attributes.friendly_name') | list %}
+            {{ valid | first }}
 
   - id: musiccast_detect_manual_scenario
     alias: "MusicCast: Detect manual scenario"

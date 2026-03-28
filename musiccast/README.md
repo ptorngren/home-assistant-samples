@@ -325,6 +325,17 @@ There is no official Spotify integration for HA that supports MusicCast. The wor
 </details>
 
 <details>
+<summary><strong>Preset cache may not persist across restarts with many players and full preset lists</strong></summary>
+
+`sensor.musiccast_media_player_presets` stores preset data for all players in a single sensor's attributes. HA's recorder has a 16 KB limit per entity's attributes — if this is exceeded, a warning is logged and the attributes are not written to the database.
+
+The fetcher is optimised to store only the two fields actually used (`text` and `input`) and to skip empty preset slots, which keeps the payload small under typical conditions. However, with a large number of players and fully-loaded preset lists (up to 40 per player), the limit may still be hit.
+
+**In practice this is transparent:** attributes are still available in HA's in-memory state during the session, and the mixer refreshes the sensor before each scenario activation — so playback is unaffected. The only observable effect is a slight delay on the very first scenario activation after a restart while the sensor re-fetches.
+
+</details>
+
+<details>
 <summary><strong>Only tested with Net Radio, server lists, and Spotify favorites</strong></summary>
 
 Any source saved as a MusicCast favorite should work in principle, but other source types (Tidal, Napster, FM, etc.) have not been verified.
