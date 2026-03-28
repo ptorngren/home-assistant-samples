@@ -900,6 +900,8 @@ views:
                   {%- set ns.max_val = metrics.total_score | float(-1) %}
                 {%- endif %}
               {%- endfor %}
+              Matched beacons and score per location — higher score is better.
+
               | Location | Matched | Score |
               |:---|---:|---:|
               {%- if scores and scores | length > 0 %}
@@ -910,12 +912,6 @@ views:
               {%- else %}
               | _No data_ | _-_ | _-_ |
               {%- endif %}
-
-              <sub>
-              Matched = matched beacons / total fingerprint beacons [known in scan] (e.g., 5/8 [6])<br>
-              Score = symmetric ratio result: (matched/fingerprint) × (matched/scan_valid)<br>
-              <b>Note</b>: Higher scores indicate better matches. [6] shows total known beacons in current scan for context.
-              </sub>
             card_mod:
               style: |
                 ha-card {
@@ -936,6 +932,115 @@ views:
                 }
                 td, th {
                   padding: 8px 0;
+                  border-bottom: 1px solid var(--divider-color);
+                }
+
+      # Per-Beacon Diagnostic Breakdown
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "🔍 Beacon Breakdown"
+            secondary: "Per-beacon match detail for top N locations"
+            layout: horizontal
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: entities
+            entities:
+              - entity: input_number.bt_diagnostic_location_count
+                name: "Locations to show"
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                }
+
+          - type: markdown
+            content: |
+              {%- set scores_raw = state_attr('sensor.bt_location_scores', 'location_scores') or {} %}
+              {%- set scores = scores_raw | from_json if scores_raw is string else scores_raw %}
+              {%- set top_n = states('input_number.bt_diagnostic_location_count') | int(2) %}
+              {%- set tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) %}
+              {%- set fp_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) %}
+              {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) %}
+              {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list %}
+              {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) %}
+              {%- set locations_map = state_attr('sensor.bt_location_array', 'locations') | default([]) %}
+              {%- set ns = namespace(scan_map={}, loc_list=[], fp_beacons={}) %}
+              {%- for d in scan_devices %}
+                {%- set ns.scan_map = ns.scan_map | combine({d.mac | upper: d.rssi}) %}
+              {%- endfor %}
+              {%- for location, metrics in scores.items() %}
+                {%- set ns.loc_list = ns.loc_list + [{'name': location, 'score': metrics.total_score | float, 'matched': metrics.matched | int, 'total': (metrics.matched | int) + (metrics.missing | int)}] %}
+              {%- endfor %}
+              {%- set sorted_locs = ns.loc_list | sort(attribute='score', reverse=true) %}
+              {%- if sorted_locs | length == 0 %}
+              _No score data. Run a scan first._
+              {%- else %}
+              {%- for loc in sorted_locs[:top_n] %}
+              ---
+              **{{ loc.name | capitalize }}** `{{ loc.matched }}/{{ loc.total }} [{{ known_in_scan }}]` `{{ loc.score | round(3) }}`
+
+              | Beacon | FP | Scan | Δ | |
+              |:---|---:|---:|---:|:---:|
+              {%- set ns.fp_beacons = {} %}
+              {%- for entry in fp_raw %}
+                {%- if '|' in entry %}
+                  {%- set parts = entry.split('|') %}
+                  {%- if parts | length == 2 %}
+                    {%- set loc_idx = parts[0] | int(-1) %}
+                    {%- if loc_idx >= 0 and loc_idx < locations_map | length and locations_map[loc_idx] == loc.name %}
+                      {%- for pair in parts[1].split(',') %}
+                        {%- if '=' in pair %}
+                          {%- set pair_base = pair.rstrip(':X') %}
+                          {%- set kv = pair_base.split('=') %}
+                          {%- if kv | length == 2 %}
+                            {%- set mac = kv[0] | trim | upper %}
+                            {%- set rssi = kv[1] | trim | int(0) %}
+                            {%- set is_x = pair.endswith(':X') %}
+                            {%- set ns.fp_beacons = ns.fp_beacons | combine({mac: {'rssi': rssi, 'x': is_x}}) %}
+                          {%- endif %}
+                        {%- endif %}
+                      {%- endfor %}
+                    {%- endif %}
+                  {%- endif %}
+                {%- endif %}
+              {%- endfor %}
+              {%- for mac, fp in ns.fp_beacons.items() %}
+                {%- if fp.x or mac in global_ignored %}
+                {%- elif mac in ns.scan_map %}
+                  {%- set diff = (ns.scan_map[mac] - fp.rssi) | abs %}
+              | `{{ mac }}` | `{{ fp.rssi }}` | `{{ ns.scan_map[mac] }}` | `{{ diff }}` | {{ '✅' if diff <= tolerance else '⚠️' }} |
+                {%- else %}
+              | `{{ mac }}` | `{{ fp.rssi }}` | `-` | `-` | ❌ |
+                {%- endif %}
+              {%- endfor %}
+              {%- endfor %}
+              {%- endif %}
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                  padding-top: 0px !important;
+                }
+                ha-markdown {
+                  padding: 0px 16px 16px 16px !important;
+                }
+                table {
+                  width: 100%;
+                  border-collapse: collapse;
+                }
+                td, th {
+                  padding: 4px 0;
                   border-bottom: 1px solid var(--divider-color);
                 }
 
@@ -1112,7 +1217,15 @@ views:
           - Toggle **Ignore Ghost Signals (0 dBm)** to control whether 0 dBm signals are captured in fingerprints (does NOT affect matching):
             - **ON:** Ignore 0 dBm signals during fingerprint capture (recommended for most users)
             - **OFF:** Capture 0 dBm signals in fingerprints (useful if you have legitimate 0 dBm beacons)
-          - Review the **Scores for Latest Scan** table to see how locations match and what scores they get
+          - Review the **Scores for Latest Scan** table to see how locations match and what scores they get. E.g. `5/8 [6]: 0.5`:
+            - **`5/8`** — 5 of this location's 8 fingerprint beacons were found in the scan
+            - **`[6]`** — 6 known beacons (across all locations) were present in the scan
+            - **`0.5`** = Score `(matched/fingerprint) × (matched/known)` — higher is better (1 is perfect)
+          - Use **Beacon Breakdown** (below Scores) to see per-beacon match detail for the top N scoring locations. Use the slider to choose how many locations to compare. For each beacon: FP RSSI, scan RSSI, delta, and match status:
+            - ✅ within RSSI tolerance (counts as matched)
+            - ⚠️ present in scan but RSSI drifted outside tolerance (counts as missed)
+            - ❌ absent from scan entirely
+            - Ignored beacons are excluded; only beacons that affect scoring are shown
 
           **Matching Logic:**
           - All known beacons (registered in any location's fingerprint) are considered during matching, regardless of signal strength

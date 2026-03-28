@@ -563,7 +563,7 @@ See **"Common Tasks"** section below for detailed procedures and additional refi
 ### Step 5: Advanced Testing (Algorithm Tuning)
 
 For detailed algorithm analysis:
-1. Go to the **"Tuning"** view
+1. Go to the **"Settings"** view
 2. Review the **"Scores for Latest Scan"** table to see how each location's fingerprint matches the latest scan
 3. Look at match quality and score separation to identify any conflicting/ambiguous locations
 4. Each row shows: location fingerprint, matched beacon count, and total score
@@ -577,32 +577,34 @@ For detailed algorithm analysis:
 
 ## Visual Setup Guide
 
-### Calibration Dashboard
+### Triangulation
 
-This is the main interface for setting up and managing BT location detection. You configure locations, capture fingerprints, and monitor beacon signals here.
+The main working view for capturing and curating location fingerprints. Place your phone at a location, run a BT scan, then capture or update the fingerprint here. Revisit over time to refine as beacon signals change.
 
-![BT Location Calibration Dashboard](docs/triangulation.jpg)
+<img src="docs/triangulation.jpg" width="20%" alt="Triangulation View">
 
 **What you see:**
-- **Location Names** — Editable list of rooms where you want location detection (kitchen, garage, office, etc.)
-- **BT Weak Signal Threshold** — Slider to ignore weak beacons that might cause false positives (-85 dBm is a good starting point)
-- **Management Buttons** — Report beacon status, load or clear stored data
-- **Latest BT Scan** — Bluetooth devices with signal strength (RSSI in dBm) and device names as reported by the most recent report
+- **Latest BT Scan** — Bluetooth devices detected in the most recent scan with RSSI values and device names
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
-- **Review Tab** — Three dedicated analysis views: All Active Beacons (shows overlapping beacons across locations), Globally Ignored (centralized table of all globally ignored beacons), and Location Cross-Reference Matrix (visualizes location confusion risks)
+- **Beacon management** — Ignore or remove beacons per location, or mark them globally ignored across all locations
 
-### Tuning
+### Settings
 
-**What it does:** Shows how the location detection algorithm matches current Bluetooth scans against saved fingerprints. Adjust algorithm parameters to improve detection accuracy for your environment.
+**What it does:** Define your locations and tune the detection algorithm. Configure location names, adjust algorithm parameters, and review how well each location's fingerprint matches the current scan.
 
-![Algorithm Tuning & Validation](docs/tuning.jpg)
+<img src="docs/tuning.jpg" width="20%" alt="Algorithm Tuning & Validation">
 
 **How to use:**
 
-1. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan with scoring details
-2. **Review Algorithm Results Table** — Shows how each location matches:
-   - **Matched** — How many beacons from the fingerprint were detected in the scan (format: matched/fingerprint [known_in_scan])
-   - **Score** — Symmetric ratio result: (matched/fingerprint) × (matched/scan_valid) (higher = better match)
+1. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan:
+   - **matched/fp-total [known-in-scan]** — matched beacons over fingerprint total; brackets show how many known beacons were present in the scan
+   - **Score** — symmetric ratio: (matched/fp) × (matched/scan) — higher is better
+2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). For each beacon in the fingerprint: FP RSSI, scan RSSI, difference, and match status:
+   - ✅ = within RSSI tolerance (counts as matched)
+   - ⚠️ = present in scan but RSSI drifted outside tolerance (counts as missed)
+   - ❌ = absent from scan entirely
+   - Ignored beacons are excluded from the table and do not affect scoring
+   - Use this to diagnose why a location scores below expected, or why the wrong location wins
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
@@ -614,7 +616,7 @@ This is the main interface for setting up and managing BT location detection. Yo
 
 **What it does:** Provides three integrated analysis views for understanding beacon distribution across locations and diagnosing location overlap risks.
 
-![Review Analysis Views](docs/review.jpg)
+<img src="docs/review.jpg" width="20%" alt="Review Analysis Views">
 
 **What you see:**
 - **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
@@ -740,7 +742,7 @@ After completing setup, verify everything is working correctly:
 2. **Location Names Saved:** Open the Triangulation view — your location names should be displayed
 3. **Bluetooth Scans Received:** Check "Latest BT Scan" — should show detected Bluetooth devices with RSSI values
 4. **Fingerprints Captured:** Go to "Fingerprint Details" — each location should show captured beacons (not empty)
-5. **Algorithm Running:** Go to "Tuning" view and check "Scores for Latest Scan" — should show location scores for current scan
+5. **Algorithm Running:** Go to "Settings" view and check "Scores for Latest Scan" — should show location scores for current scan; use "Beacon Breakdown" below it to see per-beacon match detail
 6. **Beacon Distribution & Overlap:** Go to "Review" view — check "Location Cross-Reference Matrix" for location confusion risks and "All Active Beacons" to spot overlapping beacons across locations
 
 If any step fails, check the Troubleshooting section below.

@@ -52,6 +52,15 @@ input_number:
     # Beacon counts as match only if scan RSSI is within ±N dBm of fingerprint RSSI
     # Higher values = more lenient matching, lower values = stricter RSSI matching
 
+  bt_diagnostic_location_count:
+    name: "Diagnostic Location Count"
+    min: 1
+    max: 5
+    step: 1
+    mode: slider
+    # Number of top-scoring locations to show in the per-beacon breakdown card
+    # Useful for diagnosing why one location wins over another
+
 input_boolean:
   bt_filter_zero_rssi_signals:
     name: "Ignore Ghost Signals (0 dBm)"
