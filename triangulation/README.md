@@ -18,7 +18,7 @@ Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room 
 6. Configure your scan source:
    - **For Android with Tasker:** Set up the "Phone Charging - BT Scan" task/profile to send Bluetooth data on charger connect
    - **For other sources:** Post JSON to the webhook endpoint (see Scan Sources section)
-7. Visit each location with your phone and capture fingerprints (long-press location heading in Fingerprint Details)
+7. Visit each location with your phone and capture fingerprints
 8. Review the "Scores for Latest Scan" table to validate detection accuracy
 9. Use `input_text.device_charger_locations` in your automations for location-aware logic
 
@@ -29,7 +29,7 @@ Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room 
 After setup, you'll have:
 
 - **Location entity:** `input_text.device_charger_locations` — reports the detected location (e.g., "kitchen", "garage")
-- **Live scanning dashboard:** View Bluetooth signals in real-time, manage beacon fingerprints, and tune the algorithm
+- **Dashboard:** View the latest BT signals reported via webhook, manage beacon fingerprints, and tune the algorithm
 - **Persistent fingerprints:** Automatically saved after each capture; survives Home Assistant restarts
 - **Beacon management:** Ignore unreliable beacons globally or per-location with a tap/hold gesture
 
@@ -385,7 +385,7 @@ Score = (matched / fingerprint_total) × (matched / scan_valid)
 **Matching Logic:**
 - **No weak threshold during matching** — All known beacons are considered, even weak ones (weak threshold only filters during fingerprint capture)
 - **Tolerance-based validity** — A beacon matches if `|scan_rssi - fingerprint_rssi| <= RSSI Match Tolerance`
-- **Averaged fingerprint RSSI** — Each time you merge a fingerprint (tap the location heading), stored RSSI values are averaged with the new scan (running mean). A single outlier scan moves the stored value halfway rather than fully replacing it, dampening the effect of signal noise without requiring multiple captures.
+- **Averaged fingerprint RSSI** — Each time you tap (RSSI update) or double-tap (merge) the location heading, stored RSSI values are averaged with the new scan (running mean). A single outlier scan moves the stored value halfway rather than fully replacing it, dampening the effect of signal noise without requiring multiple captures.
 - **All fingerprinted beacons evaluated** — Even 0 dBm beacons in fingerprints participate in matching. If scan also shows 0 dBm, the diff is 0 ≤ tolerance → natural match
 
 Beacon curation improves these scores by removing beacons that hurt detection. Here are three worked examples:
@@ -534,8 +534,11 @@ For each location where you want to detect presence:
 2. Wait for auto-trigger (if using Tasker power trigger) or trigger the scan manually
 3. In the **Fingerprint Details** section of the dashboard
 4. Locate the location heading for the current location (e.g., "OFFICE", "KITCHEN", etc.)
-5. **Hold (long-press)** the location heading to capture from scratch, OR **tap** to merge new beacons into existing fingerprint
-   - When merging, each beacon's stored RSSI is averaged with the new scan value (running mean). A single outlier scan moves the stored value halfway rather than replacing it entirely, reducing sensitivity to single-scan noise.
+5. Interact with the location heading:
+   - **Tap** — Update RSSI only: refreshes signal strength for beacons already in the fingerprint, without adding or removing any
+   - **Double-tap** — Merge: adds new beacons from scan and updates RSSI for existing ones (running mean average)
+   - **Hold (long-press)** — Capture from scratch: replaces the entire fingerprint with the current scan
+   - When updating or merging, each beacon's stored RSSI is averaged with the new scan value (running mean). A single outlier scan moves the stored value halfway rather than replacing it entirely, reducing sensitivity to single-scan noise.
 
 Repeat for all configured locations.
 
@@ -554,11 +557,27 @@ To verify fingerprints are working:
    - Strikethrough = ignored beacons (locally or globally)
    - Italic, faded = weak signals (below threshold, excluded)
 
-### Step 4: Refine Beacon Selection (Optional)
+### Step 4: Refine Fingerprints Over Time
 
-If match scores are low, you can refine your fingerprints by ignoring confusing beacons for a specific location or globally (across all locations).
+Fingerprint quality improves iteratively. The process has four phases:
 
-See **"Common Tasks"** section below for detailed procedures and additional refinement options.
+**Phase 1 — Initial capture**
+Long-press each location heading to capture all beacons from scratch. Don't aim for perfection yet — you just need a starting point. Repeat for every location.
+
+**Phase 2 — Identify and stabilize the beacon set**
+Return to each location, run new scans, and use merge (double-tap) to add newly visible beacons and update RSSI. Check the **Review** tab: the confusion matrix shows which location pairs are ambiguous, and **All Active Beacons** color-codes each beacon's discriminator quality. For beacons that appear in multiple locations with similar RSSI, locally ignore them in locations where they hurt more than help (tap the beacon row in Fingerprint Details). Repeat until each location has a distinctive set of beacons and scores show clear separation.
+
+**Phase 3 — Clean up stray and irrelevant beacons**
+Once detection is reliable, globally ignore beacons that are volatile, alien, or contribute nothing — neighbor devices, passing phones, anything you don't own. Use **All Active Beacons** (Review tab) and the global ignore action (hold/long-press beacon) to clean up in bulk. Remove beacons from individual fingerprints that don't belong there (double-tap beacon row).
+
+**Phase 4 — Ongoing maintenance (stable state)**
+Use tap (RSSI update only) to keep stored signal strengths fresh as beacons drift over time. No new beacons are added — only existing fingerprint entries are refreshed. At this point, locally-ignored beacons in fingerprints are no longer necessary: if a beacon doesn't help a location, globally ignore or remove it rather than keeping it in the fingerprint marked as locally ignored. New unknown beacons that appear in scans can be globally ignored in bulk.
+
+**The two tools in steady state:**
+- **Tap (RSSI update)** — handles signal drift; run periodically or when scores drop
+- **Global ignore** — handles stray/new devices that appear in scans over time
+
+See **"Common Tasks"** section below for step-by-step procedures for each operation.
 
 ### Step 5: Advanced Testing (Algorithm Tuning)
 

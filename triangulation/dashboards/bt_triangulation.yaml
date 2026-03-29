@@ -136,7 +136,16 @@ decluttering_templates:
                       "action": "call-service",
                       "service": "script.merge_bt_fingerprint",
                       "data": {
-                        "location_index": location_index
+                        "location_index": location_index,
+                        "rssi_only": true
+                      }
+                    },
+                    "double_tap_action": {
+                      "action": "call-service",
+                      "service": "script.merge_bt_fingerprint",
+                      "data": {
+                        "location_index": location_index,
+                        "rssi_only": false
                       }
                     },
                     "hold_action": {
@@ -1092,8 +1101,9 @@ views:
              - In "Latest BT Scan" table: View RSSI values
                - (Optional) Long-press any irrelevant beacons to mark them as globally ignored — these will be automatically filtered out in future captures
              - In "Fingerprint Details":
-               - **Hold location heading** to capture beacons from scratch (replace entire fingerprint)
-               - **Tap location heading** to merge beacons from scan into existing fingerprint
+               - **Tap location heading** to update RSSI values for existing beacons
+               - **Double-tap location heading** to merge (add new beacons + update RSSI)
+               - **Hold location heading** to capture from scratch (replace entire fingerprint)
           5. Repeat for all locations
           6. Over time, revisit locations and refine fingerprints
 
@@ -1116,11 +1126,23 @@ views:
 
           This keeps fingerprints clean and focused on stable, useful signals without requiring manual cleanup.
 
+          **Capturing and Updating Fingerprints:**
+
+          In **Fingerprint Details**, the location name heading is interactive:
+          - **Tap location heading**: Update RSSI only — refreshes signal strength values for beacons already in the fingerprint, without adding or removing any beacons. Use when signals have drifted but the beacon set is still correct.
+          - **Double-tap location heading**: Merge — adds new beacons from the current scan and updates RSSI for existing ones. Use to incrementally expand a fingerprint with newly visible beacons.
+          - **Hold/long-press location heading**: Capture from scratch — replaces the entire fingerprint with the current scan. Use for a fresh start when the existing fingerprint is stale or you want a clean baseline.
+
           **Refining Fingerprints:**
 
           Use the "Review" section to identify overlapping beacons (the "All Active Beacons" table shows which locations each beacon appears in and color-codes their discriminator quality). Once overlaps are identified, improve triangulation by managing beacons using these tools:
 
-          **In Fingerprint Details:**
+          **In Fingerprint Details (location heading):**
+          - **Tap**: Update RSSI only (see above)
+          - **Double-tap**: Merge (see above)
+          - **Hold**: Capture from scratch (see above)
+
+          **In Fingerprint Details (beacon rows):**
           - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is ignored in scoring. Easy to toggle on/off while experimenting.
           - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
           - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.

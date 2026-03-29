@@ -32,7 +32,7 @@ input_number:
   bt_location_detection_weak_signal_threshold:
     name: "Weak Signal Threshold"
     unit_of_measurement: "dBm"
-    min: -100
+    min: -105
     max: -60
     step: 1
     mode: slider
@@ -1112,11 +1112,14 @@ script:
               level: warning
 
   merge_bt_fingerprint:
-    description: "Merge new beacons from latest scan into existing fingerprint, updating RSSI for matching beacons"
+    description: "Merge or update the fingerprint for a location from the latest BT scan"
     fields:
       location_index:
         description: "Location index (0-based, required)"
         example: "0"
+      rssi_only:
+        description: "If true, only update RSSI for existing beacons (no new beacons added). Default: false (merge mode)"
+        example: "false"
     sequence:
       - variables:
           raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
@@ -1125,6 +1128,7 @@ script:
           global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
+          rssi_only: "{{ rssi_only | default(false) | bool }}"
 
       - variables:
           # Filter scan: exclude weak signals, globally ignored beacons, and ghost beacons (if toggle is ON)
@@ -1185,20 +1189,24 @@ script:
                 {{ ns.beacons }}
 
           - variables:
-              # Merge: start with existing beacons, update RSSI from scan (preserving :X suffix), add new scan beacons
+              # Merge/update: start with existing beacons, update RSSI from scan (preserving :X suffix)
+              # rssi_only=true: only update existing beacons, skip new ones
+              # rssi_only=false (default): also add new beacons from scan
               # For existing beacons: average stored and new RSSI (running mean) to reduce single-scan outlier sensitivity
               merged_beacons: |
                 {%- set ns = namespace(merged=existing_beacons) -%}
                 {%- for mac, rssi in scan_map.items() -%}
-                  {%- set was_locally_ignored = ns.merged.get(mac, '') | string | select('contains', ':X') | list | length > 0 -%}
-                  {%- if mac in ns.merged -%}
-                    {%- set stored_rssi = ns.merged[mac] | string | replace(':X', '') | int -%}
-                    {%- set avg_rssi = ((stored_rssi + rssi) / 2) | round | int -%}
-                    {%- set new_rssi = avg_rssi | string ~ ':X' if was_locally_ignored else avg_rssi | string -%}
-                  {%- else -%}
-                    {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                  {%- if mac in ns.merged or not rssi_only -%}
+                    {%- set was_locally_ignored = (ns.merged.get(mac, '') | string).endswith(':X') -%}
+                    {%- if mac in ns.merged -%}
+                      {%- set stored_rssi = ns.merged[mac] | string | replace(':X', '') | int -%}
+                      {%- set avg_rssi = ((stored_rssi + rssi) / 2) | round | int -%}
+                      {%- set new_rssi = avg_rssi | string ~ ':X' if was_locally_ignored else avg_rssi | string -%}
+                    {%- else -%}
+                      {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                    {%- endif -%}
+                    {%- set ns.merged = ns.merged | combine({mac: new_rssi}) -%}
                   {%- endif -%}
-                  {%- set ns.merged = ns.merged | combine({mac: new_rssi}) -%}
                 {%- endfor -%}
                 {{ ns.merged }}
               # Build MAC=RSSI pairs from merged data
@@ -1239,13 +1247,13 @@ script:
 
           - action: persistent_notification.create
             data:
-              title: "BT Fingerprint Updated (Merged)"
-              message: "Location: {{ location_name | upper }}\nBeacons added: {{ (merged_beacons | length) - (existing_beacons | length) }} new\nBeacons existing: {{ (existing_beacons | length) }}\nTotal: {{ merged_beacons | length }} beacons"
+              title: "BT Fingerprint Updated ({{ 'RSSI' if rssi_only else 'Merged' }})"
+              message: "Location: {{ location_name | upper }}\n{% if rssi_only %}Beacons updated: {{ merged_beacons | length }} (RSSI refreshed, no new beacons added){% else %}Beacons added: {{ (merged_beacons | length) - (existing_beacons | length) }} new\nBeacons existing: {{ existing_beacons | length }}\nTotal: {{ merged_beacons | length }} beacons{% endif %}"
               notification_id: "bt_fingerprint_merged"
 
           - action: system_log.write
             data:
-              message: "Merged BT fingerprint for location {{ location_index }}: {{ merged_entry }}"
+              message: "{{ 'RSSI-updated' if rssi_only else 'Merged' }} BT fingerprint for location {{ location_index }}: {{ merged_entry }}"
               level: debug
         else:
           - action: persistent_notification.create
