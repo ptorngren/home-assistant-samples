@@ -67,6 +67,13 @@ input_boolean:
     icon: mdi:ghost-off
     # When ON: exclude RSSI=0 beacons (zero-strength signals with no measurable distance)
     # When OFF: include RSSI=0 beacons in scan processing
+  bt_include_random_macs:
+    name: "Include Random MACs"
+    icon: mdi:shuffle-variant
+    # When OFF (default): exclude randomly generated / locally administered MACs from scan processing
+    # These are privacy-mode devices (iPhones, Android privacy mode) whose MACs rotate over time
+    # and are never reliable fingerprint anchors. Detected by bit 1 of first octet being set.
+    # When ON: include all MACs regardless of type (e.g. for debugging)
 
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
@@ -250,11 +257,25 @@ template:
         unique_id: bt_latest_scan_full
         state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         attributes:
-          # Capture all devices including RSSI=0 beacons (ghost signals with no measurable distance)
-          # Filtering is applied at capture level; matching evaluates all fingerprinted beacons
-          # This preserves raw data visibility while allowing toggle to control inclusion at fingerprint capture time
+          # Random MAC filtering applied at webhook time (bit 1 of first octet set = locally administered / privacy-mode device)
+          # bt_include_random_macs OFF (default): random MACs excluded from all downstream processing (display, capture, detection)
+          # bt_include_random_macs ON: all MACs included regardless of type
           devices: |
-            {{ trigger.json.devices | default([]) }}
+            {%- set raw = trigger.json.devices | default([]) -%}
+            {%- if states('input_boolean.bt_include_random_macs') | bool(false) -%}
+              {{ raw }}
+            {%- else -%}
+              {%- set ns = namespace(result=[]) -%}
+              {%- for device in raw -%}
+                {%- set first_octet = device.mac.split(':')[0] | int(base=16) -%}
+                {%- set is_local = (first_octet | bitwise_and(2)) != 0 -%}
+                {%- set is_static_random = (first_octet | bitwise_and(192)) == 192 -%}
+                {%- if not is_local or is_static_random -%}
+                  {%- set ns.result = ns.result + [device] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.result }}
+            {%- endif -%}
 
 
           # Count beacons in current scan that exist in active known beacons list
@@ -1398,28 +1419,32 @@ automation:
 
   - alias: 'Phone Charger - BT Location Detection'
     id: phone_charger_bt_location
-    description: "Receive Tasker BT scan webhook, analyze signals, detect and store charger location"
+    description: "Trigger on updated BT scan sensor, analyze filtered signals, detect and store charger location"
     trigger:
-      - trigger: webhook
-        webhook_id: phone_charger_bt
-        # Triggered by Tasker when phone detects power (charger connected)
-        # Webhook receives JSON: {"browser_id": "peers_mobil", "devices": [{"mac": "...", "name": "...", "rssi": -65}, ...]}
+      # Trigger on sensor state change (timestamp updates on every webhook post)
+      # Pipeline: webhook → sensor.bt_latest_scan_full (filters) → this automation (acts on filtered data)
+      # This ensures filtering logic lives in one place only (the sensor), eliminating duplication
+      - trigger: state
+        entity_id: sensor.bt_latest_scan_full
+    condition:
+      - condition: template
+        value_template: "{{ trigger.to_state is not none and trigger.to_state.state not in ['unknown', 'unavailable'] }}"
     action:
-      # Log raw device data from Tasker (custom format: MAC | RSSI (padded) | Name)
-      # (BT scan data now stored in-memory via template sensor attributes)
+      # Log the already-filtered device data from the sensor
       - action: system_log.write
         data:
           message: |
             BT scan received:
-            {%- for device in trigger.json.devices %}
+            {%- for device in state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) %}
             {{ device['mac'] }} | {{ (device['rssi'] | string).rjust(5) }} dBm | {{ device['name'] | default('unknown') }}
             {%- endfor %}
           level: info
-      # Call location detection script to analyze signals and store result
+
+      # Call location detection script with pre-filtered sensor data
       - action: script.detect_charger_location
         data:
-          browser_id: "{{ trigger.json.browser_id }}"
-          devices: "{{ trigger.json.devices }}"
+          browser_id: "{{ state_attr('sensor.bt_latest_scan_full', 'browser_id') }}"
+          devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') }}"
 
   - alias: 'Phone Charger - Power Disconnect Detection'
     id: phone_charger_power_disconnect

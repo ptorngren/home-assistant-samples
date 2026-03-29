@@ -370,6 +370,10 @@ decluttering_templates:
             {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
             {%- set active_known_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
             {%- set is_known = mac in active_known_beacons -%}
+            {%- set first_octet = mac.split(':')[0] | int(base=16) -%}
+            {%- set is_local = (first_octet | bitwise_and(2)) != 0 -%}
+            {%- set is_static_random = (first_octet | bitwise_and(192)) == 192 -%}
+            {%- set is_random = is_local and not is_static_random -%}
             {{
               {
                 "type": "custom:button-card",
@@ -396,6 +400,8 @@ decluttering_templates:
                     ] + (
                       [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
                     ) + (
+                      [{"font-style": "italic"}, {"color": "var(--warning-color)"}] if is_random else []
+                    ) + (
                       [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
                     ),
                     "rssi": [
@@ -406,6 +412,8 @@ decluttering_templates:
                       {"font-family": "monospace"}
                     ] + (
                       [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                    ) + (
+                      [{"font-style": "italic"}, {"color": "var(--warning-color)"}] if is_random else []
                     ) + (
                       [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
                     ),
@@ -418,6 +426,8 @@ decluttering_templates:
                       [{"font-weight": "bold"}] if is_known else []
                     ) + (
                       [{"font-style": "italic"}, {"opacity": "0.6"}] if is_weak_signal else []
+                    ) + (
+                      [{"font-style": "italic"}, {"color": "var(--warning-color)"}] if is_random else []
                     ) + (
                       [{"color": "var(--disabled-text-color)"}, {"text-decoration": "line-through"}] if is_globally_ignored else []
                     )
@@ -837,6 +847,7 @@ views:
           - input_number.bt_location_detection_weak_signal_threshold
           - input_number.bt_location_detection_rssi_tolerance
           - input_boolean.bt_filter_zero_rssi_signals
+          - input_boolean.bt_include_random_macs
 
       # Scores for Latest Scan - Location Scoring
       - type: custom:stack-in-card

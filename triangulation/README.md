@@ -513,6 +513,38 @@ The **Ignore Ghost Signals** toggle controls whether 0 dBm beacons are included 
 
 ---
 
+## Random MAC Filtering
+
+Modern Bluetooth devices use different MAC address types depending on their purpose. The first octet of a MAC address encodes the type:
+
+| Type | Top two bits | Behaviour | Examples |
+|---|---|---|---|
+| **Public** | bit-1 = 0 | IEEE-assigned, always stable | Yamaha speakers, most classic BT devices |
+| **Static Random** | `0xC0` | Generated once, never rotates | Shelly BLU, ESP32 sensors, fitness equipment |
+| **Resolvable Private (RPA)** | `0x40` | Rotates ~every 15 minutes | iPhones, Android in privacy mode, Apple Watch |
+| **Non-Resolvable Private** | `0x00` | Rotates constantly | Temporary beacons |
+
+The **Include Random MACs** toggle (in Algorithm Settings) controls whether rotating MACs (RPA + Non-Resolvable) are included in scan processing. The default is OFF — rotating MACs are excluded because:
+- They can never be reliably fingerprinted (MAC changes before the next scan)
+- They add noise to the "Latest BT Scan" table and "All Active Beacons"
+- They contribute nothing useful to location detection
+
+**Static Random addresses are always kept** regardless of the toggle — devices like Shelly BLU and fitness trackers use this format to avoid IEEE registration fees, but their addresses are permanently stable.
+
+When the toggle is ON (include rotating MACs), they appear in amber italic in the dashboard tables so you can identify them.
+
+### Caveat: Static Random Address Stability
+
+Static Random addresses are stable in normal operation, but can change if a device is factory-reset or loses power in specific circumstances. This is rare for mains-powered devices. If it happens:
+
+- The old MAC will appear as a missing beacon in fingerprints (score drops)
+- The new MAC appears as an unknown device in scans
+- **Fix:** Recapture fingerprints for the affected locations
+
+If a specific device proves persistently volatile, globally ignore it rather than relying on its MAC being stable. In practice, most static random devices in a home environment (Shelly, fitness equipment) retain their address indefinitely.
+
+---
+
 ## Setup Workflow: Capturing Fingerprints
 
 ### Step 1: Configure Location Names
@@ -603,7 +635,7 @@ The main working view for capturing and curating location fingerprints. Place yo
 <img src="docs/triangulation.jpg" width="20%" alt="Triangulation View">
 
 **What you see:**
-- **Latest BT Scan** — Bluetooth devices detected in the most recent scan with RSSI values and device names
+- **Latest BT Scan** — Bluetooth devices detected in the most recent scan with RSSI values and device names. Rotating/privacy-mode MACs (iPhones, Android privacy mode) are shown in amber italic when the "Include Random MACs" toggle is ON; with the toggle OFF (default) they are excluded entirely and do not appear.
 - **Fingerprint Details** — Captured beacon signatures for each location, showing which beacons are active vs ignored and how they match the latest scan
 - **Beacon management** — Ignore or remove beacons per location, or mark them globally ignored across all locations
 
@@ -628,6 +660,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
+   - **Include Random MACs** — Toggle controls whether rotating/privacy-mode MAC addresses are included in scan processing. OFF (default) = exclude rotating MACs (iPhones, Android privacy mode) — they won't appear in Latest BT Scan or All Active Beacons. ON = include all MACs; rotating MACs appear in amber italic so they can be identified. See "Random MAC Filtering" section for details.
 
 **Goal:** The expected location should have high scores with clear separation to others (e.g., 0.85 vs 0.62 shows good distinction). If scores are similar across locations, refine your fingerprints by managing overlapping beacons.
 
@@ -639,7 +672,7 @@ The main working view for capturing and curating location fingerprints. Place yo
 
 **What you see:**
 - **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
-- **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; color-coded by discriminator quality: 🟢 green = strong discriminator (RSSI differs well across locations), 🔴 red = weak discriminator (similar RSSI in all locations — ambiguous), no color = neutral
+- **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; color-coded by discriminator quality: 🟢 green = strong discriminator (RSSI differs well across locations), 🔴 red = weak discriminator (similar RSSI in all locations — ambiguous), no color = neutral. Beacons with rotating/privacy-mode MACs are shown in amber italic when the "Include Random MACs" toggle is ON.
 - **Globally Ignored Beacons** — Centralized view of all beacons marked as globally ignored with quick toggle to restore them
 
 **Use this to:** Identify overlapping beacons (appearing in multiple locations with similar RSSI), detect location pairs that might confuse the algorithm, and manage global beacon ignores.
