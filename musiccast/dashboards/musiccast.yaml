@@ -552,6 +552,8 @@ button_card_templates:
       perform_action: script.musiccast_scenario_delete
       data:
         scenario: '[[[ return variables.scenario_id; ]]]'
+      confirmation:
+        text: '[[[ return `Delete scenario "${variables.scenario_name}"?`; ]]]'
       haptic: heavy
 
   # preset button

@@ -327,6 +327,13 @@ There is no official Spotify integration for HA that supports MusicCast. The wor
 </details>
 
 <details>
+<summary><strong>Spotify artist radio and playlists show the same icon</strong></summary>
+
+The MusicCast `getPresetInfo` API returns `"spotify"` as the content type for all Spotify presets regardless of whether they are playlists or artist radios. There is no other field in the API response that distinguishes them. Both types show 🎵.
+
+</details>
+
+<details>
 <summary><strong>Preset cache may not persist across restarts with many players and full preset lists</strong></summary>
 
 `sensor.musiccast_media_player_presets` stores preset data for all players in a single sensor's attributes. HA's recorder has a 16 KB limit per entity's attributes — if this is exceeded, a warning is logged and the attributes are not written to the database.
