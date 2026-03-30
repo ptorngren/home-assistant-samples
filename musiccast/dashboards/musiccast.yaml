@@ -34,6 +34,8 @@ preset_locked: &preset_locked 'L'                             # Locked preset (a
 preset_excluded: &preset_excluded 'X'                         # Excluded preset (never randomized)
 lock_icon: &lock_icon '🔒'                                    # Icon for locked presets/scenarios
 excluded_icon: &excluded_icon '⊘'                             # Icon for excluded presets
+duplicate_border: &duplicate_border 'rgba(255,152,0,0.8)'     # Amber border for duplicate presets
+duplicate_icon: &duplicate_icon '⚠'                           # Icon for duplicate presets
 # ==============================================================================
 
 # ------------------------------------------------------
@@ -575,6 +577,8 @@ button_card_templates:
       preset_excluded: *preset_excluded
       lock_icon: *lock_icon
       excluded_icon: *excluded_icon
+      duplicate_border: *duplicate_border
+      duplicate_icon: *duplicate_icon
       # Computed once per render, referenced in all blocks below
       active_scenario: |
         [[[ return states['input_text.active_scenario']?.state || ''; ]]]
@@ -582,18 +586,27 @@ button_card_templates:
         [[[
           const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[variables.active_scenario]?.master || '';
           const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
-          return presets[variables.index - 1]?.text || '';
+          return presets.find(p => p.num === variables.index)?.text || '';
         ]]]
       preset_input: |
         [[[
           const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[variables.active_scenario]?.master || '';
           const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
-          return presets[variables.index - 1]?.input || 'unknown';
+          return presets.find(p => p.num === variables.index)?.input || 'unknown';
         ]]]
       preset_state: |
         [[[
           const s = states['input_text.musiccast_presets_state']?.state || '{}';
           return JSON.parse(s)[variables.index] || 'normal';
+        ]]]
+      preset_is_duplicate: |
+        [[[
+          const scenario = states['input_text.active_scenario']?.state || '';
+          const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[scenario]?.master || '';
+          const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
+          const thisText = presets.find(p => p.num === variables.index)?.text || '';
+          if (!thisText) return false;
+          return presets.filter(p => p.text === thisText).length > 1;
         ]]]
     show_icon: false
     layout: horizontal
@@ -611,6 +624,7 @@ button_card_templates:
             ]]]
         - border: |
             [[[
+              if (variables.preset_is_duplicate) return '1px solid ' + variables.duplicate_border;
               return (variables.preset_state === variables.preset_locked) ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
             ]]]
         - display: |
@@ -631,10 +645,11 @@ button_card_templates:
         - line-height: 1
     name: |
       [[[
-        let icon = '';
-        if (variables.preset_state === variables.preset_locked) icon = ' ' + variables.lock_icon;
-        else if (variables.preset_state === variables.preset_excluded) icon = ' ' + variables.excluded_icon;
-        return variables.preset_text + icon;
+        const prefix = variables.preset_is_duplicate ? variables.duplicate_icon + ' ' : '';
+        let suffix = '';
+        if (variables.preset_state === variables.preset_locked) suffix = ' ' + variables.lock_icon;
+        else if (variables.preset_state === variables.preset_excluded) suffix = ' ' + variables.excluded_icon;
+        return prefix + variables.preset_text + suffix;
       ]]]
     tap_action:
       action: perform-action
@@ -1117,8 +1132,18 @@ views:
         show_label: true
         label: |
           [[[
-            return 'Tap a player to show presets<br>Double-tap to refresh all presets<br>Hold to exclude/include';
+            return 'Tap a player to show presets<br>Double-tap (player) or tap/double-tap (this card) to refresh all presets<br>Hold a player to exclude/include';
           ]]]
+        tap_action:
+          action: perform-action
+          perform_action: homeassistant.update_entity
+          target:
+            entity_id: sensor.musiccast_media_player_presets
+        double_tap_action:
+          action: perform-action
+          perform_action: homeassistant.update_entity
+          target:
+            entity_id: sensor.musiccast_media_player_presets
         styles:
           card:
             - height: 90px
@@ -1168,32 +1193,80 @@ views:
         card_param: cards
 
       # Dynamic preset display - single card for all active players
-      - type: markdown
-        content: |
-          {% set all_presets = state_attr('sensor.musiccast_media_player_presets', 'presets') | default({}) %}
-          {% set selected_players = state_attr('sensor.musiccast_preset_players', 'players') | default([]) %}
-          {% set mc_entities = state_attr('sensor.musiccast_entities', 'entities') | default([]) %}
-          {% if selected_players | length > 0 %}
-          *📻 Net Radio  •  👤 Artist  •  🎵 Playlist*
-            {% for entity_id in selected_players %}
-              {% set presets = all_presets.get(entity_id, []) %}
-              {% set ns = namespace(friendly_name=entity_id) %}
-              {% for ent in mc_entities %}
-                {% if ent.entity_id == entity_id %}{% set ns.friendly_name = ent.friendly_name %}{% endif %}
-              {% endfor %}
-          ### {{ ns.friendly_name }}
-              {% set filtered = presets | rejectattr('text', 'eq', '') | rejectattr('input', 'eq', 'unknown') | list %}
-              {% if filtered | length > 0 %}
-                {% for preset in filtered %}
-          **{{ loop.index }}.** {{ preset.text }} {% if preset.input == 'net_radio' %}📻{% elif 'spotify' in preset.input %}🎵{% else %}🎶{% endif %}
-                {% endfor %}
-              {% else %}
-          *No presets configured*
-              {% endif %}
-            {% endfor %}
-          {% else %}
-          *Select one or more players to show presets*
-          {% endif %}
+      - type: custom:button-card
+        entity: sensor.musiccast_media_player_presets
+        show_name: false
+        show_icon: false
+        show_state: false
+        tap_action:
+          action: none
+        triggers_update:
+          - sensor.musiccast_media_player_presets
+          - sensor.musiccast_preset_players
+          - sensor.musiccast_entities
+        variables:
+          duplicate_border: *duplicate_border
+          duplicate_icon: *duplicate_icon
+        custom_fields:
+          preset_list: |
+            [[[
+              const allPresets = states['sensor.musiccast_media_player_presets']?.attributes?.presets || {};
+              const selectedPlayers = states['sensor.musiccast_preset_players']?.attributes?.players || [];
+              const mcEntities = states['sensor.musiccast_entities']?.attributes?.entities || [];
+
+              if (selectedPlayers.length === 0) {
+                return "<p><em>Select one or more players to show presets</em></p>";
+              }
+
+              let out = "<p><em>📻 Net Radio  •  👤 Artist  •  🎵 Playlist</em></p>";
+
+              for (const entityId of selectedPlayers) {
+                const presets = allPresets[entityId] || [];
+                const entityInfo = mcEntities.find(e => e.entity_id === entityId);
+                const friendlyName = entityInfo?.friendly_name || entityId;
+
+                out += `<h3>${friendlyName}</h3>`;
+
+                if (presets.length === 0) {
+                  out += "<p><em>No presets configured</em></p>";
+                  continue;
+                }
+
+                const maxNum = Math.max(...presets.map(p => p.num));
+
+                for (let n = 1; n <= maxNum; n++) {
+                  const preset = presets.find(p => p.num === n);
+                  if (preset) {
+                    const isDup = presets.filter(p => p.text === preset.text).length > 1;
+                    const inputIcon = preset.input === 'net_radio' ? '📻' : (preset.input || '').includes('spotify') ? '🎵' : '🗄️';
+                    const dupPrefix = isDup ? `${variables.duplicate_icon} ` : '';
+                    const style = isDup
+                      ? `border-left:3px solid ${variables.duplicate_border};padding-left:6px;margin:2px 0`
+                      : 'padding-left:9px;margin:2px 0';
+                    out += `<div style="${style}"><strong>${n}.</strong> ${dupPrefix}${preset.text} ${inputIcon}</div>`;
+                  } else {
+                    out += `<div style="padding-left:9px;margin:2px 0"><strong>${n}.</strong> —</div>`;
+                  }
+                }
+              }
+
+              return out;
+            ]]]
+        styles:
+          card:
+            - background: none
+            - box-shadow: none
+            - border: none
+            - padding: 0 16px 16px
+          grid:
+            - grid-template-areas: '"preset_list"'
+            - grid-template-columns: 1fr
+          custom_fields:
+            preset_list:
+              - text-align: left
+              - font-size: 14px
+              - justify-self: start
+              - width: 100%
 
   # ------------------------------------------------------
   # VIEW 4: DISCOVERY
@@ -1338,6 +1411,7 @@ views:
           - **Hold:** Lock preset — always played when scenario activates.
           - **🔒 with blue border:** Locked (always plays).
           - **⊘ with grey background:** Excluded (never randomized).
+          - **⚠ with amber border:** Preset text appears more than once in this player.
           - **Blue background:** Currently playing.
 
       # --- PLAYERS VIEW ---
@@ -1368,12 +1442,14 @@ views:
           - **Hold scenario tile:** Delete scenario.
 
           **Media Players section:**
+          - **Tap/double-tap header card:** Refresh all presets from all devices.
           - **Tap player:** Show presets for that player.
           - **Double-tap player:** Refresh all presets from device.
           - **Hold player:** Exclude/include player from the active scenario group.
 
-          **Presets list:** Shows all presets for selected players.
-          - 📻 Net Radio  •  👤 Spotify Artist  •  🎵 Spotify Playlist
+          **Presets list:** Shows all slots (empty slots shown as —).
+          - 📻 Net Radio  •  🎵 Cloud Service  •  🗄️ Other (Local / DLNA)
+          - **⚠ prefix + amber border:** Preset text is duplicated on this player.
 
       # --- DISCOVERY VIEW ---
       - type: markdown

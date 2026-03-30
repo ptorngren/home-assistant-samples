@@ -32,7 +32,7 @@ fetch_presets() {
     -H "X-AppName: MusicCast/1.0" \
     "http://$ip/YamahaExtendedControl/v1/netusb/getPresetInfo" 2>/dev/null | tr -d '\0')
 
-  preset_info=$(echo "$response" | jq -c 'select(.response_code == 0) | .preset_info | map(select(.text != "")) | map({text: .text, input: .input})' 2>/dev/null)
+  preset_info=$(echo "$response" | jq -c 'select(.response_code == 0) | .preset_info | to_entries | map(select(.value.text != "")) | map({text: .value.text, input: .value.input, num: (.key + 1)})' 2>/dev/null)
 
   if [ -n "$preset_info" ] && [ "$preset_info" != "null" ]; then
     # Entity IDs (media_player.foo) are safe as filenames after replacing dots

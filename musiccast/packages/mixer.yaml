@@ -227,7 +227,7 @@ script:
         target:
           entity_id: input_text.active_scenario_source_uri
         data:
-          value: "{% if preset_input == 'net_radio' %}net_radio://{{ preset_name }}{% elif preset_input == 'spotify' %}spotify://{{ preset_name }}{% elif preset_input == 'spotify:artist' %}spotify:artist://{{ preset_name }}{% else %}{{ preset_input }}://{{ preset_name }}{% endif %}"
+          value: "{% if preset_input == 'net_radio' %}net_radio://{{ preset_name }}{% elif preset_input == 'spotify' %}spotify://{{ preset_name }}{% else %}{{ preset_input }}://{{ preset_name }}{% endif %}"
 
       # Record timestamp for stale caption detection
       - action: input_text.set_value
@@ -413,7 +413,7 @@ script:
             {{ all_presets.get(master, []) }}
 
       - variables:
-          preset: "{{ preset_info[preset_index | int - 1] if preset_info | length > 0 else {} }}"
+          preset: "{{ preset_info | selectattr('num', 'eq', preset_index | int) | first | default({}) }}"
 
       - action: input_text.set_value
         target:

@@ -31,7 +31,7 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 
 **Players** — Link or unlink players to the active scenario. Linked players follow the master; unlinking also turns the player off. Changes take effect immediately without restarting the scenario.
 
-**Settings** — Scenario and preset management. Create, edit, or delete scenarios. See which presets are loaded on each player.
+**Settings** — Scenario and preset management. Create, edit, or delete scenarios. See which presets are loaded on each player, including empty slots. Duplicate presets are highlighted.
 
 **Discovery** — Network scan to resolve player IP addresses. Run once after initial setup and after adding new devices.
 
@@ -204,7 +204,8 @@ The setup view. Shows all scenarios and all players in a grid, with the preset l
 **What you see:**
 - **Scenarios grid** — Tap to edit, hold to delete; tap the header card to create a new scenario
 - **Players grid** — Tap a player to view its presets; double-tap to refresh all presets; hold to exclude/include from the active player pool
-- **Preset list** — Presets for the selected players, with source type indicators
+- **Players header card** — Refresh all presets from all devices
+- **Preset list** — All preset slots for the selected players, including empty slots. Duplicates are highlighted. Source type is reflected per preset.
 
 ### Network Scan
 
@@ -266,6 +267,7 @@ In the **Now Playing** view, preset tiles for the active scenario show current s
 - No icon — included in random selection
 - 🔒 — locked: always plays when the scenario activates. Useful when you always want to start with a specific preset (e.g. the morning news). You can still re-randomize to a different preset after activation.
 - ⊘ — excluded: never selected during randomization, but can still be played manually. Useful for seasonal presets (e.g. a Christmas playlist) that you want available but not in the regular rotation.
+- ⚠ — duplicate: the same preset text appears more than once on this player. Informational only; duplicates can be played and locked/excluded independently.
 
 ---
 
