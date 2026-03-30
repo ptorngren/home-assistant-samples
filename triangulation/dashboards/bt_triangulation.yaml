@@ -133,24 +133,24 @@ decluttering_templates:
                     "show_name": true,
                     "name": location_name | upper ~ " " ~ matched ~ "/" ~ total ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
                     "tap_action": {
-                      "action": "call-service",
-                      "service": "script.merge_bt_fingerprint",
+                      "action": "perform-action",
+                      "perform_action": "script.merge_bt_fingerprint",
                       "data": {
                         "location_index": location_index,
                         "rssi_only": true
                       }
                     },
                     "double_tap_action": {
-                      "action": "call-service",
-                      "service": "script.merge_bt_fingerprint",
+                      "action": "perform-action",
+                      "perform_action": "script.merge_bt_fingerprint",
                       "data": {
                         "location_index": location_index,
                         "rssi_only": false
                       }
                     },
                     "hold_action": {
-                      "action": "call-service",
-                      "service": "script.capture_bt_fingerprint",
+                      "action": "perform-action",
+                      "perform_action": "script.capture_bt_fingerprint",
                       "data": {
                         "location_index": location_index
                       }
@@ -297,23 +297,23 @@ decluttering_templates:
                         "name": device_names[mac] | default('?')
                       },
                       "tap_action": {
-                        "action": "call-service",
-                        "service": "script.bt_beacon_toggle_location_ignored",
+                        "action": "perform-action",
+                        "perform_action": "script.bt_beacon_toggle_location_ignored",
                         "data": {
                           "location_index": location_index,
                           "mac": mac
                         }
                       },
                       "hold_action": {
-                        "action": "call-service",
-                        "service": "script.bt_beacon_toggle_global_ignored",
+                        "action": "perform-action",
+                        "perform_action": "script.bt_beacon_toggle_global_ignored",
                         "data": {
                           "mac": mac
                         }
                       },
                       "double_tap_action": {
-                        "action": "call-service",
-                        "service": "script.bt_beacon_remove_from_fingerprint",
+                        "action": "perform-action",
+                        "perform_action": "script.bt_beacon_remove_from_fingerprint",
                         "data": {
                           "location_index": location_index,
                           "mac": mac
@@ -442,8 +442,8 @@ decluttering_templates:
                   "action": "none"
                 },
                 "hold_action": {
-                  "action": "call-service",
-                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "action": "perform-action",
+                  "perform_action": "script.bt_beacon_toggle_global_ignored",
                   "data": {"mac": mac}
                 }
               }
@@ -468,11 +468,7 @@ decluttering_templates:
           {%- set ignored_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
           {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
           {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
-          {%- set ns = namespace(ignored_sorted=[]) -%}
           {%- for mac in ignored_list | sort -%}
-            {%- set ns.ignored_sorted = ns.ignored_sorted + [mac] -%}
-          {%- endfor -%}
-          {%- for mac in ns.ignored_sorted -%}
             {{
               {
                 "type": "custom:button-card",
@@ -519,8 +515,8 @@ decluttering_templates:
                   "action": "none"
                 },
                 "hold_action": {
-                  "action": "call-service",
-                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "action": "perform-action",
+                  "perform_action": "script.bt_beacon_toggle_global_ignored",
                   "data": {"mac": mac}
                 }
               }
@@ -604,18 +600,18 @@ decluttering_templates:
                   "locs": entry.locs | join(', ')
                 },
                 "tap_action": {
-                  "action": "call-service",
-                  "service": "script.bt_beacon_toggle_all_locations_ignored",
+                  "action": "perform-action",
+                  "perform_action": "script.bt_beacon_toggle_all_locations_ignored",
                   "data": {"mac": mac}
                 },
                 "double_tap_action": {
-                  "action": "call-service",
-                  "service": "script.bt_beacon_remove_from_all_fingerprints",
+                  "action": "perform-action",
+                  "perform_action": "script.bt_beacon_remove_from_all_fingerprints",
                   "data": {"mac": mac}
                 },
                 "hold_action": {
-                  "action": "call-service",
-                  "service": "script.bt_beacon_toggle_global_ignored",
+                  "action": "perform-action",
+                  "perform_action": "script.bt_beacon_toggle_global_ignored",
                   "data": {"mac": mac}
                 }
               }
@@ -808,8 +804,8 @@ views:
               - type: custom:button-card
                 name: "Beacon Status"
                 tap_action:
-                  action: call-service
-                  service: script.report_beacon_status
+                  action: perform-action
+                  perform_action: script.report_beacon_status
                 styles:
                   card:
                     - background-color: *color_success
@@ -820,8 +816,8 @@ views:
               - type: custom:button-card
                 name: "Load Fingerprints"
                 tap_action:
-                  action: call-service
-                  service: script.load_bt_fingerprints_from_file
+                  action: perform-action
+                  perform_action: script.load_bt_fingerprints_from_file
                 styles:
                   card:
                     - background-color: *color_info
@@ -832,8 +828,8 @@ views:
               - type: custom:button-card
                 name: "Clear Fingerprints"
                 tap_action:
-                  action: call-service
-                  service: script.clear_bt_fingerprints
+                  action: perform-action
+                  perform_action: script.clear_bt_fingerprints
                 styles:
                   card:
                     - background-color: *color_severe
@@ -1156,7 +1152,7 @@ views:
           **In Fingerprint Details (beacon rows):**
           - **Tap a beacon**: Ignore in this location only - block overlapping beacons from affecting this location (e.g. strong beacon in adjacent rooms). The beacon stays in the fingerprint but is ignored in scoring. Easy to toggle on/off while experimenting.
           - **Double-tap a beacon**: Remove permanently from this location's fingerprint - use when a beacon no longer belongs here. Gone from the fingerprint - recapture or merge to add it back if needed.
-          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbour's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.
+          - **Hold/long-press a beacon**: Ignore globally - remove irrelevant/volatile devices (e.g. neighbor's bluetooth party speaker). Removed from all fingerprints and on global ignore list, filtered out from future captures.
 
           **In Latest BT Scan:**
           - **Hold/long-press a beacon**: Ignore globally - quick way to mark irrelevant devices as globally ignored.
