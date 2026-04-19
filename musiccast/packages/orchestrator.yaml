@@ -43,7 +43,6 @@ input_text:
   active_scenario:
     name: Active Scenario
     max: 20
-    initial: ""
   active_scenario_source_caption:
     name: Active Scenario Source Caption
     max: 100

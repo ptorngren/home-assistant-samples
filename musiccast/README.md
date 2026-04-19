@@ -290,6 +290,13 @@ Furthermore, the MusicCast app is slow and often fails to link groups. For some 
 ## Known Limitations
 
 <details>
+<summary><strong>Long-pressing a linked player in the Players view deactivates the scenario</strong></summary>
+
+Long-pressing a player tile in the Players view unlinks it and powers it off. The power-off is asynchronous — the device goes offline after the HA action completes — and HA interprets this the same way it would if the device were powered off externally via the MusicCast app: the scenario is no longer active. For scenario management, use single-tap to link/unlink players while keeping the scenario active; reserve long-press for when you intentionally want to remove a player from playback entirely.
+
+</details>
+
+<details>
 <summary><strong>Presets are managed in the MusicCast app</strong></summary>
 
 You cannot add, delete, or rename presets from HA. The package reads and plays them; the MusicCast app owns them.
