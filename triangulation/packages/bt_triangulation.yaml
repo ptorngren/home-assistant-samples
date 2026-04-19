@@ -1481,7 +1481,7 @@ script:
 
   bt_beacon_range_editor_save:
     alias: "BT: Save range editor values to fingerprint"
-    description: "Reads min/max from helpers and writes directly to fingerprint, converting mean entries to min/max format. Swaps min/max if inverted."
+    description: "Reads min/max from helpers and writes directly to fingerprint. Preserves beacon format: min/max entries stay as min/max; mean entries save as rssi=midpoint. Swaps min/max if inverted."
     mode: single
     fields:
       browser_id:
@@ -1527,7 +1527,12 @@ script:
                     {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
                   {%- else -%}
                     {%- set was_ignored = beacon.get('ignored', false) -%}
-                    {%- set bd = {'min': new_min | int, 'max': new_max | int, 'ignored': true} if was_ignored else {'min': new_min | int, 'max': new_max | int} -%}
+                    {%- if 'min' in beacon -%}
+                      {%- set bd = {'min': new_min | int, 'max': new_max | int, 'ignored': true} if was_ignored else {'min': new_min | int, 'max': new_max | int} -%}
+                    {%- else -%}
+                      {%- set mid = ((new_min + new_max) / 2) | round | int -%}
+                      {%- set bd = {'rssi': mid, 'ignored': true} if was_ignored else {'rssi': mid} -%}
+                    {%- endif -%}
                     {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
                   {%- endif -%}
                 {%- endfor -%}
