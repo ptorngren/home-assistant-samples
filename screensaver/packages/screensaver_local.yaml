@@ -188,7 +188,7 @@ script:
               - condition: template
                 value_template: "{{ resolved.target_scenario != 'unknown' }}"
               - condition: template
-                value_template: "{{ states('binary_sensor.scenario_' + resolved.target_scenario) == 'on' }}"
+                value_template: "{{ states('input_text.active_scenario') == resolved.target_scenario }}"
             sequence:
               - action: script.musiccast_scenario_mixer
                 data:
@@ -212,8 +212,7 @@ script:
                 value_template: "{{ resolved.target_scenario != 'unknown' }}"
             sequence:
               - variables:
-                  scenario_entity: "binary_sensor.scenario_{{ resolved.target_scenario }}"
-                  master_player: "{{ state_attr(scenario_entity, 'master') }}"
+                  master_player: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(resolved.target_scenario, {}).get('master', '') }}"
               - choose:
                   - conditions:
                       - condition: template

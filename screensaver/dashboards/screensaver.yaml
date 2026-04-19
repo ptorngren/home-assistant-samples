@@ -129,7 +129,7 @@ decluttering_templates:
         # Humidity and wind with middle dot separator
         climate_details: |
           [[[
-            const humidity = states['sensor.screensaver_display_humidity']?.state;
+            const humidity = parseFloat(states['sensor.screensaver_display_humidity']?.state)?.toFixed(0);
             const wind = states['sensor.screensaver_display_wind_speed']?.state;
           
             const humidityValid = humidity && humidity !== 'unavailable' && humidity !== 'unknown';
