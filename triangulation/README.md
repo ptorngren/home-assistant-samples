@@ -32,6 +32,7 @@ After setup, you'll have:
 - **Dashboard:** View the latest BT signals reported via webhook, manage beacon fingerprints, and tune the algorithm
 - **Persistent fingerprints:** Automatically saved after each capture; survives Home Assistant restarts
 - **Beacon management:** Ignore unreliable beacons globally or per-location with a tap/hold gesture
+- **Scan history statistics:** Per-beacon signal history accumulated across captures and merges, powering the variance statistics (sample count and standard deviation)
 
 **Example automation using the location entity:**
 
@@ -124,7 +125,18 @@ homeassistant:
     !include_dir_named packages/
 ```
 
-### 4. Reload Packages
+### 4. Exclude Statistics Sensor from Recorder
+
+`sensor.bt_merge_statistics` carries a large payload that exceeds HA's recorder limit. Add it to your recorder exclusions in `configuration.yaml`:
+
+```yaml
+recorder:
+  exclude:
+    entities:
+      - sensor.bt_merge_statistics
+```
+
+### 5. Reload Packages
 
 In Home Assistant:
 - Go to Developer Tools → YAML
@@ -156,10 +168,39 @@ Analyzes fingerprints using the Symmetric Ratio algorithm:
 **You should NOT need to edit this file.**
 
 ### `data/` Directory (Fingerprints)
-- **`fingerprints.csv`** — Stores learned Bluetooth signal signatures for each location
-- **`ignored.csv`** — Beacons explicitly marked as unreliable or too noisy
+- **`bt_fingerprints.json`** — Stores learned Bluetooth signal signatures for each location
+- **`bt_ignored.json`** — Beacons explicitly marked as unreliable or too noisy
 
-These files are updated automatically when you capture fingerprints in the dashboard. Do not edit manually unless you know what you're doing.
+Both files use JSON format. Example `bt_fingerprints.json`:
+```json
+{"fingerprints":[
+{"loc":0,"beacons":{
+"AA:BB:CC:DD:EE:FF":{"rssi":-65},
+"11:22:33:44:55:66":{"rssi":-74,"ignored":true}
+}},
+{"loc":1,"beacons":{
+"AA:BB:CC:DD:EE:FF":{"rssi":-82}
+}}
+]}
+```
+
+In **Min/Max mode** (see Algorithm Settings), beacons are stored with observed signal bounds instead of a single mean value:
+```json
+{"fingerprints":[
+{"loc":0,"beacons":{
+"AA:BB:CC:DD:EE:FF":{"min":-70,"max":-60},
+"11:22:33:44:55:66":{"min":-78,"max":-70,"ignored":true}
+}}
+]}
+```
+Fingerprints can mix both formats — `rssi` entries and `min`/`max` entries coexist and are matched differently per entry.
+
+Example `bt_ignored.json`:
+```json
+{"ignored":["AA:BB:CC:DD:EE:FF","11:22:33:44:55:66"]}
+```
+
+These files are updated automatically when you capture fingerprints or manage beacons in the dashboard. Do not edit manually unless you know what you're doing.
 
 ---
 
@@ -361,7 +402,9 @@ You manually identify and ignore problematic beacons:
 - **Alien devices** → Ignore globally (they don't belong to you)
 - **Overlapping beacons** → Ignore locally from specific rooms (keep them where they're distinctive)
 
-Beacon curation is **fully manual and reversible** — you run fingerprint captures, observe what's detected, use your domain knowledge to decide what to ignore, and toggle beacons on/off anytime without recalibrating.
+Beacon curation is **fully manual and reversible** — you run fingerprint captures, observe what's detected, use your domain knowledge to decide what to ignore, and toggle beacons on/off anytime without recalibrating. 
+
+**Scan history statistics** (sample count and standard deviation) help identify candidates: a high standard deviation means the beacon's signal is inconsistent enough to cause missed detections — a strong signal to ignore it globally. You're looking for beacons with a stable signal.
 
 ---
 
@@ -373,8 +416,8 @@ Beacon curation is **fully manual and reversible** — you run fingerprint captu
 Score = (matched / fingerprint_total) × (matched / scan_valid)
 
 - matched: Number of beacons found in both fingerprint and current scan (within RSSI tolerance)
-- fingerprint_total: Number of known beacons in this location's fingerprint (ignoring locally marked beacons with `:X`)
-- scan_valid: Number of beacons in current scan that are known (exist in at least one fingerprint, not marked locally ignored with `:X`, and not on global ignore list)
+- fingerprint_total: Number of known beacons in this location's fingerprint (excluding locally ignored beacons)
+- scan_valid: Number of beacons in current scan that are known (exist in at least one fingerprint, not locally ignored, and not on global ignore list)
 ```
 
 **This symmetric ratio approach:**
@@ -384,8 +427,10 @@ Score = (matched / fingerprint_total) × (matched / scan_valid)
 
 **Matching Logic:**
 - **No weak threshold during matching** — All known beacons are considered, even weak ones (weak threshold only filters during fingerprint capture)
-- **Tolerance-based validity** — A beacon matches if `|scan_rssi - fingerprint_rssi| <= RSSI Match Tolerance`
-- **Averaged fingerprint RSSI** — Each time you tap (RSSI update) or double-tap (merge) the location heading, stored RSSI values are averaged with the new scan (running mean). A single outlier scan moves the stored value halfway rather than fully replacing it, dampening the effect of signal noise without requiring multiple captures.
+- **Mean-RSSI entries** — A beacon matches if `|scan_rssi - fingerprint_rssi| <= RSSI Match Tolerance`
+- **Min/Max entries** — A beacon matches if `scan_rssi >= min AND scan_rssi <= max` (strict bounds, RSSI tolerance not applied). The midpoint `(min + max) / 2` is used as the representative RSSI for display only; the confusion matrix uses full range overlap.
+- **Averaged fingerprint RSSI (mean mode)** — Each merge updates stored RSSI values with a running mean. A single outlier scan moves the stored value halfway rather than fully replacing it, dampening the effect of signal noise.
+- **Min/Max fingerprint (min/max mode)** — Each merge expands the stored bounds if the new scan value falls outside them. Values within bounds leave the entry unchanged (no drift). See Min/Max Mode section below.
 - **All fingerprinted beacons evaluated** — Even 0 dBm beacons in fingerprints participate in matching. If scan also shows 0 dBm, the diff is 0 ≤ tolerance → natural match
 
 Beacon curation improves these scores by removing beacons that hurt detection. Here are three worked examples:
@@ -474,6 +519,59 @@ Result: Larger margin (0.86 vs 0.75) = robust detection ✅
 
 ---
 
+## Understanding the Confusion Matrix
+
+The Location Cross-Reference Matrix (Review tab) scores each location's fingerprint against every other location. A high score means the two fingerprints are similar — the ranges overlap for many beacons. This is a risk indicator, not a failure indicator.
+
+### What the scores mean
+
+With N beacons per location and no ignored beacons, the score formula is `(matched/N)²`. For a 5-beacon setup the discrete levels are:
+
+| Matched beacons | Score |
+|-----------------|-------|
+| N/N (all)       | 1.0   |
+| 4/5             | 0.64  |
+| 3/5             | 0.36  |
+| 2/5             | 0.16  |
+| 1/5             | 0.04  |
+
+A pair scoring 0.64 has one non-overlapping beacon. A pair scoring 0.36 has two.
+
+### Why the matrix is pessimistic
+
+The matrix uses **point-in-range matching** — the midpoint of the row location's beacon range is used as a simulated scan value, then tested against the column location's range. This directly mirrors real detection: if you're at location A and your typical reading is the midpoint of A's fingerprint range, would the algorithm match location B? Real readings don't land in an overlap zone simultaneously for multiple beacons, so this gives a much more realistic picture than comparing ranges against ranges.
+
+**In practice:** If live detection (Scores for Latest Scan) correctly identifies your location at a high score with clear separation, the system is working — even if the matrix shows no green cells. High matrix scores mean *potential* confusion risk, not actual confusion.
+
+### When all cells are amber/red (no green)
+
+This is normal for a small beacon set (e.g. 5 beacons across 5 locations) where all beacons are present everywhere. The minimum achievable score is `(best_separated_beacons / N)²`. If only one or two beacons differ between each pair, the floor is 0.36–0.64 and green is mathematically impossible.
+
+**What to check first:** Live detection. If your actual location scores near 100% and all others score 36%, detection is working correctly. The matrix is showing worst-case fingerprint overlap, not what happens with real scan values.
+
+### Score of 1.0: genuinely indistinguishable fingerprints
+
+A matrix score of 1.0 means all beacons in both fingerprints have overlapping ranges — the algorithm cannot distinguish the two locations even in the best case. Live detection will also fail for this pair.
+
+**Cause:** Both locations see the same beacons at the same signal strengths. Typically happens when two locations are physically close (adjacent rooms, same room) and share the same RF environment.
+
+**Solutions:**
+- Find a beacon with meaningfully different signal strength at each location — e.g. a Bluetooth device physically mounted near one location but not the other
+- Recapture both locations more carefully from fixed positions; if any genuine RF difference exists, a stable capture with a stationary phone may expose it
+- If the locations are RF-identical, no algorithm tuning will fix it — the signal data does not contain enough information to separate them
+
+### Narrowing wide ranges
+
+Wide min/max ranges (visible as wavy-underlined values in Beacon Breakdown) inflate matrix scores by creating artificial overlap. A beacon captured at both -60 and -95 across multiple sessions covers almost the entire RSSI spectrum and will overlap with every other location.
+
+Wide ranges come from RSSI instability during capture: signal fluctuation, phone movement, or merging scans from very different conditions. Recapturing from a fixed position in stable conditions produces narrower ranges and more accurate matrix scores.
+
+Adding more beacons only helps if they have genuinely different signal strengths at the locations you want to separate. Beacons that are weak and present everywhere at similar strengths add overlap, not discrimination.
+
+**Note:** The color thresholds (warning/severe) are fixed constants and do not adapt to beacon count. With fewer beacons the discrete score levels shift — e.g. 3 out of 4 matching scores 0.5625, which falls below the 0.6 severe threshold and shows amber instead of red. Treat the colors as approximate guidance rather than exact boundaries when locations have unequal or small beacon counts.
+
+---
+
 ## Understanding 0 dBm "Ghost" Signals
 
 When a sensor reports **0 dBm**, it's saying: *"I can detect this device's presence, but my hardware can't calculate the distance because the signal is too distorted or unstable."*
@@ -545,6 +643,74 @@ If a specific device proves persistently volatile, globally ignore it rather tha
 
 ---
 
+## Min/Max Mode
+
+Min/Max mode is an alternative fingerprint strategy that stores the observed **signal range** for each beacon rather than a single mean value. Enable it in Algorithm Settings → **Min/Max Mode** toggle.
+
+### Why Min/Max?
+
+The running-mean approach has a weakness: if a beacon's signal drifts consistently over time (e.g., environmental changes, device repositioning), the stored mean drifts too. A location that was well-captured may gradually become misdetected as the mean value no longer represents the real signal range.
+
+Min/Max solves this by capturing the actual observed range. Once a beacon has been seen at both its typical strong and weak positions, the bounds stabilize naturally. Normal signal variance within the known range is a no-op — only genuine new extremes expand the bounds further.
+
+**Key benefit:** Per-beacon differentiated tolerance. Stable beacons accumulate a narrow range (tight effective tolerance). Volatile beacons accumulate a wider range (relaxed effective tolerance). This is strictly better than the global RSSI tolerance setting, which applies the same slack to all beacons.
+
+### How It Works
+
+**Capture** (hold location header): writes `{"min": rssi, "max": rssi}` — a collapsed single point. Expands with subsequent merges.
+
+**Merge** (double-tap location header): mode-driven — writes all beacons in the format defined by the current Min/Max mode toggle, converting any entries in the old format. In min/max mode: existing min/max entries expand bounds; existing mean entries convert to a collapsed `{min, max}` point. In mean mode: all entries are written as mean RSSI from the current scan.
+
+**Matching**: scan RSSI must fall within `[min, max]`. RSSI tolerance setting is ignored for these entries.
+
+**Edit Range** (double-tap beacon row in Beacon Breakdown): opens a popup to directly edit the `min` and `max` bounds for a single beacon. Use this to trim wide ranges caused by outlier merges without recapturing from scratch. If the beacon is in the current scan, an "Apply scan ± tolerance" button pre-fills the fields. An "Apply P10/P90" button sets the range from the 10th/90th percentile of accumulated scan history (available when ≥ 10 samples exist), cutting outlier readings that inflated the range. Saves back to the fingerprint immediately.
+
+**Reset** (hold beacon row): mode-dependent. In **mean mode**: collapses to the current scan RSSI (no-op if absent from scan). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan). Use when at the location with a fresh scan. To trim wide ranges without a fresh scan, use the Range Editor's midpoint button instead.
+
+### Switching Modes
+
+- **Tap** (RSSI update only) and **double-tap** (merge) are both mode-driven — they convert all beacons in the location to the current mode's format. The only difference is that tap only updates existing beacons while merge also adds new ones.
+- Individual beacon row tap (`bt_beacon_merge`) is format-preserving — it does not convert format, to avoid creating a mixture within a location.
+- A transient mixture of formats within a location may exist after switching modes until each location has been merged at least once. Both formats match correctly in the meantime.
+- **Capture** (hold) also converts everything at once, but replaces the entire fingerprint from the current scan.
+
+### Recommended Workflow for Min/Max Mode
+
+1. Enable Min/Max Mode toggle in Algorithm Settings
+2. Hold each location header to capture from scratch (single-point entries)
+3. Return to each location repeatedly and tap the header to merge (expand bounds from repeated scans), until the ranges appear stable across visits
+4. Check Beacon Breakdown: FP column shows `min/max` ranges; Δ shows 0 when matched
+5. Monitor the nσ column — as samples accumulate across merges, a high standard deviation flags beacons with inconsistent signal and narrows your ignore candidates
+6. Trim wide ranges without recapturing: double-tap a beacon row to open the Range Editor. The "Apply P10/P90" button sets min/max from the 10th/90th percentile of accumulated history (available when ≥ 10 samples exist), cutting outlier readings that inflated the range
+7. Verify scores stabilize — narrow ranges indicate well-captured beacons; wide ranges indicate high signal variance. If a beacon's range grows very wide, consider ignoring it locally or globally — a wide range means the beacon is unreliable and contributes little to accurate detection
+
+## Mean Mode
+
+Min/Max mode is preferred — it handles signal variance more robustly by capturing observed bounds rather than a drifting average. Use mean mode if you prefer simplicity or have very stable beacon signals.
+
+1. Make sure Min/Max Mode toggle is OFF in Algorithm Settings
+2. Hold each location header to capture from scratch (initial mean from current scan)
+3. Return to each location and tap the header to merge — each merge nudges the stored mean halfway toward the new scan value, dampening outliers
+4. Check Beacon Breakdown: FP column shows a single RSSI value; Δ shows deviation from the stored mean
+5. Monitor the nσ column — a high standard deviation flags beacons with inconsistent signal; consider ignoring them globally
+6. Run tap periodically to keep stored means fresh as signals drift over time; if a location's scores drop, tap to re-anchor the mean
+
+---
+
+## Scan History Statistics
+
+Statistics are accumulated each time you tap, double-tap, or hold a location header — each operation records the current scan values for that location. The nσ column in Beacon Breakdown shows the result: sample count and standard deviation (e.g. `14σ3` = 14 samples, stddev 3 dBm).
+
+**How to use them:**
+- **High standard deviation** — the beacon's signal varies significantly across visits; consider ignoring it globally
+- **Wavy underline on nσ** — σ exceeds tolerance/2, meaning the 95% confidence interval of the signal is wider than the matching window; the beacon is likely causing missed detections
+- **P10/P90 in Range Editor** — once ≥ 10 samples exist, use this to set min/max from the 10th/90th percentile of actual observations, trimming outliers that inflated the range
+- **Beacon Status report** — click "Beacon Status" in Settings to write a per-beacon report to the HA log, including a drift warning computed from the deviation; useful for a quick health check without reading the dashboard
+
+Use **Clear Statistics** (Settings) to reset all history after relocating a beacon, replacing a device, or after a major environment change — old readings no longer represent current conditions.
+
+---
+
 ## Setup Workflow: Capturing Fingerprints
 
 ### Step 1: Configure Location Names
@@ -567,10 +733,11 @@ For each location where you want to detect presence:
 3. In the **Fingerprint Details** section of the dashboard
 4. Locate the location heading for the current location (e.g., "OFFICE", "KITCHEN", etc.)
 5. Interact with the location heading:
-   - **Tap** — Update RSSI only: refreshes signal strength for beacons already in the fingerprint, without adding or removing any
-   - **Double-tap** — Merge: adds new beacons from scan and updates RSSI for existing ones (running mean average)
-   - **Hold (long-press)** — Capture from scratch: replaces the entire fingerprint with the current scan
-   - When updating or merging, each beacon's stored RSSI is averaged with the new scan value (running mean). A single outlier scan moves the stored value halfway rather than replacing it entirely, reducing sensitivity to single-scan noise.
+   - **Tap** — Merge existing: updates existing fingerprint beacons from the current scan (no new beacons added); also records the scan to statistics. In mean mode: running mean. In min/max mode: expands bounds.
+   - **Double-tap** — Merge all: same as Tap (including statistics update), but also adds new beacons found in the scan that aren't yet in the fingerprint.
+   - **Hold (long-press)** — Capture from scratch: replaces the entire fingerprint with the current scan; also records the scan to statistics.
+   - In mean mode, each merge averages the stored RSSI with the new scan value (running mean). A single outlier scan moves the stored value halfway rather than replacing it.
+   - In min/max mode, each merge expands the stored bounds outward if the scan value falls outside them; values within bounds are a no-op (no drift). See Min/Max Mode section below.
 
 Repeat for all configured locations.
 
@@ -650,15 +817,21 @@ The main working view for capturing and curating location fingerprints. Place yo
 1. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan:
    - **matched/fp-total [known-in-scan]** — matched beacons over fingerprint total; brackets show how many known beacons were present in the scan
    - **Score** — symmetric ratio: (matched/fp) × (matched/scan) — higher is better
-2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). For each beacon: FP RSSI, scan RSSI, difference, match status, and friendly name:
-   - ✅ = within RSSI tolerance (counts as matched)
-   - ⚠️ = present in scan but RSSI drifted outside tolerance (counts as missed)
-   - ❌ = not matched — blank Scan = present in fingerprint, absent from scan; blank FP = present in scan, absent from fingerprint (locally ignored for this location but counted as a known beacon, reducing score)
-   - Globally ignored beacons are excluded; locally ignored beacons appear when present in scan
+2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). Columns: MAC · FP · Scan · Δ · nσ · Name
+   - FP column shows `min/max` range for min/max entries, or a single value for mean entries; **underlined with a wavy warning-color line** when the min/max range exceeds 2 × RSSI tolerance — indicates high signal variance; beacon may be unreliable and reduce detection accuracy
+   - Δ column: for mean entries, absolute deviation from stored RSSI; for min/max entries, distance outside the bounds (0 when matched)
+   - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections.
+   - Globally ignored beacons are excluded; locally ignored beacons always appear with strikethrough, whether or not they are present in the current scan
+   - **Tap location header** to merge all existing fingerprint beacons for that location from the current scan and record the scan to statistics
+   - **Hold location header** to reset all beacons to current scan values (collapses min/max ranges to a single point); also records the scan to statistics
+   - **Tap a beacon row** to merge that beacon from the current scan
+   - **Double-tap a beacon row** to open the Range Editor — directly edit the min/max bounds for that beacon. Pre-filled from the fingerprint. An "Apply midpoint X dBm:" button trims the range to a symmetrical window around the current centre (no scan needed). An "Apply P10/P90" button sets the range to the 10th/90th percentile of accumulated scan history (enabled when ≥ 10 samples exist; disabled when bounds already match). Min/max are auto-swapped if inverted.
+   - **Hold a beacon row** to reset that beacon from the current scan. In **mean mode**: collapses to the current scan RSSI (no-op if absent). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan).
    - Use this to diagnose why a location scores below expected, or why the wrong location wins
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
-   - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance)
+   - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
+   - **Min/Max Mode** — When ON, new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean. See Min/Max Mode section below. When OFF (default), standard running-mean behavior. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
    - **Include Random MACs** — Toggle controls whether rotating/privacy-mode MAC addresses are included in scan processing. OFF (default) = exclude rotating MACs (iPhones, Android privacy mode) — they won't appear in Latest BT Scan or All Active Beacons. ON = include all MACs; rotating MACs appear in amber italic so they can be identified. See "Random MAC Filtering" section for details.
 
@@ -671,7 +844,8 @@ The main working view for capturing and curating location fingerprints. Place yo
 <img src="docs/review.jpg" width="20%" alt="Review Analysis Views">
 
 **What you see:**
-- **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk)
+- **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk). Scores are directional (A→B ≠ B→A — expected) and scores use point-in-range matching: the row location's midpoint RSSI is tested against the column location's range, mirroring real detection. **Tap any non-diagonal cell** to open the drill-down detail view below the matrix; tap a diagonal cell to close it. Note: matrix scores are fingerprint-vs-fingerprint — a high matrix score means *risk* of confusion, not that detection is currently failing. Live detection (Scores for Latest Scan) compares actual scan RSSIs against fingerprints and can correctly separate two locations even when their matrix score is high, as long as the real-world signal values differ. A high matrix score with correct live detection typically means the stored ranges are wider than necessary — recapturing with fewer merged scans would narrow the ranges and reduce the matrix score.
+- **Confusion Matrix Drill-Down** — Appears below the matrix when a cell is selected. Shows each beacon causing the overlap: name, row location range, col location range, and overlap extent. Numbers within the overlap zone are highlighted in amber. Note: green cells may still have overlapping beacons (low score = few overlaps relative to total, not zero); amber/red cells have enough overlap to risk confusion. Tap a diagonal cell to dismiss.
 - **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; color-coded by discriminator quality: 🟢 green = strong discriminator (RSSI differs well across locations), 🔴 red = weak discriminator (similar RSSI in all locations — ambiguous), no color = neutral. Beacons with rotating/privacy-mode MACs are shown in amber italic when the "Include Random MACs" toggle is ON.
 - **Globally Ignored Beacons** — Centralized view of all beacons marked as globally ignored with quick toggle to restore them
 
@@ -723,16 +897,30 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 ### Task 5: Check Current Ignore Status
 
-1. Click the **"Beacon Status"** button for a detailed report
-2. Check **"Fingerprint Details"** table for ignored beacons per location
-3. Check **"Globally Ignored"** table (Review tab) for beacons on global ignore list
+1. Check **"Fingerprint Details"** table for ignored beacons per location
+2. Check **"Globally Ignored"** table (Review tab) for beacons on global ignore list
 
 ### Task 6: Reset Ignores
 
-1. Clear global ignored file (delete or empty `packages/triangulation/data/bt_ignored.csv`)
-2. Recapture location fingerprints
-   - go to each location and initiate a new scan, then long-press location heading to recapture
-   - Or manually edit ``packages/triangulation/data/bt_fingerprints.csv`` and remove `:X` suffixes from each beacon
+1. Clear global ignored file: delete or empty `packages/triangulation/data/bt_ignored.json` (replace with `{"ignored":[]}`)
+2. Recapture location fingerprints:
+   - Go to each location and initiate a new scan, then long-press the location heading to capture from scratch
+   - Or manually edit `packages/triangulation/data/bt_fingerprints.json` — remove `"ignored": true` from individual beacon entries
+
+### Task 7: Check Beacon Signal Health
+
+Click the **"Beacon Status"** button to write a report to the HA log (Developer Tools → Logs). The report shows each active beacon per location with its fingerprint value, signal statistics, and any warnings about deviation, drift, or range quality. Useful for a quick health check without opening the dashboard.
+
+### Task 8: Clear Scan History Statistics
+
+Use the **"Clear Statistics"** button (next to "Clear Fingerprints") to reset all accumulated scan history.
+
+**When to do this:**
+- After relocating a beacon or replacing a device — old readings no longer represent current signal conditions
+- After a major environment change (furniture rearranged, new router, walls changed)
+- After switching from mean mode to min/max mode and recapturing all fingerprints — statistics from the old mode are still valid, but the context has changed enough that a fresh start is cleaner
+
+**Effect:** Deletes all data from `bt_statistics.json`. The nσ column in Beacon Breakdown goes blank and will repopulate gradually as you perform new captures and merges. Detection is not affected — statistics are diagnostic only.
 
 ---
 
@@ -816,9 +1004,36 @@ If any step fails, check the Troubleshooting section below.
 ## Known Limitations
 
 <details>
+<summary><strong>Color-only indicators</strong></summary>
+
+Some indicators in the dashboard use color only and may not be distinguishable by all users.
+
+</details>
+
+---
+
+<details>
+<summary><strong>browser_mod popup appears on all windows of the same device</strong></summary>
+
+Opening the range editor (double-tap beacon row) or any other `browser_mod.popup` action triggers the popup on every browser window open on the same physical device — for example, both the Companion App and a web browser tab. This is a known limitation of the current implementation: the browser ID is not being correctly resolved to the tapped window, causing the popup to broadcast to all registered browsers on the device. Workaround: use the dashboard on one window at a time.
+
+</details>
+
+---
+
+<details>
 <summary><strong>Single-scan detection</strong></summary>
 
 Each location update is based on one Bluetooth scan, taken when the phone connects to a charger. This is intentional: the system is optimized for the "phone on charger" trigger rather than continuous monitoring. The tradeoff is that a noisy scan (interference, a beacon momentarily missing) can produce an incorrect location reading. If this is a problem in practice, temporal smoothing (see Potential Enhancements) is the candidate fix.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Scan history statistics not stored in HA history</strong></summary>
+
+`sensor.bt_merge_statistics` carries the full scan history payload (up to 50 readings per beacon across all locations), which exceeds HA's 16 KB recorder limit. The sensor is excluded from the recorder to avoid database performance warnings. The underlying data is persisted in `data/bt_statistics.json` and is always read live from file — no data is lost. The only consequence is that this sensor has no history in the HA History or Logbook views.
 
 </details>
 
@@ -1147,7 +1362,7 @@ for beacon in fingerprint:
 | `script.bt_beacon_toggle_location_ignored` | Toggle beacon ignored status at specific location (single-tap) | location_index, mac |
 | `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
 | `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
-| `script.report_beacon_status` | Check ignore status | (none) |
+| `script.report_beacon_status` | Per-location beacon report with signal statistics and warnings | (none) |
 
 ### Service Call Examples
 

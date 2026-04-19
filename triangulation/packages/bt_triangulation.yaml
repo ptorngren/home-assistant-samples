@@ -13,6 +13,21 @@ input_text:
     # Template sensor bt_location_array parses this once and stores as indexable array
     # Accessible via: state_attr('sensor.bt_location_array', 'locations')[index]
 
+  bt_matrix_selected_pair:
+    name: "BT Matrix Selected Pair"
+    icon: mdi:table-eye
+    max: 255
+    initial: ""
+    # Stores selected confusion matrix cell as "row_loc|col_loc" (pipe-separated location names)
+    # Empty string = no selection. Written by matrix cell tap actions in the dashboard.
+
+  bt_range_editor_context:
+    name: "BT Range Editor Context"
+    max: 50
+    initial: ""
+    # Temporary storage for range editor popup. Format: "location_index|mac|scan_rssi|tolerance"
+    # scan_rssi field is empty string when beacon is not present in the current scan.
+
   device_charger_locations:
     name: "Device Charger Locations"
     max: 255
@@ -61,6 +76,24 @@ input_number:
     # Number of top-scoring locations to show in the per-beacon breakdown card
     # Useful for diagnosing why one location wins over another
 
+  bt_range_editor_min:
+    name: "BT Range Editor Min"
+    unit_of_measurement: "dBm"
+    min: -120
+    max: 0
+    step: 1
+    mode: box
+    # Temporary storage for range editor popup — min bound being edited
+
+  bt_range_editor_max:
+    name: "BT Range Editor Max"
+    unit_of_measurement: "dBm"
+    min: -120
+    max: 0
+    step: 1
+    mode: box
+    # Temporary storage for range editor popup — max bound being edited
+
 input_boolean:
   bt_filter_zero_rssi_signals:
     name: "Ignore Ghost Signals (0 dBm)"
@@ -74,14 +107,23 @@ input_boolean:
     # These are privacy-mode devices (iPhones, Android privacy mode) whose MACs rotate over time
     # and are never reliable fingerprint anchors. Detected by bit 1 of first octet being set.
     # When ON: include all MACs regardless of type (e.g. for debugging)
+  bt_fingerprint_minmax_mode:
+    name: "Min/Max Fingerprint Mode"
+    icon: mdi:arrow-expand-horizontal
+    # When ON: capture/merge writes min/max bounds instead of running-mean RSSI
+    # When OFF (default): existing running-mean behavior
+    # Mode detection is data-driven: presence of 'min' key in beacon dict determines matching
+    # Mixed fingerprints work per-entry — switching OFF does not revert existing min/max entries
 
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
 shell_command:
-  bt_fingerprint_database_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints {{ csv_content | base64_encode }}
+  bt_fingerprint_database_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints {{ json_content | to_json | base64_encode }}
   bt_fingerprint_database_read: '/config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
-  bt_ignored_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored {{ csv_content | base64_encode }}
+  bt_ignored_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored {{ json_content | to_json | base64_encode }}
   bt_ignored_read: '/config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
+  bt_statistics_write: /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics {{ json_content | to_json | base64_encode }}
+  bt_statistics_clear: "echo '{\"statistics\":[]}' > /config/packages/triangulation/data/bt_statistics.json"
 
 # ------------------------------------------------------------------
 # BT SENSORS (Command-line integration)
@@ -113,6 +155,17 @@ command_line:
       # Stores as JSON array in attributes: state_attr('sensor.bt_ignored_beacons', 'ignored')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
 
+  - sensor:
+      name: "BT Merge Statistics"
+      unique_id: bt_merge_statistics
+      command: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read statistics'
+      json_attributes:
+        - statistics
+      value_template: "{% if value_json.statistics %}{{ value_json.statistics | length }}{% else %}0{% endif %}"
+      # Per-beacon RSSI sample history from capture/merge operations (file-backed, unlimited size)
+      # Format: statistics[].loc + beacons{MAC: [[rssi, timestamp], ...]}
+      # Dashboard access: state_attr('sensor.bt_merge_statistics', 'statistics')
+
 # Computed sensors (Template integration)
 template:
   - sensor:
@@ -125,7 +178,7 @@ template:
           alarm_id_replacement: "sensor.$1_next_alarm"
 
       # Active Known Beacons - single source of truth for which beacons are active
-      # A beacon is active if it appears non-ignored (:X) in at least one location fingerprint
+      # A beacon is active if it appears non-ignored in at least one location fingerprint
       # Auto-updates when fingerprints or ignore list change
       - name: "BT Active Known Beacons"
         unique_id: bt_active_known_beacons
@@ -133,20 +186,17 @@ template:
         state: >
           {%- set ns = namespace(macs=[]) -%}
           {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
-          {%- set raw_fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) | list -%}
-          {%- for entry in raw_fingerprints -%}
-            {%- if entry and '|' in entry -%}
-              {%- set parts = entry.split('|') -%}
-              {%- if parts | length == 2 -%}
-                {%- for pair in parts[1].split(',') -%}
-                  {%- if '=' in pair and not pair.endswith(':X') -%}
-                    {%- set mac = pair.split('=')[0] | trim | upper -%}
-                    {%- if mac not in global_ignored and mac not in ns.macs -%}
-                      {%- set ns.macs = ns.macs + [mac] -%}
-                    {%- endif -%}
+          {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
+          {%- for fp in fingerprints -%}
+            {%- if fp.beacons is not none -%}
+              {%- for mac, beacon in fp.beacons.items() -%}
+                {%- if not beacon.get('ignored', false) -%}
+                  {%- set mac_upper = mac | upper -%}
+                  {%- if mac_upper not in global_ignored and mac_upper not in ns.macs -%}
+                    {%- set ns.macs = ns.macs + [mac_upper] -%}
                   {%- endif -%}
-                {%- endfor -%}
-              {%- endif -%}
+                {%- endif -%}
+              {%- endfor -%}
             {%- endif -%}
           {%- endfor -%}
           {{ ns.macs | length }}
@@ -154,34 +204,32 @@ template:
           mac_locs: >
             {%- set ns = namespace(mac_locs={}) -%}
             {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
-            {%- set raw_fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) | list -%}
-            {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
+            {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
+            {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') or [] -%}
             {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
             {%- set total_locations = locations_list | length -%}
-            {# Pass 1: Build mac_locs with locs and rssi_list per beacon #}
-            {%- for entry in raw_fingerprints -%}
-              {%- if entry and '|' in entry -%}
-                {%- set parts = entry.split('|') -%}
-                {%- if parts | length == 2 -%}
-                  {%- set loc_idx = parts[0] | int(-1) -%}
-                  {%- set loc_name = locations_list[loc_idx] if loc_idx >= 0 and loc_idx < locations_list | length else '' -%}
-                  {%- if loc_name -%}
-                    {%- for pair in parts[1].split(',') -%}
-                      {%- if '=' in pair and not pair.endswith(':X') -%}
-                        {%- set mac = pair.split('=')[0] | trim | upper -%}
-                        {%- set rssi_val = pair.split('=')[1] | trim | int(0) -%}
-                        {%- if mac not in global_ignored -%}
-                          {%- if mac not in ns.mac_locs -%}
-                            {%- set ns.mac_locs = ns.mac_locs | combine({mac: {'locs': [], 'rssi_list': []}}) -%}
-                          {%- endif -%}
-                          {%- if loc_name not in ns.mac_locs[mac].locs -%}
-                            {%- set ns.mac_locs = ns.mac_locs | combine({mac: {'locs': ns.mac_locs[mac].locs + [loc_name], 'rssi_list': ns.mac_locs[mac].rssi_list + [rssi_val]}}) -%}
-                          {%- endif -%}
-                        {%- endif -%}
+            {# Pass 1: Build mac_locs with locs, rssi_list, and high_span per beacon #}
+            {# high_span: true if any fingerprint entry for this MAC has max-min > 2*tolerance (unstable range) #}
+            {%- for fp in fingerprints -%}
+              {%- set loc_idx = fp.loc -%}
+              {%- set loc_name = locations_list[loc_idx] if loc_idx >= 0 and loc_idx < locations_list | length else '' -%}
+              {%- if loc_name and fp.beacons is not none -%}
+                {%- for mac, beacon in fp.beacons.items() -%}
+                  {%- if not beacon.get('ignored', false) -%}
+                    {%- set mac_upper = mac | upper -%}
+                    {%- set rssi_val = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
+                    {%- set span = (beacon.max - beacon.min) if 'min' in beacon else 0 -%}
+                    {%- set is_high_span = span > 2 * rssi_tolerance -%}
+                    {%- if mac_upper not in global_ignored -%}
+                      {%- if mac_upper not in ns.mac_locs -%}
+                        {%- set ns.mac_locs = ns.mac_locs | combine({mac_upper: {'locs': [], 'rssi_list': [], 'high_span': false}}) -%}
                       {%- endif -%}
-                    {%- endfor -%}
+                      {%- if loc_name not in ns.mac_locs[mac_upper].locs -%}
+                        {%- set ns.mac_locs = ns.mac_locs | combine({mac_upper: {'locs': ns.mac_locs[mac_upper].locs + [loc_name], 'rssi_list': ns.mac_locs[mac_upper].rssi_list + [rssi_val], 'high_span': ns.mac_locs[mac_upper].high_span or is_high_span}}) -%}
+                      {%- endif -%}
+                    {%- endif -%}
                   {%- endif -%}
-                {%- endif -%}
+                {%- endfor -%}
               {%- endif -%}
             {%- endfor -%}
             {# Pass 2: Compute discriminator strength, drop rssi_list from output #}
@@ -209,7 +257,7 @@ template:
                   {%- set discriminator = 0 -%}
                 {%- endif -%}
               {%- endif -%}
-              {%- set ns2.result = ns2.result | combine({mac: {'locs': data.locs, 'discriminator': discriminator}}) -%}
+              {%- set ns2.result = ns2.result | combine({mac: {'locs': data.locs, 'discriminator': discriminator, 'high_span': data.high_span}}) -%}
             {%- endfor -%}
             {{ ns2.result | to_json }}
 
@@ -375,90 +423,94 @@ script:
 
   generate_confusion_matrix:
     alias: "Generate BT Confusion Matrix"
-    description: "Calculate location confusion scores by testing each fingerprint against all others"
+    description: "Calculate location confusion scores using worst-case range overlap (no midpoint approximation)"
     mode: restart
     sequence:
       - variables:
           fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
-          weak_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-75) }}"
+          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
+          global_ignored_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
 
-      # Build map: location_name → fingerprint_string (MAC=RSSI,MAC=RSSI,...)
+      # Build map: location_name → beacons dict
       - variables:
           fp_map: >
             {%- set ns = namespace(data={}) -%}
-            {%- for row in fingerprints_raw -%}
-              {%- set parts = row.split('|') -%}
-              {%- if parts | count == 2 -%}
-                {%- set loc_idx = parts[0] | trim | int(-1) -%}
-                {%- if loc_idx >= 0 and loc_idx < locations_list | length -%}
-                  {%- set loc_name = locations_list[loc_idx] -%}
-                  {%- set ns.data = ns.data | combine({loc_name: parts[1]}) -%}
-                {%- endif -%}
+            {%- for fp in fingerprints_raw -%}
+              {%- set loc_idx = fp.loc -%}
+              {%- if loc_idx >= 0 and loc_idx < locations_list | length -%}
+                {%- set loc_name = locations_list[loc_idx] -%}
+                {%- set ns.data = ns.data | combine({loc_name: fp.beacons}) -%}
               {%- endif -%}
             {%- endfor -%}
             {{ ns.data }}
 
-      # Accumulator for matrix results
+      # Compute full matrix in one pass.
+      # Score formula mirrors the detection algorithm: (matched/col_total) × (matched/row_active)
+      # where row_active = scan_valid (all row beacons are known in matrix context).
+      # Match condition: row beacon midpoint falls within col beacon range (point-in-range).
+      # Midpoint for min/max beacon: (min+max)/2. Midpoint for mean beacon: rssi.
+      # Col range for min/max beacon: [min, max]. Col range for mean beacon: [rssi-tol, rssi+tol].
+      # This mirrors real detection: simulates a "typical" scan from the row location.
       - variables:
-          matrix_rows: []
+          matrix_rows: >
+            {%- set tol = rssi_tolerance | int -%}
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for row_loc in fp_map.keys() | sort -%}
+              {%- set row_beacons = fp_map[row_loc] -%}
+              {%- set ns_scores = namespace(scores={}) -%}
 
-      # Outer loop: For each location, test its fingerprint against all locations
-      - repeat:
-          for_each: "{{ fp_map.keys() | sort }}"
-          sequence:
-            - variables:
-                row_location: "{{ repeat.item }}"
-                fp_mac_rssi_str: "{{ fp_map[row_location] }}"
-                row_scores: {}
+              {# Count active row beacons (scan_valid equivalent) #}
+              {%- set ns_row = namespace(active=0) -%}
+              {%- for mac, rb in row_beacons.items() -%}
+                {%- if not rb.get('ignored', false) and mac | upper not in global_ignored_list -%}
+                  {%- set ns_row.active = ns_row.active + 1 -%}
+                {%- endif -%}
+              {%- endfor -%}
 
-            # Extract active beacons (filter out :X-marked ones)
-            - action: script.get_active_fingerprint_beacons
-              data:
-                mac_rssi_str: "{{ fp_mac_rssi_str }}"
-              response_variable: active_fp_str
+              {%- set ns_overlaps = namespace(data={}) -%}
+              {%- for col_loc in fp_map.keys() | sort -%}
+                {%- set col_beacons = fp_map[col_loc] -%}
+                {%- set ns_col = namespace(matched=0, total=0) -%}
+                {%- set ns_ovl = namespace(beacons=[]) -%}
 
-            # Convert to test_devices array
-            - variables:
-                test_devices: |
-                  {%- set ns = namespace(devices=[]) -%}
-                  {%- if active_fp_str.fingerprint and active_fp_str.fingerprint | length > 0 -%}
-                    {%- for pair in active_fp_str.fingerprint.split(',') -%}
-                      {%- if '=' in pair -%}
-                        {%- set kv = pair.split('=') -%}
-                        {%- if kv | length == 2 -%}
-                          {%- set mac = kv[0] | trim | upper -%}
-                          {%- set rssi = kv[1] | trim | int(0) -%}
-                          {%- set ns.devices = ns.devices + [{"mac": mac, "name": "fingerprint_device", "rssi": rssi}] -%}
+                {%- for mac, cb in col_beacons.items() -%}
+                  {%- set mac_upper = mac | upper -%}
+                  {%- if not cb.get('ignored', false) and mac_upper not in global_ignored_list -%}
+                    {%- set ns_col.total = ns_col.total + 1 -%}
+                    {%- if mac in row_beacons -%}
+                      {%- set rb = row_beacons[mac] -%}
+                      {%- if not rb.get('ignored', false) and mac_upper not in global_ignored_list -%}
+                        {%- set r_lo = rb.min if 'min' in rb else rb.rssi - tol -%}
+                        {%- set r_hi = rb.max if 'max' in rb else rb.rssi + tol -%}
+                        {%- set r_mid = ((r_lo + r_hi) / 2) | int -%}
+                        {%- set c_lo = cb.min if 'min' in cb else cb.rssi - tol -%}
+                        {%- set c_hi = cb.max if 'max' in cb else cb.rssi + tol -%}
+                        {%- if r_mid >= c_lo and r_mid <= c_hi -%}
+                          {%- set ns_col.matched = ns_col.matched + 1 -%}
+                          {%- if row_loc != col_loc -%}
+                            {%- set ns_ovl.beacons = ns_ovl.beacons + [{'mac': mac_upper, 'r_lo': r_lo, 'r_hi': r_hi, 'c_lo': c_lo, 'c_hi': c_hi}] -%}
+                          {%- endif -%}
                         {%- endif -%}
                       {%- endif -%}
-                    {%- endfor -%}
+                    {%- endif -%}
                   {%- endif -%}
-                  {{ ns.devices }}
+                {%- endfor -%}
 
-            # Inner loop: Call detection script for each column (reference location)
-            - repeat:
-                for_each: "{{ fp_map.keys() | sort }}"
-                sequence:
-                  - variables:
-                      col_location: "{{ repeat.item }}"
+                {%- if ns_col.total > 0 and ns_row.active > 0 -%}
+                  {%- set score = ((ns_col.matched / ns_col.total) * (ns_col.matched / ns_row.active)) | round(2) -%}
+                {%- else -%}
+                  {%- set score = 0 -%}
+                {%- endif -%}
+                {%- set ns_scores.scores = ns_scores.scores | combine({col_loc: score}) -%}
+                {%- if row_loc != col_loc and ns_ovl.beacons | length > 0 -%}
+                  {%- set ns_overlaps.data = ns_overlaps.data | combine({col_loc: ns_ovl.beacons}) -%}
+                {%- endif -%}
+              {%- endfor -%}
 
-                  # Call detection script with simulated scan
-                  - action: script.detect_location_from_signals
-                    data:
-                      devices: "{{ test_devices }}"
-                      persist_scores: false
-                      scan_context: "Matrix: {{ row_location }} vs {{ col_location }}"
-                    response_variable: detection_result
-
-                  # Extract score for this column location
-                  - variables:
-                      col_score: "{{ detection_result.scores_detail.get(col_location, {}).get('total_score', 0.0) | float }}"
-                      row_scores: "{{ row_scores | combine({col_location: (col_score | round(2))}) }}"
-
-            # Add row to matrix
-            - variables:
-                matrix_rows: "{{ matrix_rows + [{'src': row_location, 'scores': row_scores}] }}"
+              {%- set ns.rows = ns.rows + [{'src': row_loc, 'scores': ns_scores.scores, 'overlaps': ns_overlaps.data}] -%}
+            {%- endfor -%}
+            {{ ns.rows }}
 
       # Fire event with complete matrix
       - event: bt_matrix_calculation_complete
@@ -473,6 +525,7 @@ script:
 
   detect_charger_location:
     description: "Analyze BT signals from Tasker scan and detect phone charger location"
+    mode: queued
     fields:
       browser_id:
         description: "Device browser_id (e.g., peers_mobil, kitchen_tablet)"
@@ -543,68 +596,35 @@ script:
           # Process fingerprints and toggle ignored status for this beacon at this location
           - variables:
               updated_fingerprints: |
-                {%- set ns = namespace(entries=[]) -%}
-                {%- if current_fingerprints is iterable -%}
-                  {%- for entry in current_fingerprints -%}
-                    {%- if entry and '|' in entry -%}
-                      {%- set parts = entry.split('|') -%}
-                      {%- if parts | length == 2 -%}
-                        {%- set idx = parts[0] | int(-1) -%}
-                        {%- set mac_rssi_str = parts[1] -%}
-                        {%- if idx == location_idx -%}
-                          {# This is our location - toggle the beacon ignored status #}
-                          {%- set ns.pairs = [] -%}
-                          {%- for pair in mac_rssi_str.split(',') -%}
-                            {%- if '=' in pair -%}
-                              {%- set pair_stripped = pair.rstrip(':X') -%}
-                              {%- set kv = pair_stripped.split('=') -%}
-                              {%- if kv | length == 2 -%}
-                                {%- set current_mac = kv[0] | trim | upper -%}
-                                {%- if current_mac == beacon_mac -%}
-                                  {# Toggle ignored status #}
-                                  {%- if pair.endswith(':X') -%}
-                                    {# Remove from ignored list #}
-                                    {%- set ns.pairs = ns.pairs + [pair_stripped] -%}
-                                  {%- else -%}
-                                    {# Add to ignored list #}
-                                    {%- set ns.pairs = ns.pairs + [pair ~ ':X'] -%}
-                                  {%- endif -%}
-                                {%- else -%}
-                                  {# Keep unchanged #}
-                                  {%- set ns.pairs = ns.pairs + [pair] -%}
-                                {%- endif -%}
-                              {%- else -%}
-                                {%- set ns.pairs = ns.pairs + [pair] -%}
-                              {%- endif -%}
-                            {%- else -%}
-                              {%- set ns.pairs = ns.pairs + [pair] -%}
-                            {%- endif -%}
-                          {%- endfor -%}
-                          {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
-                          {%- set ns.entries = ns.entries + [updated_entry] -%}
-                        {%- else -%}
-                          {# Keep other locations unchanged #}
-                          {%- set ns.entries = ns.entries + [entry] -%}
-                        {%- endif -%}
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- set ns2 = namespace(beacons={}) -%}
+                  {%- for mac, beacon in fp.beacons.items() -%}
+                    {%- set was_ignored = beacon.get('ignored', false) -%}
+                    {%- if fp.loc | int == location_idx and mac | upper == beacon_mac -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set toggled = {'min': beacon.min, 'max': beacon.max} if was_ignored else {'min': beacon.min, 'max': beacon.max, 'ignored': true} -%}
                       {%- else -%}
-                        {%- set ns.entries = ns.entries + [entry] -%}
+                        {%- set toggled = {'rssi': beacon.rssi} if was_ignored else {'rssi': beacon.rssi, 'ignored': true} -%}
                       {%- endif -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: toggled}) -%}
                     {%- else -%}
-                      {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
+                      {%- else -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
+                      {%- endif -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
                     {%- endif -%}
                   {%- endfor -%}
-                {%- endif -%}
-                {{ ns.entries | join('\n') }}
+                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                {%- endfor -%}
+                {{ {'fingerprints': ns.fp_list} }}
 
           # Write updated fingerprints
-          - action: shell_command.bt_fingerprint_database_write
+          - action: script.write_bt_fingerprints
             data:
-              csv_content: "{{ updated_fingerprints }}"
-
-          # Refresh sensor
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.bt_fingerprint_database_file
+              fingerprints_json: "{{ updated_fingerprints }}"
 
           # Log the action
           - action: system_log.write
@@ -625,73 +645,43 @@ script:
 
       - variables:
           updated_fingerprints: |
-            {%- set ns = namespace(entries=[], pairs=[], has_any_active=false, has_any_present=false) -%}
+            {%- set ns = namespace(fp_list=[], has_any_active=false) -%}
             {# Phase A: determine toggle direction #}
-            {%- if current_fingerprints is iterable -%}
-              {%- for entry in current_fingerprints -%}
-                {%- if entry and '|' in entry -%}
-                  {%- set parts = entry.split('|') -%}
-                  {%- if parts | length == 2 -%}
-                    {%- for pair in parts[1].split(',') -%}
-                      {%- if '=' in pair -%}
-                        {%- set kv = pair.rstrip(':X').split('=') -%}
-                        {%- if kv | length == 2 and kv[0] | trim | upper == beacon_mac -%}
-                          {%- set ns.has_any_present = true -%}
-                          {%- if not pair.endswith(':X') -%}
-                            {%- set ns.has_any_active = true -%}
-                          {%- endif -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                  {%- endif -%}
+            {%- for fp in current_fingerprints -%}
+              {%- for mac, beacon in fp.beacons.items() -%}
+                {%- if mac | upper == beacon_mac and not beacon.get('ignored', false) -%}
+                  {%- set ns.has_any_active = true -%}
                 {%- endif -%}
               {%- endfor -%}
-            {%- endif -%}
+            {%- endfor -%}
             {# Phase B: apply transformation #}
-            {%- if current_fingerprints is iterable -%}
-              {%- for entry in current_fingerprints -%}
-                {%- if entry and '|' in entry -%}
-                  {%- set parts = entry.split('|') -%}
-                  {%- if parts | length == 2 -%}
-                    {%- set idx = parts[0] | int(-1) -%}
-                    {%- set ns.pairs = [] -%}
-                    {%- for pair in parts[1].split(',') -%}
-                      {%- if '=' in pair -%}
-                        {%- set pair_stripped = pair.rstrip(':X') -%}
-                        {%- set kv = pair_stripped.split('=') -%}
-                        {%- if kv | length == 2 and kv[0] | trim | upper == beacon_mac -%}
-                          {%- if ns.has_any_active -%}
-                            {# Add :X if not already present #}
-                            {%- set ns.pairs = ns.pairs + ([pair_stripped ~ ':X'] if not pair.endswith(':X') else [pair]) -%}
-                          {%- else -%}
-                            {# Remove :X #}
-                            {%- set ns.pairs = ns.pairs + [pair_stripped] -%}
-                          {%- endif -%}
-                        {%- else -%}
-                          {%- set ns.pairs = ns.pairs + [pair] -%}
-                        {%- endif -%}
-                      {%- else -%}
-                        {%- set ns.pairs = ns.pairs + [pair] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {%- set ns.entries = ns.entries + [idx | string ~ '|' ~ ns.pairs | join(',')] -%}
+            {%- for fp in current_fingerprints -%}
+              {%- set ns2 = namespace(beacons={}) -%}
+              {%- for mac, beacon in fp.beacons.items() -%}
+                {%- set was_ignored = beacon.get('ignored', false) -%}
+                {%- if mac | upper == beacon_mac -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set toggled = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if ns.has_any_active else {'min': beacon.min, 'max': beacon.max} -%}
                   {%- else -%}
-                    {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- set toggled = {'rssi': beacon.rssi, 'ignored': true} if ns.has_any_active else {'rssi': beacon.rssi} -%}
                   {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({mac: toggled}) -%}
                 {%- else -%}
-                  {%- set ns.entries = ns.entries + [entry] -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
+                  {%- else -%}
+                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
+                  {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
                 {%- endif -%}
               {%- endfor -%}
-            {%- endif -%}
-            {{ ns.entries | join('\n') }}
+              {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+            {%- endfor -%}
+            {{ {'fingerprints': ns.fp_list} }}
 
-      - action: shell_command.bt_fingerprint_database_write
+      - action: script.write_bt_fingerprints
         data:
-          csv_content: "{{ updated_fingerprints }}"
-
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.bt_fingerprint_database_file
+          fingerprints_json: "{{ updated_fingerprints }}"
 
       - action: system_log.write
         data:
@@ -720,59 +710,27 @@ script:
           # Process fingerprints and remove beacon from this location
           - variables:
               updated_fingerprints: |
-                {%- set ns = namespace(entries=[]) -%}
-                {%- if current_fingerprints is iterable -%}
-                  {%- for entry in current_fingerprints -%}
-                    {%- if entry and '|' in entry -%}
-                      {%- set parts = entry.split('|') -%}
-                      {%- if parts | length == 2 -%}
-                        {%- set idx = parts[0] | int(-1) -%}
-                        {%- set mac_rssi_str = parts[1] -%}
-                        {%- if idx == location_idx -%}
-                          {# This is our location - remove the beacon (skip it entirely) #}
-                          {%- set ns.pairs = [] -%}
-                          {%- for pair in mac_rssi_str.split(',') -%}
-                            {%- if '=' in pair -%}
-                              {%- set pair_stripped = pair.rstrip(':X') -%}
-                              {%- set kv = pair_stripped.split('=') -%}
-                              {%- if kv | length == 2 -%}
-                                {%- set current_mac = kv[0] | trim | upper -%}
-                                {%- if current_mac != beacon_mac -%}
-                                  {# Keep unchanged #}
-                                  {%- set ns.pairs = ns.pairs + [pair] -%}
-                                {%- endif -%}
-                              {%- else -%}
-                                {%- set ns.pairs = ns.pairs + [pair] -%}
-                              {%- endif -%}
-                            {%- else -%}
-                              {%- set ns.pairs = ns.pairs + [pair] -%}
-                            {%- endif -%}
-                          {%- endfor -%}
-                          {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
-                          {%- set ns.entries = ns.entries + [updated_entry] -%}
-                        {%- else -%}
-                          {# Keep other locations unchanged #}
-                          {%- set ns.entries = ns.entries + [entry] -%}
-                        {%- endif -%}
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- set ns2 = namespace(beacons={}) -%}
+                  {%- for mac, beacon in fp.beacons.items() -%}
+                    {%- if not (fp.loc | int == location_idx and mac | upper == beacon_mac) -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
                       {%- else -%}
-                        {%- set ns.entries = ns.entries + [entry] -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
                       {%- endif -%}
-                    {%- else -%}
-                      {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
                     {%- endif -%}
                   {%- endfor -%}
-                {%- endif -%}
-                {{ ns.entries | join('\n') }}
+                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                {%- endfor -%}
+                {{ {'fingerprints': ns.fp_list} }}
 
           # Write updated fingerprints
-          - action: shell_command.bt_fingerprint_database_write
+          - action: script.write_bt_fingerprints
             data:
-              csv_content: "{{ updated_fingerprints }}"
-
-          # Refresh sensor
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.bt_fingerprint_database_file
+              fingerprints_json: "{{ updated_fingerprints }}"
 
           # Log the action
           - action: system_log.write
@@ -793,52 +751,26 @@ script:
 
       - variables:
           updated_fingerprints: |
-            {%- set ns = namespace(entries=[]) -%}
-            {%- if current_fingerprints is iterable -%}
-              {%- for entry in current_fingerprints -%}
-                {%- if entry and '|' in entry -%}
-                  {%- set parts = entry.split('|') -%}
-                  {%- if parts | length == 2 -%}
-                    {%- set idx = parts[0] | int(-1) -%}
-                    {%- set mac_rssi_str = parts[1] -%}
-                    {# Process all locations - remove beacon from each #}
-                    {%- set ns.pairs = [] -%}
-                    {%- for pair in mac_rssi_str.split(',') -%}
-                      {%- if '=' in pair -%}
-                        {%- set pair_stripped = pair.rstrip(':X') -%}
-                        {%- set kv = pair_stripped.split('=') -%}
-                        {%- if kv | length == 2 -%}
-                          {%- set current_mac = kv[0] | trim | upper -%}
-                          {%- if current_mac != beacon_mac -%}
-                            {# Keep unchanged #}
-                            {%- set ns.pairs = ns.pairs + [pair] -%}
-                          {%- endif -%}
-                        {%- else -%}
-                          {%- set ns.pairs = ns.pairs + [pair] -%}
-                        {%- endif -%}
-                      {%- else -%}
-                        {%- set ns.pairs = ns.pairs + [pair] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
-                    {%- set ns.entries = ns.entries + [updated_entry] -%}
+            {%- set ns = namespace(fp_list=[]) -%}
+            {%- for fp in current_fingerprints -%}
+              {%- set ns2 = namespace(beacons={}) -%}
+              {%- for mac, beacon in fp.beacons.items() -%}
+                {%- if mac | upper != beacon_mac -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
                   {%- else -%}
-                    {%- set ns.entries = ns.entries + [entry] -%}
+                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
                   {%- endif -%}
-                {%- else -%}
-                  {%- set ns.entries = ns.entries + [entry] -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
                 {%- endif -%}
               {%- endfor -%}
-            {%- endif -%}
-            {{ ns.entries | join('\n') }}
+              {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+            {%- endfor -%}
+            {{ {'fingerprints': ns.fp_list} }}
 
-      - action: shell_command.bt_fingerprint_database_write
+      - action: script.write_bt_fingerprints
         data:
-          csv_content: "{{ updated_fingerprints }}"
-
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.bt_fingerprint_database_file
+          fingerprints_json: "{{ updated_fingerprints }}"
 
       - action: system_log.write
         data:
@@ -860,21 +792,15 @@ script:
       # Check if MAC is already in the list
       - variables:
           is_ignored: "{{ beacon_mac in current_list }}"
-          updated_list: |
-            {%- if is_ignored -%}
-              {# Remove from ignored list #}
-              {%- set filtered = current_list | reject('equalto', beacon_mac) | list -%}
-              {{ filtered | join('\n') }}
-            {%- else -%}
-              {# Add to ignored list #}
-              {%- set new_list = current_list + [beacon_mac] -%}
-              {{ new_list | join('\n') }}
-            {%- endif -%}
 
-      # Write updated list to file (newline-separated for unlimited capacity)
+      - variables:
+          updated_list:
+            ignored: "{{ current_list | reject('equalto', beacon_mac) | list if is_ignored else current_list + [beacon_mac] }}"
+
+      # Write updated list to file
       - action: shell_command.bt_ignored_write
         data:
-          csv_content: "{{ updated_list }}"
+          json_content: "{{ updated_list }}"
 
       # Refresh sensor to pick up changes
       - action: homeassistant.update_entity
@@ -894,50 +820,25 @@ script:
               current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
           - variables:
               cleaned_fingerprints: |
-                {%- set ns = namespace(entries=[]) -%}
-                {%- if current_fingerprints is iterable -%}
-                  {%- for entry in current_fingerprints -%}
-                    {%- if entry and '|' in entry -%}
-                      {%- set parts = entry.split('|') -%}
-                      {%- if parts | length == 2 -%}
-                        {%- set idx = parts[0] | int(-1) -%}
-                        {%- set mac_rssi_str = parts[1] -%}
-                        {# Process all locations - remove beacon_mac from each #}
-                        {%- set ns.pairs = [] -%}
-                        {%- for pair in mac_rssi_str.split(',') -%}
-                          {%- if '=' in pair -%}
-                            {%- set pair_stripped = pair.rstrip(':X') -%}
-                            {%- set kv = pair_stripped.split('=') -%}
-                            {%- if kv | length == 2 -%}
-                              {%- set current_mac = kv[0] | trim | upper -%}
-                              {%- if current_mac != beacon_mac -%}
-                                {# Keep unchanged #}
-                                {%- set ns.pairs = ns.pairs + [pair] -%}
-                              {%- endif -%}
-                            {%- else -%}
-                              {%- set ns.pairs = ns.pairs + [pair] -%}
-                            {%- endif -%}
-                          {%- else -%}
-                            {%- set ns.pairs = ns.pairs + [pair] -%}
-                          {%- endif -%}
-                        {%- endfor -%}
-                        {%- set updated_entry = idx | string ~ '|' ~ ns.pairs | join(',') -%}
-                        {%- set ns.entries = ns.entries + [updated_entry] -%}
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- set ns2 = namespace(beacons={}) -%}
+                  {%- for mac, beacon in fp.beacons.items() -%}
+                    {%- if mac | upper != beacon_mac -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
                       {%- else -%}
-                        {%- set ns.entries = ns.entries + [entry] -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
                       {%- endif -%}
-                    {%- else -%}
-                      {%- set ns.entries = ns.entries + [entry] -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
                     {%- endif -%}
                   {%- endfor -%}
-                {%- endif -%}
-                {{ ns.entries | join('\n') }}
-          - action: shell_command.bt_fingerprint_database_write
+                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                {%- endfor -%}
+                {{ {'fingerprints': ns.fp_list} }}
+          - action: script.write_bt_fingerprints
             data:
-              csv_content: "{{ cleaned_fingerprints }}"
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.bt_fingerprint_database_file
+              fingerprints_json: "{{ cleaned_fingerprints }}"
 
   calculate_location_scores:
     description: "Calculate location scores against latest BT scan and update location metrics"
@@ -968,34 +869,26 @@ script:
       persist_scores: "{{ persist_scores | default(true) }}"
       # Context for logging (latest scan or fingerprint number)
       scan_context: "{{ scan_context | default('Latest scan') }}"
-      # Parse fingerprint database into location-specific device sets
-      # Format: location_index|MAC1=rssi1,MAC2=rssi2,...
       locations_map: "{{ state_attr('sensor.bt_location_array', 'locations') | default(none) }}"
-      raw_fingerprints: "{{ (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list }}"
+      raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
       fingerprints_parsed: |
         {%- set ns = namespace(data=[]) -%}
-        {%- for entry in raw_fingerprints -%}
-          {%- if entry and '|' in entry -%}
-            {%- set parts = entry.split('|') -%}
-            {%- if parts | length == 2 -%}
-              {%- set location_idx = parts[0] | int(-1) -%}
-              {%- if location_idx >= 0 -%}
-                {%- if locations_map and location_idx < locations_map | length -%}
-                  {%- set location_name = locations_map[location_idx] -%}
-                {%- else -%}
-                  {%- set location_name = location_idx | string -%}
-                {%- endif -%}
-                {%- set mac_rssi_pairs = parts[1] -%}
-                {%- set ns.data = ns.data + [{"location": location_name, "location_idx": location_idx, "mac_rssi_str": mac_rssi_pairs}] -%}
-              {%- endif -%}
+        {%- for fp in raw_fingerprints -%}
+          {%- set location_idx = fp.loc -%}
+          {%- if location_idx >= 0 -%}
+            {%- if locations_map and location_idx < locations_map | length -%}
+              {%- set location_name = locations_map[location_idx] -%}
+            {%- else -%}
+              {%- set location_name = location_idx | string -%}
             {%- endif -%}
+            {%- set ns.data = ns.data + [{"location": location_name, "location_idx": location_idx, "beacons": fp.beacons}] -%}
           {%- endif -%}
         {%- endfor -%}
         {{ ns.data }}
 
     sequence:
       # Call location detection algorithm (Symmetric Ratio)
-      - service: script.bt_location_symmetric_ratio
+      - action: script.bt_location_symmetric_ratio
         data:
           devices: "{{ devices }}"
           fingerprints_parsed: "{{ fingerprints_parsed }}"
@@ -1042,6 +935,8 @@ script:
           global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
+          minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          location: "{{ state_attr('sensor.bt_location_array', 'locations')[location_index | int] | default('unknown') }}"
 
       - variables:
           # Filter scan: exclude weak signals, globally ignored beacons, and ghost beacons (if toggle is ON)
@@ -1064,16 +959,6 @@ script:
             value_template: "{{ scan | length > 0 }}"
         then:
           - variables:
-              # Extract beacon MACs and RSSI values from scan
-              beacon_macs_list: "{{ scan | map(attribute='mac') | list }}"
-              rssi_values_list: "{{ scan | map(attribute='rssi') | list }}"
-              # Build MAC=RSSI pairs for new self-describing format
-              mac_rssi_pairs: |
-                {%- set ns = namespace(pairs=[]) -%}
-                {%- for i in range(beacon_macs_list | length) -%}
-                  {%- set ns.pairs = ns.pairs + [beacon_macs_list[i] ~ '=' ~ rssi_values_list[i]] -%}
-                {%- endfor -%}
-                {{ ns.pairs | join(',') }}
               # Build device details with names for display (MAC=RSSI (Device Name))
               device_details: |
                 {%- set ns = namespace(pairs=[]) -%}
@@ -1081,34 +966,49 @@ script:
                   {%- set ns.pairs = ns.pairs + [device.mac ~ '=' ~ device.rssi ~ ' (' ~ (device.name | default('unknown')) ~ ')'] -%}
                 {%- endfor -%}
                 {{ ns.pairs | join('\n') }}
-              # New fingerprint entry: location_index|MAC1=rssi1,MAC2=rssi2,...
-              new_entry: "{{ location_index }}|{{ mac_rssi_pairs | trim }}"
+              # Build beacons dict for new fingerprint entry
+              new_fp_beacons: |
+                {%- set ns = namespace(beacons={}) -%}
+                {%- for device in scan -%}
+                  {%- set ns.beacons = ns.beacons | combine({device.mac | upper: {"rssi": device.rssi}}) -%}
+                {%- endfor -%}
+                {{ ns.beacons }}
 
           - variables:
               # Read current fingerprints from sensor attribute (file-backed, no 255-char limit)
               current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-              # Filter out any existing entry for this location and append new one (newline-separated)
+              # Filter out any existing entry for this location and append new one
               updated_fingerprints: |
-                {%- set ns = namespace(entries=[]) -%}
-                {%- if current_fingerprints is iterable -%}
-                  {%- for entry in current_fingerprints -%}
-                    {%- if entry and not entry.startswith(location_index ~ '|') -%}
-                      {%- set ns.entries = ns.entries + [entry] -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-                {%- set ns.entries = ns.entries + [new_entry] -%}
-                {{ ns.entries | join('\n') }}
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- if fp.loc | int != location_index | int -%}
+                    {%- set ns2 = namespace(beacons={}) -%}
+                    {%- for mac, beacon in fp.beacons.items() -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                      {%- else -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                      {%- endif -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
+                    {%- endfor -%}
+                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for device in scan -%}
+                  {%- if minmax_mode -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'min': device.rssi, 'max': device.rssi}}) -%}
+                  {%- else -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'rssi': device.rssi}}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
+                {{ {'fingerprints': ns.fp_list} }}
 
-          # Write updated fingerprints directly to file (no helper needed - attributes have no size limit)
-          - action: shell_command.bt_fingerprint_database_write
+          # Write updated fingerprints
+          - action: script.write_bt_fingerprints
             data:
-              csv_content: "{{ updated_fingerprints }}"
-
-          # Refresh sensor to pick up new file contents
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.bt_fingerprint_database_file
+              fingerprints_json: "{{ updated_fingerprints }}"
 
           - action: persistent_notification.create
             data:
@@ -1118,8 +1018,12 @@ script:
 
           - action: system_log.write
             data:
-              message: "Captured BT fingerprint for {{ location | upper }} (index {{ location_index }}): {{ new_entry }}"
+              message: "Captured BT fingerprint for index {{ location_index }}: {{ new_fp_beacons | length }} beacons"
               level: debug
+
+          - action: script.bt_record_merge_statistics
+            data:
+              location_index: "{{ location_index }}"
         else:
           - action: persistent_notification.create
             data:
@@ -1150,6 +1054,7 @@ script:
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           rssi_only: "{{ rssi_only | default(false) | bool }}"
+          minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
 
       - variables:
           # Filter scan: exclude weak signals, globally ignored beacons, and ghost beacons (if toggle is ON)
@@ -1182,85 +1087,82 @@ script:
               current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
 
           - variables:
-              # Find and parse existing fingerprint for this location
-              existing_entry: |
-                {%- for entry in current_fingerprints | default([]) -%}
-                  {%- if entry and entry.startswith(location_index ~ '|') -%}
-                    {{ entry }}
-                  {%- endif -%}
-                {%- endfor -%}
-              # Extract existing beacons as dict: MAC -> RSSI (preserving :X suffix for locally ignored)
+              # Extract existing beacons dict for this location
               existing_beacons: |
                 {%- set ns = namespace(beacons={}) -%}
-                {%- if existing_entry -%}
-                  {%- set beacon_pairs = existing_entry.split('|')[1].split(',') -%}
-                  {%- for pair in beacon_pairs -%}
-                    {%- set parts = pair.split('=') -%}
-                    {%- if parts | length == 2 -%}
-                      {%- set mac = parts[0] | upper -%}
-                      {%- set rssi_raw = parts[1] -%}
-                      {%- set is_locally_ignored = rssi_raw.endswith(':X') -%}
-                      {%- set rssi_base = rssi_raw.rstrip(':X') -%}
-                      {%- set rssi_value = rssi_base | int -%}
-                      {%- set rssi_stored = rssi_base ~ ':X' if is_locally_ignored else rssi_base -%}
-                      {%- set ns.beacons = ns.beacons | combine({mac: rssi_stored}) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- if fp.loc | int == location_index | int -%}
+                    {%- for mac, beacon in fp.beacons.items() -%}
+                      {%- set ns.beacons = ns.beacons | combine({mac: beacon}) -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
                 {{ ns.beacons }}
 
           - variables:
-              # Merge/update: start with existing beacons, update RSSI from scan (preserving :X suffix)
-              # rssi_only=true: only update existing beacons, skip new ones
-              # rssi_only=false (default): also add new beacons from scan
-              # For existing beacons: average stored and new RSSI (running mean) to reduce single-scan outlier sensitivity
+              # Merge/update: mode-driven — all entries written in current mode format
+              # rssi_only=true: existing beacons only (no new beacons added)
+              # rssi_only=false (default): also adds new beacons from scan
               merged_beacons: |
                 {%- set ns = namespace(merged=existing_beacons) -%}
-                {%- for mac, rssi in scan_map.items() -%}
-                  {%- if mac in ns.merged or not rssi_only -%}
-                    {%- set was_locally_ignored = (ns.merged.get(mac, '') | string).endswith(':X') -%}
-                    {%- if mac in ns.merged -%}
-                      {%- set stored_rssi = ns.merged[mac] | string | replace(':X', '') | int -%}
-                      {%- set avg_rssi = ((stored_rssi + rssi) / 2) | round | int -%}
-                      {%- set new_rssi = avg_rssi | string ~ ':X' if was_locally_ignored else avg_rssi | string -%}
+                {%- for scan_mac, scan_rssi in scan_map.items() -%}
+                  {%- if scan_mac in ns.merged or not rssi_only -%}
+                    {%- set existing_beacon = ns.merged.get(scan_mac, {}) -%}
+                    {%- set was_ignored = existing_beacon.get('ignored', false) -%}
+                    {%- if minmax_mode -%}
+                      {# Min/max mode: all entries written as min/max #}
+                      {%- if 'min' in existing_beacon -%}
+                        {%- set new_min = [existing_beacon.min, scan_rssi] | min -%}
+                        {%- set new_max = [existing_beacon.max, scan_rssi] | max -%}
+                      {%- else -%}
+                        {%- set new_min = scan_rssi -%}
+                        {%- set new_max = scan_rssi -%}
+                      {%- endif -%}
+                      {%- set beacon_data = {'min': new_min, 'max': new_max} -%}
                     {%- else -%}
-                      {%- set new_rssi = rssi | string ~ ':X' if was_locally_ignored else rssi | string -%}
+                      {# Mean mode: all entries written as mean RSSI #}
+                      {%- if rssi_only and 'min' not in existing_beacon and scan_mac in ns.merged -%}
+                        {# tap on existing mean entry: running mean (gentle incremental update) #}
+                        {%- set avg_rssi = ((existing_beacon.rssi + scan_rssi) / 2) | round | int -%}
+                        {%- set beacon_data = {'rssi': avg_rssi} -%}
+                      {%- else -%}
+                        {# full merge, new beacon, or conversion from min/max: use scan value #}
+                        {%- set beacon_data = {'rssi': scan_rssi} -%}
+                      {%- endif -%}
                     {%- endif -%}
-                    {%- set ns.merged = ns.merged | combine({mac: new_rssi}) -%}
+                    {%- if was_ignored -%}
+                      {%- set ns.merged = ns.merged | combine({scan_mac: beacon_data | combine({'ignored': true})}) -%}
+                    {%- else -%}
+                      {%- set ns.merged = ns.merged | combine({scan_mac: beacon_data}) -%}
+                    {%- endif -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {{ ns.merged }}
-              # Build MAC=RSSI pairs from merged data
-              merged_pairs: |
-                {%- set ns = namespace(pairs=[]) -%}
-                {%- for mac, rssi in merged_beacons.items() -%}
-                  {%- set ns.pairs = ns.pairs + [mac ~ '=' ~ rssi] -%}
-                {%- endfor -%}
-                {{ ns.pairs | join(',') }}
-              # New merged entry
-              merged_entry: "{{ location_index }}|{{ merged_pairs }}"
 
           - variables:
               # Update fingerprints: remove old entry for this location, add merged entry
               updated_fingerprints: |
-                {%- set ns = namespace(entries=[]) -%}
-                {%- if current_fingerprints is iterable -%}
-                  {%- for entry in current_fingerprints -%}
-                    {%- if entry and not entry.startswith(location_index ~ '|') -%}
-                      {%- set ns.entries = ns.entries + [entry] -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-                {%- set ns.entries = ns.entries + [merged_entry] -%}
-                {{ ns.entries | join('\n') }}
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- if fp.loc | int != location_index | int -%}
+                    {%- set ns2 = namespace(beacons={}) -%}
+                    {%- for mac, beacon in fp.beacons.items() -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                      {%- else -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                      {%- endif -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
+                    {%- endfor -%}
+                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': location_index | int, 'beacons': merged_beacons}] -%}
+                {{ {'fingerprints': ns.fp_list} }}
 
-          - action: shell_command.bt_fingerprint_database_write
+          - action: script.write_bt_fingerprints
             data:
-              csv_content: "{{ updated_fingerprints }}"
-
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.bt_fingerprint_database_file
+              fingerprints_json: "{{ updated_fingerprints }}"
 
           - variables:
               locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
@@ -1274,8 +1176,12 @@ script:
 
           - action: system_log.write
             data:
-              message: "{{ 'RSSI-updated' if rssi_only else 'Merged' }} BT fingerprint for location {{ location_index }}: {{ merged_entry }}"
+              message: "{{ 'RSSI-updated' if rssi_only else 'Merged' }} BT fingerprint for location {{ location_index }}: {{ merged_beacons | length }} beacons"
               level: debug
+
+          - action: script.bt_record_merge_statistics
+            data:
+              location_index: "{{ location_index }}"
         else:
           - action: persistent_notification.create
             data:
@@ -1283,62 +1189,725 @@ script:
               message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
               notification_id: "bt_no_scan"
 
+  bt_beacon_reset_minmax:
+    description: "Reset a single beacon entry from current scan: mean mode writes scan RSSI; min/max mode writes [scan−tol, scan+tol]. No-op if beacon absent from scan."
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+      mac:
+        description: "Beacon MAC address (uppercase)"
+        example: "DE:E3:0B:7D:6B:0B"
+    sequence:
+      - variables:
+          minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          mac_upper: "{{ mac | upper }}"
+          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      - variables:
+          updated_fingerprints: |
+            {%- set ns_scan = namespace(rssi=none) -%}
+            {%- for device in scan_devices -%}
+              {%- if device.mac | upper == mac_upper -%}
+                {%- set ns_scan.rssi = device.rssi -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set scan_rssi = ns_scan.rssi -%}
+            {%- set ns = namespace(fp_list=[]) -%}
+            {%- for fp in current_fingerprints -%}
+              {%- if fp.loc | int != location_index | int -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for mac, beacon in fp.beacons.items() -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                  {%- else -%}
+                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                  {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- else -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for m, beacon in fp.beacons.items() -%}
+                  {%- if m | upper != mac_upper -%}
+                    {%- if 'min' in beacon -%}
+                      {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                    {%- else -%}
+                      {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                    {%- endif -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
+                  {%- else -%}
+                    {%- set was_ignored = beacon.get('ignored', false) -%}
+                    {%- if scan_rssi is not none -%}
+                      {%- if minmax_mode -%}
+                        {# Min/max mode, beacon in scan: set range to scan ± tolerance #}
+                        {%- set reset_beacon = {'min': scan_rssi | int - tolerance, 'max': scan_rssi | int + tolerance} -%}
+                      {%- else -%}
+                        {# Mean mode, beacon in scan: collapse to current scan RSSI #}
+                        {%- set reset_beacon = {'rssi': scan_rssi | int} -%}
+                      {%- endif -%}
+                    {%- else -%}
+                      {# Beacon absent from scan: no-op #}
+                      {%- set reset_beacon = beacon -%}
+                    {%- endif -%}
+                    {%- if was_ignored -%}
+                      {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
+                    {%- endif -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({m: reset_beacon}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'fingerprints': ns.fp_list} }}
+
+      - action: script.write_bt_fingerprints
+        data:
+          fingerprints_json: "{{ updated_fingerprints }}"
+
+      - action: system_log.write
+        data:
+          message: "Reset beacon {{ mac_upper }} in location {{ location_index }}, minmax_mode={{ minmax_mode }}, tolerance={{ tolerance }}"
+          level: debug
+
+  bt_beacon_range_editor_open:
+    alias: "BT: Open beacon range editor popup"
+    description: "Pre-fill range editor helpers and open browser_mod popup for direct min/max editing of a fingerprint beacon"
+    mode: restart
+    fields:
+      browser_id:
+        description: "ID of the calling browser (targets popup to that browser only)"
+        default: ""
+      location_index:
+        description: "Location index (0-based)"
+        example: "0"
+      mac:
+        description: "Beacon MAC address (uppercase)"
+        example: "8C:BF:EA:A1:3A:66"
+      current_min:
+        description: "Current fingerprint min value"
+        example: "-70"
+      current_max:
+        description: "Current fingerprint max value"
+        example: "-50"
+      beacon_name:
+        description: "Human-readable beacon name (for popup title)"
+        default: ""
+      scan_rssi:
+        description: "Current scan RSSI for this beacon (empty string if not in scan)"
+        default: ""
+      tolerance:
+        description: "Current RSSI tolerance setting"
+        example: "10"
+    sequence:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_min
+        data:
+          value: "{{ current_min | int }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_max
+        data:
+          value: "{{ current_max | int }}"
+      - variables:
+          stats_p10_p90: |
+            {%- set all_stats = state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) -%}
+            {%- set ns_s = namespace(beacons={}) -%}
+            {%- for entry in all_stats -%}
+              {%- if entry.loc | int == location_index | int -%}
+                {%- set ns_s.beacons = entry.beacons -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set readings = ns_s.beacons.get(mac | upper, []) -%}
+            {%- set s_count = readings | length -%}
+            {%- if s_count >= 10 -%}
+              {%- set rssi_vals = readings | map(attribute=0) | list | sort -%}
+              {%- set p10 = rssi_vals[(s_count * 0.1) | int] -%}
+              {%- set p90 = rssi_vals[(s_count * 0.9) | int] -%}
+              {{ p10 | string ~ '|' ~ p90 | string ~ '|' ~ s_count | string }}
+            {%- else -%}
+              {{ '||' ~ s_count | string }}
+            {%- endif -%}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.bt_range_editor_context
+        data:
+          value: "{{ location_index }}|{{ mac | upper }}|{{ scan_rssi }}|{{ tolerance }}|{{ current_min }}|{{ current_max }}|{{ stats_p10_p90 | trim }}"
+      - action: browser_mod.popup
+        data:
+          browser_id: "{{ browser_id }}"
+          title: "Edit range: {{ beacon_name if beacon_name else mac | upper }}"
+          content:
+            type: entities
+            entities:
+              - entity: input_number.bt_range_editor_min
+                name: Min (dBm)
+              - entity: input_number.bt_range_editor_max
+                name: Max (dBm)
+              - type: custom:button-card
+                entity: input_text.bt_range_editor_context
+                show_icon: false
+                show_state: false
+                name: |
+                  [[[
+                    const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
+                    const tol = parseInt(ctx[3]);
+                    const cMin = parseFloat(ctx[4]);
+                    const cMax = parseFloat(ctx[5]);
+                    if (isNaN(cMin) || isNaN(cMax)) return 'Apply midpoint ± tolerance';
+                    const mid = Math.round((cMin + cMax) / 2);
+                    return `Apply midpoint ${mid} dBm:  ${mid - tol} / ${mid + tol}`;
+                  ]]]
+                tap_action:
+                  action: perform-action
+                  perform_action: script.bt_beacon_range_editor_apply_suggested
+                styles:
+                  card:
+                    - background-color: var(--primary-color)
+                    - color: var(--text-primary-color)
+                    - border-radius: 6px
+                    - height: 40px
+                    - font-size: 13px
+                    - opacity: |
+                        [[[
+                          const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
+                          const tol = parseInt(ctx[3]);
+                          const mid = Math.round((parseFloat(ctx[4]) + parseFloat(ctx[5])) / 2);
+                          const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
+                          const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
+                          return (curMin === mid - tol && curMax === mid + tol) ? '0.3' : '1';
+                        ]]]
+              - type: custom:button-card
+                entity: input_text.bt_range_editor_context
+                show_icon: false
+                show_state: false
+                name: |
+                  [[[
+                    const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
+                    const p10 = parseFloat(ctx[6]);
+                    const p90 = parseFloat(ctx[7]);
+                    const n = parseInt(ctx[8]) || 0;
+                    if (isNaN(p10) || isNaN(p90)) return `Apply P10/P90  (n=${n}, need ≥10)`;
+                    return `Apply P10/P90:  ${p10} / ${p90}  (n=${n})`;
+                  ]]]
+                tap_action:
+                  action: perform-action
+                  perform_action: script.bt_beacon_range_editor_apply_percentile
+                styles:
+                  card:
+                    - background-color: var(--primary-color)
+                    - color: var(--text-primary-color)
+                    - border-radius: 6px
+                    - height: 40px
+                    - font-size: 13px
+                    - opacity: |
+                        [[[
+                          const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
+                          const p10 = parseFloat(ctx[6]);
+                          const p90 = parseFloat(ctx[7]);
+                          const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
+                          const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
+                          if (isNaN(p10) || isNaN(p90)) return '0.3';
+                          return (curMin === p10 && curMax === p90) ? '0.3' : '1';
+                        ]]]
+              - type: custom:button-card
+                name: Save
+                show_icon: false
+                tap_action:
+                  action: perform-action
+                  perform_action: script.bt_beacon_range_editor_save
+                  data:
+                    browser_id: '[[[ return window.browser_mod?.browserID || ""; ]]]'
+                styles:
+                  card:
+                    - background-color: var(--primary-color)
+                    - color: var(--text-primary-color)
+                    - border-radius: 6px
+                    - height: 40px
+                    - opacity: |
+                        [[[
+                          const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
+                          const fpMin = parseFloat(ctx[4]);
+                          const fpMax = parseFloat(ctx[5]);
+                          const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
+                          const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
+                          return (curMin === fpMin && curMax === fpMax) ? '0.3' : '1';
+                        ]]]
+
+  bt_beacon_range_editor_apply_suggested:
+    alias: "BT: Apply suggested range to editor"
+    description: "Sets range editor helpers to midpoint of current fingerprint range ± tolerance"
+    mode: single
+    sequence:
+      - variables:
+          ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
+          tolerance_val: "{{ ctx[3] | int(10) if ctx | length > 3 else 10 }}"
+          fp_min: "{{ ctx[4] | float(0) if ctx | length > 4 else 0 }}"
+          fp_max: "{{ ctx[5] | float(0) if ctx | length > 5 else 0 }}"
+          mid: "{{ ((fp_min + fp_max) / 2) | round | int }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_min
+        data:
+          value: "{{ [mid - tolerance_val, -120] | max }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_max
+        data:
+          value: "{{ [mid + tolerance_val, 0] | min }}"
+
+  bt_beacon_range_editor_apply_percentile:
+    alias: "BT: Apply P10/P90 percentile range to editor"
+    description: "Sets range editor helpers to P10/P90 from scan history statistics"
+    mode: single
+    sequence:
+      - variables:
+          ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
+          p10: "{{ ctx[6] | int(0) if ctx | length > 6 else 0 }}"
+          p90: "{{ ctx[7] | int(0) if ctx | length > 7 else 0 }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_min
+        data:
+          value: "{{ p10 }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bt_range_editor_max
+        data:
+          value: "{{ p90 }}"
+
+  bt_beacon_range_editor_save:
+    alias: "BT: Save range editor values to fingerprint"
+    description: "Reads min/max from helpers and writes directly to fingerprint, converting mean entries to min/max format. Swaps min/max if inverted."
+    mode: single
+    fields:
+      browser_id:
+        description: "Browser to close popup on after save"
+        default: ""
+    sequence:
+      - variables:
+          ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
+          location_index: "{{ ctx[0] | int }}"
+          mac_upper: "{{ ctx[1] | upper }}"
+          new_min_raw: "{{ states('input_number.bt_range_editor_min') | int }}"
+          new_max_raw: "{{ states('input_number.bt_range_editor_max') | int }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+
+      - variables:
+          new_min: "{{ [new_min_raw, new_max_raw] | min }}"
+          new_max: "{{ [new_min_raw, new_max_raw] | max }}"
+
+      - variables:
+          updated_fingerprints: |
+            {%- set ns = namespace(fp_list=[]) -%}
+            {%- for fp in current_fingerprints -%}
+              {%- if fp.loc | int != location_index -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for m, beacon in fp.beacons.items() -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set bd = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                  {%- else -%}
+                    {%- set bd = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                  {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- else -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for m, beacon in fp.beacons.items() -%}
+                  {%- if m | upper != mac_upper -%}
+                    {%- if 'min' in beacon -%}
+                      {%- set bd = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                    {%- else -%}
+                      {%- set bd = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                    {%- endif -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
+                  {%- else -%}
+                    {%- set was_ignored = beacon.get('ignored', false) -%}
+                    {%- set bd = {'min': new_min | int, 'max': new_max | int, 'ignored': true} if was_ignored else {'min': new_min | int, 'max': new_max | int} -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'fingerprints': ns.fp_list} }}
+
+      - action: script.write_bt_fingerprints
+        data:
+          fingerprints_json: "{{ updated_fingerprints }}"
+
+      - action: browser_mod.close_popup
+        data:
+          browser_id: "{{ browser_id }}"
+
+  bt_beacon_merge:
+    description: "Merge a single beacon from the current scan into its fingerprint entry (expand min/max or update running mean)"
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+      mac:
+        description: "Beacon MAC address (uppercase)"
+        example: "DE:E3:0B:7D:6B:0B"
+    sequence:
+      - variables:
+          minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          mac_upper: "{{ mac | upper }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      - variables:
+          scan_rssi: |
+            {%- set ns = namespace(rssi=none) -%}
+            {%- for device in scan_devices -%}
+              {%- if device.mac | upper == mac_upper -%}
+                {%- set ns.rssi = device.rssi -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.rssi }}
+
+      - if:
+          - condition: template
+            value_template: "{{ scan_rssi is not none }}"
+        then:
+          - variables:
+              updated_fingerprints: |
+                {%- set ns = namespace(fp_list=[]) -%}
+                {%- for fp in current_fingerprints -%}
+                  {%- if fp.loc | int != location_index | int -%}
+                    {%- set ns2 = namespace(beacons={}) -%}
+                    {%- for m, beacon in fp.beacons.items() -%}
+                      {%- if 'min' in beacon -%}
+                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                      {%- else -%}
+                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                      {%- endif -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
+                    {%- endfor -%}
+                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                  {%- else -%}
+                    {%- set ns2 = namespace(beacons={}) -%}
+                    {%- for m, beacon in fp.beacons.items() -%}
+                      {%- set was_ignored = beacon.get('ignored', false) -%}
+                      {%- if m | upper != mac_upper -%}
+                        {%- if 'min' in beacon -%}
+                          {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
+                        {%- else -%}
+                          {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
+                        {%- endif -%}
+                        {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
+                      {%- else -%}
+                        {%- if 'min' in beacon -%}
+                          {%- set new_min = [beacon.min, scan_rssi | int] | min -%}
+                          {%- set new_max = [beacon.max, scan_rssi | int] | max -%}
+                          {%- set merged = {'min': new_min, 'max': new_max} -%}
+                        {%- else -%}
+                          {%- set avg_rssi = ((beacon.rssi + scan_rssi | int) / 2) | round | int -%}
+                          {%- set merged = {'rssi': avg_rssi} -%}
+                        {%- endif -%}
+                        {%- if was_ignored -%}
+                          {%- set merged = merged | combine({'ignored': true}) -%}
+                        {%- endif -%}
+                        {%- set ns2.beacons = ns2.beacons | combine({m: merged}) -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ {'fingerprints': ns.fp_list} }}
+
+          - action: script.write_bt_fingerprints
+            data:
+              fingerprints_json: "{{ updated_fingerprints }}"
+
+          - action: system_log.write
+            data:
+              message: "Merged beacon {{ mac_upper }} in location {{ location_index }}, scan_rssi={{ scan_rssi }}, minmax_mode={{ minmax_mode }}"
+              level: debug
+
+  bt_beacon_reset_all:
+    description: "Reset all beacon entries for a location: collapse each to current scan RSSI (or midpoint if absent from scan)"
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+    sequence:
+      - variables:
+          minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+
+      - variables:
+          scan_map: |
+            {%- set ns = namespace(map={}) -%}
+            {%- for device in scan_devices -%}
+              {%- set ns.map = ns.map | combine({device.mac | upper: device.rssi}) -%}
+            {%- endfor -%}
+            {{ ns.map }}
+
+      - variables:
+          updated_fingerprints: |
+            {%- set ns = namespace(fp_list=[]) -%}
+            {%- for fp in current_fingerprints -%}
+              {%- if fp.loc | int != location_index | int -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for m, beacon in fp.beacons.items() -%}
+                  {%- if 'min' in beacon -%}
+                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
+                  {%- else -%}
+                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
+                  {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- else -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for m, beacon in fp.beacons.items() -%}
+                  {%- set mac_upper = m | upper -%}
+                  {%- set was_ignored = beacon.get('ignored', false) -%}
+                  {%- if mac_upper in scan_map -%}
+                    {%- set scan_rssi = scan_map[mac_upper] -%}
+                    {%- if minmax_mode -%}
+                      {%- set reset_beacon = {'min': scan_rssi | int, 'max': scan_rssi | int} -%}
+                    {%- else -%}
+                      {%- set reset_beacon = {'rssi': scan_rssi | int} -%}
+                    {%- endif -%}
+                  {%- elif 'min' in beacon -%}
+                    {%- set mid = ((beacon.min + beacon.max) / 2) | round | int -%}
+                    {%- if minmax_mode -%}
+                      {%- set reset_beacon = {'min': mid, 'max': mid} -%}
+                    {%- else -%}
+                      {%- set reset_beacon = {'rssi': mid} -%}
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- set reset_beacon = beacon -%}
+                  {%- endif -%}
+                  {%- if was_ignored -%}
+                    {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
+                  {%- endif -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({m: reset_beacon}) -%}
+                {%- endfor -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'fingerprints': ns.fp_list} }}
+
+      - action: script.write_bt_fingerprints
+        data:
+          fingerprints_json: "{{ updated_fingerprints }}"
+
+      - action: system_log.write
+        data:
+          message: "Reset all beacons for location {{ location_index }}, minmax_mode={{ minmax_mode }}"
+          level: debug
+
+      - action: script.bt_record_merge_statistics
+        data:
+          location_index: "{{ location_index }}"
+
+  bt_record_merge_statistics:
+    description: "Append current scan RSSI readings for a location to bt_statistics.json (called after capture/merge/reset)"
+    fields:
+      location_index:
+        description: "Location index (0-based, required)"
+        example: "0"
+    sequence:
+      - variables:
+          current_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          global_ignored: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+          ts: "{{ now().timestamp() | int }}"
+
+      - variables:
+          scan_map: |
+            {%- set ns = namespace(map={}) -%}
+            {%- for device in raw_scan -%}
+              {%- set mac_upper = device.mac | upper -%}
+              {%- if mac_upper not in global_ignored -%}
+                {%- set ns.map = ns.map | combine({mac_upper: device.rssi}) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.map }}
+
+      - variables:
+          updated_statistics: |
+            {%- set ns = namespace(stat_list=[], found=false) -%}
+            {%- for entry in current_stats -%}
+              {%- if entry.loc | int == location_index | int -%}
+                {%- set ns.found = true -%}
+                {%- set ns2 = namespace(beacons={}) -%}
+                {%- for mac, readings in entry.beacons.items() -%}
+                  {%- set mac_upper = mac | upper -%}
+                  {%- if mac_upper in scan_map -%}
+                    {%- set new_readings = (readings + [[scan_map[mac_upper], ts]])[-50:] -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({mac_upper: new_readings}) -%}
+                  {%- else -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({mac_upper: readings}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- for mac_upper, rssi in scan_map.items() -%}
+                  {%- if mac_upper not in entry.beacons -%}
+                    {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
+              {%- else -%}
+                {%- set ns.stat_list = ns.stat_list + [entry] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- if not ns.found -%}
+              {%- set ns2 = namespace(beacons={}) -%}
+              {%- for mac_upper, rssi in scan_map.items() -%}
+                {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
+              {%- endfor -%}
+              {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
+            {%- endif -%}
+            {{ {'statistics': ns.stat_list} }}
+
+      - action: shell_command.bt_statistics_write
+        data:
+          json_content: "{{ updated_statistics }}"
+
+      - action: system_log.write
+        data:
+          message: "Recorded merge statistics for location {{ location_index }}: {{ scan_map | length }} beacons from scan"
+          level: debug
+
   report_beacon_status:
-    description: "Generate and display beacon status report showing active, ignored, and weak beacons"
+    description: "Generate and log beacon status report with per-beacon statistics and warnings"
     sequence:
       - variables:
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
           fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
           global_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
           weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
+          names_raw: "{{ state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') }}"
 
       - variables:
           validation_report: |
-            Global Ignored: {{ global_list | length }} beacons
-            {{ '- ' + global_list | join('\n- ') if global_list | length > 0 else '(none)' }}
-
-            Per-Location Status:
-            {% for entry in fingerprints %}
-            {%- if entry and '|' in entry %}
-              {%- set parts = entry.split('|') -%}
-              {%- set idx = parts[0] | int(-1) -%}
+            === Beacon Status Report ===
+            {%- set names_map = names_raw | from_json if names_raw is string else names_raw -%}
+            {%- set report = namespace(lines=[]) -%}
+            {%- for fp in fingerprints -%}
+              {%- set idx = fp.loc -%}
               {%- set location_name = locations_list[idx] if idx >= 0 and idx < locations_list | length else (idx | string) -%}
-              {%- set mac_rssi_pairs = parts[1].split(',') -%}
-              {%- set ns = namespace(scanned=0, globally_ignored=0, locally_ignored=0, weak=0, active=0) -%}
-              {%- for pair in mac_rssi_pairs -%}
-                {%- set pair_stripped = pair.rstrip(':X') -%}
-                {%- set pair_parts = pair_stripped.split('=') -%}
-                {%- if pair_parts | length == 2 -%}
-                  {%- set beacon_mac = pair_parts[0] | upper -%}
-                  {%- set beacon_rssi = pair_parts[1] | int(0) -%}
-                  {%- if beacon_rssi != 0 -%}
-                    {%- set ns.scanned = ns.scanned + 1 -%}
-                    {%- if pair.endswith(':X') -%}
-                      {%- set ns.locally_ignored = ns.locally_ignored + 1 -%}
-                    {%- elif beacon_mac in global_list -%}
-                      {%- set ns.globally_ignored = ns.globally_ignored + 1 -%}
-                    {%- elif beacon_rssi < weak_signal_threshold -%}
+              {%- set ns = namespace(total=0, active=0, weak=0, locally_ignored=0, warnings=0, beacon_lines=[]) -%}
+              {%- set loc_stats = namespace(beacons={}) -%}
+              {%- for stat_entry in all_stats -%}
+                {%- if stat_entry.loc | int == idx | int -%}
+                  {%- set loc_stats.beacons = stat_entry.beacons -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- for mac, beacon in fp.beacons.items() -%}
+                {%- set mac_upper = mac | upper -%}
+                {%- if mac_upper not in global_list -%}
+                  {%- set rssi = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
+                  {%- set ns.total = ns.total + 1 -%}
+                  {%- if beacon.get('ignored', false) -%}
+                    {%- set ns.locally_ignored = ns.locally_ignored + 1 -%}
+                  {%- else -%}
+                    {%- set is_weak = rssi < weak_signal_threshold -%}
+                    {%- if is_weak -%}
                       {%- set ns.weak = ns.weak + 1 -%}
                     {%- else -%}
                       {%- set ns.active = ns.active + 1 -%}
                     {%- endif -%}
+                    {%- set bname = names_map.get(mac_upper, '?') -%}
+                    {%- set fp_display = (beacon.min | string ~ '/' ~ beacon.max | string ~ ' dBm') if 'min' in beacon else (rssi | string ~ ' dBm') -%}
+                    {%- set fp_span = ((beacon.max | int(0)) - (beacon.min | int(0))) | abs if 'min' in beacon else 0 -%}
+                    {%- set is_wide = fp_span > 2 * tolerance -%}
+                    {%- set s_readings = loc_stats.beacons.get(mac_upper, []) -%}
+                    {%- set s_count = s_readings | length -%}
+                    {%- if s_count > 0 -%}
+                      {# Extract RSSI values (readings are [rssi, timestamp] pairs, oldest first) #}
+                      {%- set s_vals = s_readings | map(attribute=0) | list -%}
+                      {# Mean #}
+                      {%- set s_mean = (s_vals | sum) / s_count -%}
+                      {# Standard deviation (population) #}
+                      {%- set ns_std = namespace(sq=0) -%}
+                      {%- for v in s_vals -%}{%- set ns_std.sq = ns_std.sq + (v - s_mean) ** 2 -%}{%- endfor -%}
+                      {%- set s_stddev = ((ns_std.sq / s_count) ** 0.5) | round | int -%}
+                      {# Drift: how far the fingerprint value has moved from the observed mean #}
+                      {%- set s_drift = (rssi - s_mean) | round | int -%}
+                      {%- set s_drift_str = ('+' if s_drift > 0 else '') ~ s_drift -%}
+                      {# Time span: days between oldest and newest reading #}
+                      {%- set s_span_days = (((s_readings[-1][1] - s_readings[0][1]) / 86400) | round | int) + 1 -%}
+                      {%- set s_first_date = s_readings[0][1] | timestamp_custom('%y%m%d', true) -%}
+                      {%- set s_last_date = s_readings[-1][1] | timestamp_custom('%y%m%d', true) -%}
+                      {# Histogram: count readings per 3 dBm bucket, show non-empty buckets as -69(12) -66(5) #}
+                      {%- set s_min = s_vals | min -%}
+                      {%- set s_max = s_vals | max -%}
+                      {%- set bucket_w = 3 -%}
+                      {# Floor-align bucket boundaries to multiples of bucket_w #}
+                      {%- set b_start = (s_min // bucket_w) * bucket_w -%}
+                      {%- set b_end = (s_max // bucket_w) * bucket_w -%}
+                      {# Initialize all buckets to 0 #}
+                      {%- set ns_hist = namespace(buckets={}, max_count=0) -%}
+                      {%- for b in range(b_start, b_end + bucket_w, bucket_w) -%}
+                        {%- set ns_hist.buckets = ns_hist.buckets | combine({b: 0}) -%}
+                      {%- endfor -%}
+                      {# Count each reading into its bucket #}
+                      {%- for v in s_vals -%}
+                        {%- set bk = (v // bucket_w) * bucket_w -%}
+                        {%- set ns_hist.buckets = ns_hist.buckets | combine({bk: ns_hist.buckets.get(bk, 0) + 1}) -%}
+                      {%- endfor -%}
+                      {# Find peak count (unused currently, kept for future bar scaling) #}
+                      {%- for bk, cnt in ns_hist.buckets.items() -%}
+                        {%- if cnt > ns_hist.max_count -%}{%- set ns_hist.max_count = cnt -%}{%- endif -%}
+                      {%- endfor -%}
+                      {# Build display string: only non-empty buckets, in ascending order #}
+                      {%- set ns_hline = namespace(parts=[]) -%}
+                      {%- for b in range(b_start, b_end + bucket_w, bucket_w) -%}
+                        {%- set cnt = ns_hist.buckets.get(b, 0) -%}
+                        {%- if cnt > 0 -%}
+                          {%- set ns_hline.parts = ns_hline.parts + [b | string ~ '(' ~ cnt ~ ')'] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {# Warning thresholds #}
+                      {%- set high_sigma = s_stddev > (tolerance / 2) -%}
+                      {%- set high_drift = (s_drift | abs) > tolerance -%}
+                    {%- else -%}
+                      {%- set high_sigma = false -%}
+                      {%- set high_drift = false -%}
+                    {%- endif -%}
+                    {%- set b_warnings = (1 if is_weak else 0) + (1 if high_sigma else 0) + (1 if high_drift else 0) + (1 if is_wide else 0) -%}
+                    {%- set ns.warnings = ns.warnings + b_warnings -%}
+                    {%- set warn_tag = '  ⚠' if b_warnings > 0 else '' -%}
+                    {%- set bl = ['  ' ~ mac_upper ~ '  ' ~ bname ~ warn_tag] -%}
+                    {%- set bl = bl + ['    Fingerprint: ' ~ fp_display] -%}
+                    {%- if s_count > 0 -%}
+                      {%- set bl = bl + ['    Variation:     deviation=' ~ s_stddev ~ ' dBm  drift=' ~ s_drift_str ~ ' dBm'] -%}
+                      {%- set bl = bl + ['    Distribution:  ' ~ (ns_hline.parts | join('  ')) ~ '  dBm'] -%}
+                      {%- set bl = bl + ['    Samples: ' ~ s_count ~ ' samples, ' ~ s_span_days ~ ' days (' ~ s_first_date ~ '-' ~ s_last_date ~ ')'] -%}
+                    {%- else -%}
+                      {%- set bl = bl + ['    Samples: 0 samples (no statistics yet)'] -%}
+                    {%- endif -%}
+                    {%- if is_weak -%}
+                      {%- set bl = bl + ['    ⚠ weak signal (fingerprint ' ~ rssi ~ ' dBm < threshold ' ~ weak_signal_threshold ~ ' dBm)'] -%}
+                    {%- endif -%}
+                    {%- if high_sigma -%}
+                      {%- set bl = bl + ['    ⚠ high deviation (σ=' ~ s_stddev ~ ' dBm > tol/2=' ~ (tolerance / 2) | int ~ ' dBm)'] -%}
+                    {%- endif -%}
+                    {%- if high_drift -%}
+                      {%- set bl = bl + ['    ⚠ drift (fingerprint=' ~ rssi ~ ' dBm, mean=' ~ (s_mean | round | int) ~ ' dBm, diff=' ~ s_drift_str ~ ' dBm)'] -%}
+                    {%- endif -%}
+                    {%- if is_wide -%}
+                      {%- set bl = bl + ['    ⚠ wide range (span=' ~ fp_span ~ ' dBm > 2×tol=' ~ (2 * tolerance) ~ ' dBm)'] -%}
+                    {%- endif -%}
+                    {%- set ns.beacon_lines = ns.beacon_lines + bl + [''] -%}
                   {%- endif -%}
                 {%- endif -%}
-              {%- endfor %}
-
-            {{ location_name | upper }}: {{ ns.scanned }} beacons
-            │ Globally ignored: {{ ns.globally_ignored }}
-            │ Locally ignored: {{ ns.locally_ignored }}
-            │ Weak: {{ ns.weak }}
-            Σ Active: {{ ns.active }}
-            {%- endif %}
-            {% endfor %}
-
-      - action: persistent_notification.create
-        data:
-          title: "Beacon Status Report"
-          message: "{{ validation_report }}"
-          notification_id: "bt_ignored_validation"
+              {%- endfor -%}
+              {%- set loc_summary = location_name | upper ~ ': ' ~ ns.active ~ ' active  (' ~ ns.total ~ ' total, ' ~ ns.weak ~ ' weak, ' ~ ns.locally_ignored ~ ' locally ignored' ~ (', ' ~ ns.warnings ~ ' warning' ~ ('s' if ns.warnings != 1 else '') if ns.warnings > 0 else '') ~ ')' -%}
+              {%- set report.lines = report.lines + ['', loc_summary, ''] + ns.beacon_lines -%}
+            {%- endfor -%}
+            {{ report.lines | join('\n') }}
 
       - action: system_log.write
         data:
@@ -1353,17 +1922,36 @@ script:
         target:
           entity_id: sensor.bt_fingerprint_database_file
 
-  clear_bt_fingerprints:
-    description: "Clear BT fingerprints database and refresh sensor"
+  write_bt_fingerprints:
+    description: "Write fingerprints JSON string to file and refresh sensor. Single write path for all fingerprint writers."
+    fields:
+      fingerprints_json:
+        description: "Fingerprints as JSON string (already serialized)"
     sequence:
-      # Clear the fingerprints file
       - action: shell_command.bt_fingerprint_database_write
         data:
-          csv_content: ""
-      # Refresh sensor to pick up empty file
+          json_content: "{{ fingerprints_json }}"
       - action: homeassistant.update_entity
         target:
           entity_id: sensor.bt_fingerprint_database_file
+
+  clear_bt_fingerprints:
+    description: "Clear BT fingerprints database and refresh sensor"
+    sequence:
+      - action: script.write_bt_fingerprints
+        data:
+          fingerprints_json:
+            fingerprints: []
+
+  clear_bt_statistics:
+    description: "Clear all scan history statistics and refresh sensor"
+    sequence:
+      - action: shell_command.bt_statistics_clear
+
+      - action: system_log.write
+        data:
+          message: "Cleared BT merge statistics"
+          level: debug
 
 automation:
   - alias: 'BT Calibration - Update Confusion Matrix'

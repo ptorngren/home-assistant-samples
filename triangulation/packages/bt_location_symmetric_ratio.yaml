@@ -15,7 +15,7 @@ script:
         example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'rssi': -65}]"
       fingerprints_parsed:
         description: "Parsed fingerprints from database"
-        example: "[{'location': 'peer', 'location_idx': 0, 'mac_rssi_str': 'AA:BB:CC:DD:EE:FF=-52,...'}]"
+        example: "[{'location': 'peer', 'location_idx': 0, 'beacons': {'AA:BB:CC:DD:EE:FF': {'rssi': -52}}}]"
     variables:
       # Context for logging
       scan_context: "{{ scan_context | default('Latest scan') }}"
@@ -41,23 +41,14 @@ script:
       # Calculate fresh from fingerprints to avoid sensor stale data race conditions
       scan_valid_count: |
         {%- set ns = namespace(active_beacons=[], count=0) -%}
-        {%- set raw_fingerprints = (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([])) | list -%}
-        {%- for entry in raw_fingerprints -%}
-          {%- if entry and '|' in entry -%}
-            {%- set parts = entry.split('|') -%}
-            {%- if parts | length == 2 -%}
-              {%- set mac_rssi_str = parts[1] -%}
-              {%- for pair in mac_rssi_str.split(',') -%}
-                {%- if '=' in pair -%}
-                  {%- set mac = pair.split('=')[0] | upper -%}
-                  {%- set is_locally_ignored = pair.endswith(':X') -%}
-                  {%- if not is_locally_ignored and mac not in ns.active_beacons and mac not in global_ignored_list -%}
-                    {%- set ns.active_beacons = ns.active_beacons + [mac] -%}
-                  {%- endif -%}
-                {%- endif -%}
-              {%- endfor -%}
+        {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+        {%- for fp in fingerprints -%}
+          {%- for mac, beacon in fp.beacons.items() -%}
+            {%- set mac_upper = mac | upper -%}
+            {%- if not beacon.get('ignored', false) and mac_upper not in ns.active_beacons and mac_upper not in global_ignored_list -%}
+              {%- set ns.active_beacons = ns.active_beacons + [mac_upper] -%}
             {%- endif -%}
-          {%- endif -%}
+          {%- endfor -%}
         {%- endfor -%}
         {%- for device in devices -%}
           {%- set mac = device.mac | upper -%}
@@ -83,37 +74,33 @@ script:
         {%- set ns = namespace(scores={}) -%}
         {%- for fp in fingerprints_parsed -%}
           {%- set location = fp.location -%}
-          {%- set mac_rssi_str = fp.mac_rssi_str -%}
 
           {# Initialize counters for this location #}
           {%- set ns.matched_beacons = 0 -%}
           {%- set ns.total_fingerprint_beacons = 0 -%}
 
-          {# Parse fingerprint beacons and count matches against current scan #}
-          {%- for pair in mac_rssi_str.split(',') -%}
-            {%- if '=' in pair -%}
-              {%- set pair_base = pair.rstrip(':X') -%}
-              {%- set kv = pair_base.split('=') -%}
-              {%- if kv | length == 2 -%}
-                {%- set fp_mac = kv[0] | trim | upper -%}
-                {%- set fp_rssi = kv[1] | trim | int(0) -%}
+          {# Iterate fingerprint beacons and count matches against current scan #}
+          {%- for mac, beacon in fp.beacons.items() -%}
+            {%- set fp_mac = mac | upper -%}
+            {# Apply BEACON EXCLUSION FILTER (see definition above) #}
+            {%- if fp_mac in global_ignored_list or beacon.get('ignored', false) -%}
+              {# Skip ignored beacon #}
+            {%- else -%}
+              {# Beacon passed exclusion filters - count toward fingerprint total #}
+              {%- set ns.total_fingerprint_beacons = ns.total_fingerprint_beacons + 1 -%}
 
-                {# Apply BEACON EXCLUSION FILTER (see definition above) #}
-                {%- if fp_mac in global_ignored_list or pair.endswith(':X') -%}
-                  {# Skip ignored beacon #}
+              {# Check if it exists in current scan #}
+              {%- if fp_mac in current_scan_map -%}
+                {%- set current_rssi = current_scan_map[fp_mac] -%}
+                {%- if 'min' in beacon -%}
+                  {# Min/max entry: strict bounds match, no tolerance #}
+                  {%- if current_rssi >= beacon.min and current_rssi <= beacon.max -%}
+                    {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                  {%- endif -%}
                 {%- else -%}
-                  {# Beacon passed exclusion filters - count toward fingerprint total #}
-                  {%- set ns.total_fingerprint_beacons = ns.total_fingerprint_beacons + 1 -%}
-
-                  {# Check if it exists in current scan #}
-                  {%- if fp_mac in current_scan_map -%}
-                    {%- set current_rssi = current_scan_map[fp_mac] -%}
-                    {# Check RSSI tolerance: beacon must be within ±N dBm of fingerprint RSSI #}
-                    {%- set rssi_diff = (current_rssi - fp_rssi) | abs -%}
-                    {%- if rssi_diff <= rssi_tolerance -%}
-                      {# Beacon matched within tolerance - count it #}
-                      {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
-                    {%- endif -%}
+                  {# Single-RSSI entry: tolerance match #}
+                  {%- if (current_rssi - beacon.rssi) | abs <= rssi_tolerance -%}
+                    {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
                   {%- endif -%}
                 {%- endif -%}
               {%- endif -%}
