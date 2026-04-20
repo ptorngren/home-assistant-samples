@@ -354,12 +354,16 @@ template:
         attributes:
           devices_by_mac: |
             {%- set current_map_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') -%}
-            {%- set current_map = current_map_raw | from_json if current_map_raw is string else {} -%}
+            {%- set current_map = current_map_raw | from_json if current_map_raw is string else current_map_raw -%}
             {%- set ns = namespace(new_map=current_map | default({}) | combine({}) ) -%}
             {%- for device in trigger.json.devices | default([]) -%}
               {%- set mac = device.mac | upper -%}
-              {%- set name = device.name | default('unknown') -%}
-              {%- set ns.new_map = ns.new_map | combine({mac: name}) -%}
+              {%- set incoming = device.name | default('') -%}
+              {%- set cached = current_map.get(mac, '') -%}
+              {%- set name = incoming if incoming not in ['', 'unknown', 'undefined'] else cached -%}
+              {%- if name -%}
+                {%- set ns.new_map = ns.new_map | combine({mac: name}) -%}
+              {%- endif -%}
             {%- endfor -%}
             {{ ns.new_map | to_json }}
 
