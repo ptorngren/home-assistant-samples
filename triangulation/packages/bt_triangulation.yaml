@@ -1639,7 +1639,7 @@ script:
               level: debug
 
   bt_beacon_reset_all:
-    description: "Reset all beacon entries for a location: collapse each to current scan RSSI (or midpoint if absent from scan)"
+    description: "Reset all beacons for a location. Min/max mode: P10/P90 if ≥10 samples, else midpoint±tolerance. Mean mode: current scan RSSI if present, else unchanged."
     fields:
       location_index:
         description: "Location index (0-based, required)"
@@ -1647,8 +1647,10 @@ script:
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
           current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
 
       - variables:
           scan_map: |
@@ -1661,39 +1663,40 @@ script:
       - variables:
           updated_fingerprints: |
             {%- set ns = namespace(fp_list=[]) -%}
+            {%- set loc_stats_ns = namespace(beacons={}) -%}
+            {%- for entry in all_stats -%}
+              {%- if entry.loc | int == location_index | int -%}
+                {%- set loc_stats_ns.beacons = entry.beacons -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set loc_stats_map = loc_stats_ns.beacons -%}
             {%- for fp in current_fingerprints -%}
               {%- if fp.loc | int != location_index | int -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for m, beacon in fp.beacons.items() -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                {%- set ns.fp_list = ns.fp_list + [fp] -%}
               {%- else -%}
                 {%- set ns2 = namespace(beacons={}) -%}
                 {%- for m, beacon in fp.beacons.items() -%}
                   {%- set mac_upper = m | upper -%}
                   {%- set was_ignored = beacon.get('ignored', false) -%}
-                  {%- if mac_upper in scan_map -%}
-                    {%- set scan_rssi = scan_map[mac_upper] -%}
-                    {%- if minmax_mode -%}
-                      {%- set reset_beacon = {'min': scan_rssi | int, 'max': scan_rssi | int} -%}
+                  {%- if minmax_mode -%}
+                    {%- set readings = loc_stats_map.get(mac_upper, []) -%}
+                    {%- set s_count = readings | length -%}
+                    {%- if s_count >= 10 -%}
+                      {%- set sorted_vals = readings | map(attribute=0) | list | sort -%}
+                      {%- set p10 = sorted_vals[(s_count * 0.1) | int] | int -%}
+                      {%- set p90 = sorted_vals[(s_count * 0.9) | int] | int -%}
+                      {%- set reset_beacon = {'min': p10, 'max': p90} -%}
                     {%- else -%}
-                      {%- set reset_beacon = {'rssi': scan_rssi | int} -%}
-                    {%- endif -%}
-                  {%- elif 'min' in beacon -%}
-                    {%- set mid = ((beacon.min + beacon.max) / 2) | round | int -%}
-                    {%- if minmax_mode -%}
-                      {%- set reset_beacon = {'min': mid, 'max': mid} -%}
-                    {%- else -%}
-                      {%- set reset_beacon = {'rssi': mid} -%}
+                      {%- set mid = ((beacon.min + beacon.max) / 2) | round | int if 'min' in beacon else beacon.rssi | int -%}
+                      {%- set reset_beacon = {'min': mid - tolerance, 'max': mid + tolerance} -%}
                     {%- endif -%}
                   {%- else -%}
-                    {%- set reset_beacon = beacon -%}
+                    {# Mean mode: scan RSSI if present, else leave unchanged #}
+                    {%- if mac_upper in scan_map -%}
+                      {%- set reset_beacon = {'rssi': scan_map[mac_upper] | int} -%}
+                    {%- else -%}
+                      {%- set reset_beacon = beacon -%}
+                    {%- endif -%}
                   {%- endif -%}
                   {%- if was_ignored -%}
                     {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
@@ -1802,7 +1805,7 @@ script:
           validation_report: |
             === Beacon Status Report ===
             {%- set names_map = names_raw | from_json if names_raw is string else names_raw -%}
-            {%- set report = namespace(lines=[]) -%}
+            {%- set report = namespace(lines=[], loc_warn_list=[]) -%}
             {%- for fp in fingerprints -%}
               {%- set idx = fp.loc -%}
               {%- set location_name = locations_list[idx] if idx >= 0 and idx < locations_list | length else (idx | string) -%}
@@ -1833,6 +1836,7 @@ script:
                     {%- set is_wide = fp_span > 2 * tolerance -%}
                     {%- set s_readings = loc_stats.beacons.get(mac_upper, []) -%}
                     {%- set s_count = s_readings | length -%}
+                    {%- set ns_rm = namespace(min_gap=0, max_gap=0) -%}
                     {%- if s_count > 0 -%}
                       {# Extract RSSI values (readings are [rssi, timestamp] pairs, oldest first) #}
                       {%- set s_vals = s_readings | map(attribute=0) | list -%}
@@ -1881,13 +1885,19 @@ script:
                       {# Warning thresholds #}
                       {%- set high_sigma = s_stddev > (tolerance / 2) -%}
                       {%- set high_drift = (s_drift | abs) > tolerance -%}
+                      {# Flag if fp bounds extend beyond observed stat range #}
+                      {%- if 'min' in beacon -%}
+                        {%- set ns_rm.min_gap = (s_min | int) - (beacon.min | int) -%}
+                        {%- set ns_rm.max_gap = (beacon.max | int) - (s_max | int) -%}
+                      {%- endif -%}
                     {%- else -%}
                       {%- set high_sigma = false -%}
                       {%- set high_drift = false -%}
                     {%- endif -%}
-                    {%- set b_warnings = (1 if is_weak else 0) + (1 if high_sigma else 0) + (1 if high_drift else 0) + (1 if is_wide else 0) -%}
+                    {%- set has_range_mismatch = ns_rm.min_gap > 0 or ns_rm.max_gap > 0 -%}
+                    {%- set b_warnings = (1 if is_weak else 0) + (1 if high_sigma else 0) + (1 if high_drift else 0) + (1 if is_wide else 0) + (1 if has_range_mismatch else 0) -%}
                     {%- set ns.warnings = ns.warnings + b_warnings -%}
-                    {%- set warn_tag = '  ⚠' if b_warnings > 0 else '' -%}
+                    {%- set warn_tag = '  ' ~ ('⚠' * b_warnings) if b_warnings > 0 else '' -%}
                     {%- set bl = ['  ' ~ mac_upper ~ '  ' ~ bname ~ warn_tag] -%}
                     {%- set bl = bl + ['    Fingerprint: ' ~ fp_display] -%}
                     {%- if s_count > 0 -%}
@@ -1909,14 +1919,26 @@ script:
                     {%- if is_wide -%}
                       {%- set bl = bl + ['    ⚠ wide range (span=' ~ fp_span ~ ' dBm > 2×tol=' ~ (2 * tolerance) ~ ' dBm)'] -%}
                     {%- endif -%}
+                    {%- if has_range_mismatch -%}
+                      {%- set rm_parts = namespace(p=[]) -%}
+                      {%- if ns_rm.min_gap > 0 -%}{%- set rm_parts.p = rm_parts.p + ['fp min ' ~ ns_rm.min_gap ~ ' dBm below stat'] -%}{%- endif -%}
+                      {%- if ns_rm.max_gap > 0 -%}{%- set rm_parts.p = rm_parts.p + ['fp max ' ~ ns_rm.max_gap ~ ' dBm above stat'] -%}{%- endif -%}
+                      {%- set bl = bl + ['    ⚠ range outside stats (' ~ (rm_parts.p | join(', ')) ~ ')'] -%}
+                    {%- endif -%}
                     {%- set ns.beacon_lines = ns.beacon_lines + bl + [''] -%}
                   {%- endif -%}
                 {%- endif -%}
               {%- endfor -%}
               {%- set loc_summary = location_name | upper ~ ': ' ~ ns.active ~ ' active  (' ~ ns.total ~ ' total, ' ~ ns.weak ~ ' weak, ' ~ ns.locally_ignored ~ ' locally ignored' ~ (', ' ~ ns.warnings ~ ' warning' ~ ('s' if ns.warnings != 1 else '') if ns.warnings > 0 else '') ~ ')' -%}
+              {%- set report.loc_warn_list = report.loc_warn_list + [{'loc': location_name | upper, 'w': ns.warnings}] -%}
               {%- set report.lines = report.lines + ['', loc_summary, ''] + ns.beacon_lines -%}
             {%- endfor -%}
-            {{ report.lines | join('\n') }}
+            {%- set ns_sum = namespace(warn_parts=[]) -%}
+            {%- for item in report.loc_warn_list | sort(attribute='w') | reverse -%}
+              {%- set ns_sum.warn_parts = ns_sum.warn_parts + [item.loc ~ '(' ~ item.w ~ ')'] -%}
+            {%- endfor -%}
+            {%- set summary = ['', '--- Summary ---', 'Warnings:  ' ~ (ns_sum.warn_parts | join('  ')), '---'] -%}
+            {{ (summary + report.lines) | join('\n') }}
 
       - action: system_log.write
         data:

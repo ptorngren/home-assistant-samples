@@ -665,6 +665,8 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 
 **Edit Range** (double-tap beacon row in Beacon Breakdown): opens a popup to directly edit the `min` and `max` bounds for a single beacon. Use this to trim wide ranges caused by outlier merges without recapturing from scratch. If the beacon is in the current scan, an "Apply scan ± tolerance" button pre-fills the fields. An "Apply P10/P90" button sets the range from the 10th/90th percentile of accumulated scan history (available when ≥ 10 samples exist), cutting outlier readings that inflated the range. Saves back to the fingerprint immediately.
 
+**Reset all** (hold location header in Beacon Breakdown): resets all beacons in the location — including locally ignored ones. In **min/max mode**: applies P10/P90 from scan history if ≥ 10 samples exist, otherwise resets to `[midpoint − tolerance, midpoint + tolerance]`. In **mean mode**: resets to current scan RSSI if present, otherwise leaves unchanged. Use this after accumulating sufficient statistics to collapse all ranges to well-calibrated bounds in one step.
+
 **Reset** (hold beacon row): mode-dependent. In **mean mode**: collapses to the current scan RSSI (no-op if absent from scan). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan). Use when at the location with a fresh scan. To trim wide ranges without a fresh scan, use the Range Editor's midpoint button instead.
 
 ### Switching Modes
@@ -681,7 +683,7 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 3. Return to each location repeatedly and tap the header to merge (expand bounds from repeated scans), until the ranges appear stable across visits
 4. Check Beacon Breakdown: FP column shows `min/max` ranges; Δ shows 0 when matched
 5. Monitor the nσ column — as samples accumulate across merges, a high standard deviation flags beacons with inconsistent signal and narrows your ignore candidates
-6. Trim wide ranges without recapturing: double-tap a beacon row to open the Range Editor. The "Apply P10/P90" button sets min/max from the 10th/90th percentile of accumulated history (available when ≥ 10 samples exist), cutting outlier readings that inflated the range
+6. Once ≥ 10 samples exist per beacon, hold the location header in Beacon Breakdown to apply P10/P90 to all beacons at once — cutting outlier readings in a single action. For per-beacon control, double-tap a beacon row to open the Range Editor and use the "Apply P10/P90" button instead. Run **Beacon Status** (Settings card) to get a per-beacon report showing which ranges extend beyond observed statistics and are candidates for trimming.
 7. Verify scores stabilize — narrow ranges indicate well-captured beacons; wide ranges indicate high signal variance. If a beacon's range grows very wide, consider ignoring it locally or globally — a wide range means the beacon is unreliable and contributes little to accurate detection
 
 ## Mean Mode
@@ -823,7 +825,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections.
    - Globally ignored beacons are excluded; locally ignored beacons always appear with strikethrough, whether or not they are present in the current scan
    - **Tap location header** to merge all existing fingerprint beacons for that location from the current scan and record the scan to statistics
-   - **Hold location header** to reset all beacons to current scan values (collapses min/max ranges to a single point); also records the scan to statistics
+   - **Hold location header** to reset all beacons in the location (including locally ignored ones). In **min/max mode**: applies P10/P90 from scan history if ≥ 10 samples exist, otherwise resets to `[midpoint − tolerance, midpoint + tolerance]`. In **mean mode**: resets to current scan RSSI if present, otherwise leaves unchanged. Also records the scan to statistics.
    - **Tap a beacon row** to merge that beacon from the current scan
    - **Double-tap a beacon row** to open the Range Editor — directly edit the min/max bounds for that beacon. Pre-filled from the fingerprint. An "Apply midpoint X dBm:" button trims the range to a symmetrical window around the current centre (no scan needed). An "Apply P10/P90" button sets the range to the 10th/90th percentile of accumulated scan history (enabled when ≥ 10 samples exist; disabled when bounds already match). Min/max are auto-swapped if inverted.
    - **Hold a beacon row** to reset that beacon from the current scan. In **mean mode**: collapses to the current scan RSSI (no-op if absent). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan).
