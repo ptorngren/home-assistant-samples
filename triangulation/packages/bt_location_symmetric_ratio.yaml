@@ -36,6 +36,7 @@ script:
 
       # Algorithm parameters
       rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
+      distance_weighted_scoring: "{{ states('input_boolean.bt_distance_weighted_scoring_scoring') | bool(false) }}"
 
       # Symmetric ratio denominator: count of beacons in current scan that are active (non-ignored) and known
       # Calculate fresh from fingerprints to avoid sensor stale data race conditions
@@ -93,14 +94,39 @@ script:
               {%- if fp_mac in current_scan_map -%}
                 {%- set current_rssi = current_scan_map[fp_mac] -%}
                 {%- if 'min' in beacon -%}
-                  {# Min/max entry: strict bounds match, no tolerance #}
-                  {%- if current_rssi >= beacon.min and current_rssi <= beacon.max -%}
-                    {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                  {# Min/max entry #}
+                  {%- if distance_weighted_scoring -%}
+                    {%- set midpoint = (beacon.min + beacon.max) / 2.0 -%}
+                    {%- set half_span = (beacon.max - beacon.min) / 2.0 -%}
+                    {%- if half_span > 0 -%}
+                      {%- set raw_quality = 1.0 - ((current_rssi - midpoint) | abs / half_span) -%}
+                      {%- set quality = raw_quality if raw_quality > 0 else 0 -%}
+                    {%- else -%}
+                      {%- set quality = 1.0 if current_rssi == beacon.min else 0 -%}
+                    {%- endif -%}
+                    {%- set ns.matched_beacons = ns.matched_beacons + quality -%}
+                  {%- else -%}
+                    {# Binary: strict bounds match, no tolerance #}
+                    {%- if current_rssi >= beacon.min and current_rssi <= beacon.max -%}
+                      {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                    {%- endif -%}
                   {%- endif -%}
                 {%- else -%}
-                  {# Single-RSSI entry: tolerance match #}
-                  {%- if (current_rssi - beacon.rssi) | abs <= rssi_tolerance -%}
-                    {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                  {# Single-RSSI entry #}
+                  {%- if distance_weighted_scoring -%}
+                    {%- set half_span = rssi_tolerance | float -%}
+                    {%- if half_span > 0 -%}
+                      {%- set raw_quality = 1.0 - ((current_rssi - beacon.rssi) | abs / half_span) -%}
+                      {%- set quality = raw_quality if raw_quality > 0 else 0 -%}
+                    {%- else -%}
+                      {%- set quality = 1.0 if current_rssi == beacon.rssi else 0 -%}
+                    {%- endif -%}
+                    {%- set ns.matched_beacons = ns.matched_beacons + quality -%}
+                  {%- else -%}
+                    {# Binary: tolerance match #}
+                    {%- if (current_rssi - beacon.rssi) | abs <= rssi_tolerance -%}
+                      {%- set ns.matched_beacons = ns.matched_beacons + 1 -%}
+                    {%- endif -%}
                   {%- endif -%}
                 {%- endif -%}
               {%- endif -%}
@@ -121,7 +147,7 @@ script:
           {%- endif -%}
 
           {# Store results for this location #}
-          {%- set ns.scores = ns.scores | combine({location: {"matched": ns.matched_beacons, "missing": missing_beacons, "total_score": total_score}}) -%}
+          {%- set ns.scores = ns.scores | combine({location: {"matched": ns.matched_beacons, "missing": missing_beacons, "total": ns.total_fingerprint_beacons, "total_score": total_score}}) -%}
         {%- endfor -%}
         {{ ns.scores }}
 

@@ -114,6 +114,13 @@ input_boolean:
     # When OFF (default): existing running-mean behavior
     # Mode detection is data-driven: presence of 'min' key in beacon dict determines matching
     # Mixed fingerprints work per-entry — switching OFF does not revert existing min/max entries
+  bt_distance_weighted_scoring:
+    name: "Distance-Weighted Scoring"
+    icon: mdi:chart-bell-curve
+    # When ON: matched score is a continuous quality (0.0–1.0) based on how centered scan RSSI
+    # is within the fingerprint range — midpoint scores 1.0, edges score 0.0, outside scores 0.
+    # Breaks ties between locations that share beacons but at different RSSI ranges.
+    # When OFF (default): binary matching — in range = 1, out of range = 0
 
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
@@ -163,7 +170,7 @@ command_line:
         - statistics
       value_template: "{% if value_json.statistics %}{{ value_json.statistics | length }}{% else %}0{% endif %}"
       # Per-beacon RSSI sample history from capture/merge operations (file-backed, unlimited size)
-      # Format: statistics[].loc + beacons{MAC: [[rssi, timestamp], ...]}
+      # Format: statistics[].loc + beacons{MAC: [[rssi, timestamp], ...]} — null rssi = beacon absent in that session
       # Dashboard access: state_attr('sensor.bt_merge_statistics', 'statistics')
 
 # Computed sensors (Template integration)
@@ -1680,9 +1687,11 @@ script:
                   {%- set was_ignored = beacon.get('ignored', false) -%}
                   {%- if minmax_mode -%}
                     {%- set readings = loc_stats_map.get(mac_upper, []) -%}
-                    {%- set s_count = readings | length -%}
+                    {%- set ns_rv = namespace(vals=[]) -%}
+                    {%- for r in readings -%}{%- if r[0] is not none -%}{%- set ns_rv.vals = ns_rv.vals + [r[0]] -%}{%- endif -%}{%- endfor -%}
+                    {%- set s_count = ns_rv.vals | length -%}
                     {%- if s_count >= 10 -%}
-                      {%- set sorted_vals = readings | map(attribute=0) | list | sort -%}
+                      {%- set sorted_vals = ns_rv.vals | sort -%}
                       {%- set p10 = sorted_vals[(s_count * 0.1) | int] | int -%}
                       {%- set p90 = sorted_vals[(s_count * 0.9) | int] | int -%}
                       {%- set reset_beacon = {'min': p10, 'max': p90} -%}
@@ -1744,6 +1753,17 @@ script:
               {%- endif -%}
             {%- endfor -%}
             {{ ns.map }}
+          fp_mac_set: |
+            {%- set ns = namespace(macs=[]) -%}
+            {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+            {%- for fp in fingerprints -%}
+              {%- if fp.loc | int == location_index | int -%}
+                {%- for mac in fp.beacons.keys() -%}
+                  {%- set ns.macs = ns.macs + [mac | upper] -%}
+                {%- endfor -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.macs }}
 
       - variables:
           updated_statistics: |
@@ -1754,15 +1774,17 @@ script:
                 {%- set ns2 = namespace(beacons={}) -%}
                 {%- for mac, readings in entry.beacons.items() -%}
                   {%- set mac_upper = mac | upper -%}
-                  {%- if mac_upper in scan_map -%}
-                    {%- set new_readings = (readings + [[scan_map[mac_upper], ts]])[-50:] -%}
+                  {%- if mac_upper in fp_mac_set -%}
+                    {%- if mac_upper in scan_map -%}
+                      {%- set new_readings = (readings + [[scan_map[mac_upper], ts]])[-50:] -%}
+                    {%- else -%}
+                      {%- set new_readings = (readings + [[none, ts]])[-50:] -%}
+                    {%- endif -%}
                     {%- set ns2.beacons = ns2.beacons | combine({mac_upper: new_readings}) -%}
-                  {%- else -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({mac_upper: readings}) -%}
                   {%- endif -%}
                 {%- endfor -%}
                 {%- for mac_upper, rssi in scan_map.items() -%}
-                  {%- if mac_upper not in entry.beacons -%}
+                  {%- if mac_upper not in entry.beacons and mac_upper in fp_mac_set -%}
                     {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
                   {%- endif -%}
                 {%- endfor -%}
@@ -1774,7 +1796,9 @@ script:
             {%- if not ns.found -%}
               {%- set ns2 = namespace(beacons={}) -%}
               {%- for mac_upper, rssi in scan_map.items() -%}
-                {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
+                {%- if mac_upper in fp_mac_set -%}
+                  {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
+                {%- endif -%}
               {%- endfor -%}
               {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
             {%- endif -%}
@@ -1835,11 +1859,19 @@ script:
                     {%- set fp_span = ((beacon.max | int(0)) - (beacon.min | int(0))) | abs if 'min' in beacon else 0 -%}
                     {%- set is_wide = fp_span > 2 * tolerance -%}
                     {%- set s_readings = loc_stats.beacons.get(mac_upper, []) -%}
-                    {%- set s_count = s_readings | length -%}
+                    {%- set s_sessions = s_readings | length -%}
+                    {%- set ns_miss = namespace(n=0) -%}
+                    {%- for r in s_readings -%}{%- if r[0] is none -%}{%- set ns_miss.n = ns_miss.n + 1 -%}{%- endif -%}{%- endfor -%}
+                    {%- set s_missing = ns_miss.n -%}
+                    {%- set missing_pct = (s_missing * 100 / s_sessions) | round | int if s_sessions > 0 else 0 -%}
+                    {%- set high_missing = s_sessions > 0 and missing_pct > 30 -%}
                     {%- set ns_rm = namespace(min_gap=0, max_gap=0) -%}
+                    {%- set s_count = s_sessions - s_missing -%}
                     {%- if s_count > 0 -%}
-                      {# Extract RSSI values (readings are [rssi, timestamp] pairs, oldest first) #}
-                      {%- set s_vals = s_readings | map(attribute=0) | list -%}
+                      {# Extract RSSI values, skipping null (absent) entries #}
+                      {%- set ns_vals = namespace(vals=[]) -%}
+                      {%- for r in s_readings -%}{%- if r[0] is not none -%}{%- set ns_vals.vals = ns_vals.vals + [r[0]] -%}{%- endif -%}{%- endfor -%}
+                      {%- set s_vals = ns_vals.vals -%}
                       {# Mean #}
                       {%- set s_mean = (s_vals | sum) / s_count -%}
                       {# Standard deviation (population) #}
@@ -1895,17 +1927,20 @@ script:
                       {%- set high_drift = false -%}
                     {%- endif -%}
                     {%- set has_range_mismatch = ns_rm.min_gap > 0 or ns_rm.max_gap > 0 -%}
-                    {%- set b_warnings = (1 if is_weak else 0) + (1 if high_sigma else 0) + (1 if high_drift else 0) + (1 if is_wide else 0) + (1 if has_range_mismatch else 0) -%}
+                    {%- set b_warnings = (1 if is_weak else 0) + (1 if high_sigma else 0) + (1 if high_drift else 0) + (1 if is_wide else 0) + (1 if has_range_mismatch else 0) + (1 if high_missing else 0) -%}
                     {%- set ns.warnings = ns.warnings + b_warnings -%}
                     {%- set warn_tag = '  ' ~ ('⚠' * b_warnings) if b_warnings > 0 else '' -%}
                     {%- set bl = ['  ' ~ mac_upper ~ '  ' ~ bname ~ warn_tag] -%}
                     {%- set bl = bl + ['    Fingerprint: ' ~ fp_display] -%}
                     {%- if s_count > 0 -%}
-                      {%- set bl = bl + ['    Variation:     deviation=' ~ s_stddev ~ ' dBm  drift=' ~ s_drift_str ~ ' dBm'] -%}
-                      {%- set bl = bl + ['    Distribution:  ' ~ (ns_hline.parts | join('  ')) ~ '  dBm'] -%}
+                      {%- set bl = bl + ['    Variation: deviation=' ~ s_stddev ~ ' dBm  drift=' ~ s_drift_str ~ ' dBm'] -%}
+                      {%- set bl = bl + ['    Distribution: ' ~ (ns_hline.parts | join(' ')) ~ ' dBm'] -%}
                       {%- set bl = bl + ['    Samples: ' ~ s_count ~ ' samples, ' ~ s_span_days ~ ' days (' ~ s_first_date ~ '-' ~ s_last_date ~ ')'] -%}
                     {%- else -%}
                       {%- set bl = bl + ['    Samples: 0 samples (no statistics yet)'] -%}
+                    {%- endif -%}
+                    {%- if s_sessions > 0 -%}
+                      {%- set bl = bl + ['    Missing: ' ~ s_missing ~ ' of ' ~ s_sessions ~ ' sessions (' ~ missing_pct ~ '%)' ~ ('  ⚠ intermittent' if high_missing else '')] -%}
                     {%- endif -%}
                     {%- if is_weak -%}
                       {%- set bl = bl + ['    ⚠ weak signal (fingerprint ' ~ rssi ~ ' dBm < threshold ' ~ weak_signal_threshold ~ ' dBm)'] -%}
@@ -1924,6 +1959,9 @@ script:
                       {%- if ns_rm.min_gap > 0 -%}{%- set rm_parts.p = rm_parts.p + ['fp min ' ~ ns_rm.min_gap ~ ' dBm below stat'] -%}{%- endif -%}
                       {%- if ns_rm.max_gap > 0 -%}{%- set rm_parts.p = rm_parts.p + ['fp max ' ~ ns_rm.max_gap ~ ' dBm above stat'] -%}{%- endif -%}
                       {%- set bl = bl + ['    ⚠ range outside stats (' ~ (rm_parts.p | join(', ')) ~ ')'] -%}
+                    {%- endif -%}
+                    {%- if high_missing -%}
+                      {%- set bl = bl + ['    ⚠ intermittent (' ~ missing_pct ~ '% missing across ' ~ s_sessions ~ ' sessions)'] -%}
                     {%- endif -%}
                     {%- set ns.beacon_lines = ns.beacon_lines + bl + [''] -%}
                   {%- endif -%}

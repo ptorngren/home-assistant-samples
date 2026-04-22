@@ -706,8 +706,9 @@ Statistics are accumulated each time you tap, double-tap, or hold a location hea
 **How to use them:**
 - **High standard deviation** — the beacon's signal varies significantly across visits; consider ignoring it globally
 - **Wavy underline on nσ** — σ exceeds tolerance/2, meaning the 95% confidence interval of the signal is wider than the matching window; the beacon is likely causing missed detections
+- **Intermittent beacon** — beacon was missing from the scan in more than 30% of sessions; it adds noise to detection without contributing reliably; consider removing it from the fingerprint
 - **P10/P90 in Range Editor** — once ≥ 10 samples exist, use this to set min/max from the 10th/90th percentile of actual observations, trimming outliers that inflated the range
-- **Beacon Status report** — click "Beacon Status" in Settings to write a per-beacon report to the HA log, including a drift warning computed from the deviation; useful for a quick health check without reading the dashboard
+- **Beacon Status report** — click "Beacon Status" in Settings to write a per-beacon report to the HA log, including warnings for deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place
 
 Use **Clear Statistics** (Settings) to reset all history after relocating a beacon, replacing a device, or after a major environment change — old readings no longer represent current conditions.
 
@@ -822,7 +823,7 @@ The main working view for capturing and curating location fingerprints. Place yo
 2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). Columns: MAC · FP · Scan · Δ · nσ · Name
    - FP column shows `min/max` range for min/max entries, or a single value for mean entries; **underlined with a wavy warning-color line** when the min/max range exceeds 2 × RSSI tolerance — indicates high signal variance; beacon may be unreliable and reduce detection accuracy
    - Δ column: for mean entries, absolute deviation from stored RSSI; for min/max entries, distance outside the bounds (0 when matched)
-   - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections.
+   - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections. Missing rate and intermittent flag are shown in the Beacon Status report, not in this column.
    - Globally ignored beacons are excluded; locally ignored beacons always appear with strikethrough, whether or not they are present in the current scan
    - **Tap location header** to merge all existing fingerprint beacons for that location from the current scan and record the scan to statistics
    - **Hold location header** to reset all beacons in the location (including locally ignored ones). In **min/max mode**: applies P10/P90 from scan history if ≥ 10 samples exist, otherwise resets to `[midpoint − tolerance, midpoint + tolerance]`. In **mean mode**: resets to current scan RSSI if present, otherwise leaves unchanged. Also records the scan to statistics.
@@ -834,6 +835,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
    - **Min/Max Mode** — When ON, new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean. See Min/Max Mode section below. When OFF (default), standard running-mean behavior. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
+   - **Distance-Weighted Scoring** — When ON, each beacon's match contribution is a continuous quality score (0.0–1.0) based on how centered the scan RSSI is within the fingerprint range: midpoint = 1.0, edges = 0.0, outside = 0. When OFF (default), binary matching — in range = 1, out of range = 0. Adds scoring resolution within ranges and can break ties between locations that share beacons at different RSSI levels.
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
    - **Include Random MACs** — Toggle controls whether rotating/privacy-mode MAC addresses are included in scan processing. OFF (default) = exclude rotating MACs (iPhones, Android privacy mode) — they won't appear in Latest BT Scan or All Active Beacons. ON = include all MACs; rotating MACs appear in amber italic so they can be identified. See "Random MAC Filtering" section for details.
 
@@ -911,7 +913,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 ### Task 7: Check Beacon Signal Health
 
-Click the **"Beacon Status"** button to write a report to the HA log (Developer Tools → Logs). The report shows each active beacon per location with its fingerprint value, signal statistics, and any warnings about deviation, drift, or range quality. Useful for a quick health check without opening the dashboard.
+Click the **"Beacon Status"** button to write a report to the HA log (Developer Tools → Logs). The report shows each active beacon per location with its fingerprint value, rich signal statistics, and warnings about deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place.
 
 ### Task 8: Clear Scan History Statistics
 
