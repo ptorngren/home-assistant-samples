@@ -84,8 +84,15 @@ template:
       - name: "Screensaver Display Wind Speed"
         unique_id: screensaver_display_wind_speed
         unit_of_measurement: 'm/s'
-        availability: "{{ states('sensor.relax_vindmatare_wind_speed') | float(-1) > 0.1 }}"
+        availability: "{{ states('sensor.relax_vindmatare_wind_speed') | float(-1) >= 0 }}"
         state: "{{ (states('sensor.relax_vindmatare_wind_speed') | float / 3.6) | round(1) }}"
+
+      - name: "Screensaver Display Wind Direction"
+        unique_id: screensaver_display_wind_direction
+        availability: "{{ states('sensor.relax_vindmatare_wind_direction') not in ['unavailable', 'unknown', 'none'] }}"
+        state: >
+          {{ {'n': 'N', 'ne': 'NO', 'e': 'O', 'se': 'SO', 's': 'S', 'sw': 'SV', 'w': 'V', 'nw': 'NV'}
+             [states('sensor.relax_vindmatare_wind_direction')] | default('') }}
 
 # ------------------------------------------------------------------
 # SCRIPTS

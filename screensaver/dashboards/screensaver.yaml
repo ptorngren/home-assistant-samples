@@ -131,15 +131,19 @@ decluttering_templates:
           [[[
             const humidity = parseFloat(states['sensor.screensaver_display_humidity']?.state)?.toFixed(0);
             const wind = states['sensor.screensaver_display_wind_speed']?.state;
-          
+            const dir = states['sensor.screensaver_display_wind_direction']?.state;
+
             const humidityValid = humidity && humidity !== 'unavailable' && humidity !== 'unknown';
             const windValid = wind && wind !== 'unavailable' && wind !== 'unknown';
-          
-            if (!humidityValid && !windValid) return '';
-            if (!humidityValid) return `${wind} m/s`;
-            if (!windValid) return `${humidity} %`;
-          
-            return `${humidity} % · ${wind} m/s`;
+            const dirValid = dir && dir !== 'unavailable' && dir !== 'unknown' && parseFloat(wind) > 0;
+
+            const windStr = windValid ? (dirValid ? `${wind} m/s ${dir}` : `${wind} m/s`) : null;
+
+            if (!humidityValid && !windStr) return '';
+            if (!humidityValid) return windStr;
+            if (!windStr) return `${humidity} %`;
+
+            return `${humidity} % · ${windStr}`;
           ]]]
 
         # Next alarm time for the active device (device-specific, via HA Companion App)
