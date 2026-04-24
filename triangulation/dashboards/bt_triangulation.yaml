@@ -130,13 +130,14 @@ decluttering_templates:
                     "layout": "vertical",
                     "show_icon": false,
                     "show_name": true,
-                    "name": location_name | upper ~ " " ~ matched ~ "/" ~ total ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
+                    "name": location_name ~ " " ~ matched ~ "/" ~ total ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
                     "tap_action": {
                       "action": "perform-action",
                       "perform_action": "script.merge_bt_fingerprint",
                       "data": {
                         "location_index": location_index,
-                        "rssi_only": true
+                        "rssi_only": true,
+                        "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"
                       }
                     },
                     "double_tap_action": {
@@ -144,14 +145,16 @@ decluttering_templates:
                       "perform_action": "script.merge_bt_fingerprint",
                       "data": {
                         "location_index": location_index,
-                        "rssi_only": false
+                        "rssi_only": false,
+                        "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"
                       }
                     },
                     "hold_action": {
                       "action": "perform-action",
                       "perform_action": "script.capture_bt_fingerprint",
                       "data": {
-                        "location_index": location_index
+                        "location_index": location_index,
+                        "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"
                       }
                     },
                     "styles": {
@@ -642,17 +645,16 @@ decluttering_templates:
             if (data.length === 0) return "No data";
 
             const sortedLocs = [...locs].sort();
-            const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
             let table = "<table class='matrix-table'><thead><tr><th class='sticky-col'></th>";
-            sortedLocs.forEach(l => table += `<th>${cap(l)}</th>`);
+            sortedLocs.forEach(loc => table += `<th>${loc}</th>`);
             table += "</tr></thead><tbody>";
 
             const callSvc = (val) => hass?.callService('input_text', 'set_value', {entity_id: 'input_text.bt_matrix_selected_pair', value: val});
 
             data.forEach(row => {
               table += "<tr>";
-              table += `<td class='sticky-col'>${cap(row.src)}</td>`;
+              table += `<td class='sticky-col'>${row.src}</td>`;
               sortedLocs.forEach(loc => {
                 const s = row.scores[loc] || 0;
                 const isDiag = row.src === loc;
@@ -787,12 +789,10 @@ decluttering_templates:
 
               const overlaps = rowEntry.overlaps?.[colLoc] || [];
               const score = rowEntry.scores?.[colLoc] || 0;
-              const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+              if (overlaps.length === 0) return `<div style='padding:8px'>No overlapping beacons between ${rowLoc} and ${colLoc}</div>`;
 
-              if (overlaps.length === 0) return `<div style='padding:8px'>No overlapping beacons between ${cap(rowLoc)} and ${cap(colLoc)}</div>`;
-
-              let out = `<div style='margin-bottom:8px;font-weight:bold'>${cap(rowLoc)} → ${cap(colLoc)} — score ${score.toFixed(2)} — ${overlaps.length} overlapping beacon${overlaps.length > 1 ? 's' : ''}</div>`;
-              out += `<table class='drilldown-table'><thead><tr><th>Beacon</th><th>${cap(rowLoc)}</th><th>${cap(colLoc)}</th><th>Overlap</th></tr></thead><tbody>`;
+              let out = `<div style='margin-bottom:8px;font-weight:bold'>${rowLoc} → ${colLoc} — score ${score.toFixed(2)} — ${overlaps.length} overlapping beacon${overlaps.length > 1 ? 's' : ''}</div>`;
+              out += `<table class='drilldown-table'><thead><tr><th>Beacon</th><th>${rowLoc}</th><th>${colLoc}</th><th>Overlap</th></tr></thead><tbody>`;
 
               const cv = (v, lo, hi) => (v >= lo && v <= hi)
                 ? `<code style='color:var(--warning-color)'>${v}</code>`
@@ -882,15 +882,15 @@ decluttering_templates:
 
           {%- for loc in sorted_locs[:top_n] -%}
             {%- set loc_header_idx = name_to_idx.get(loc.name, -1) -%}
-            {%- set header_tap = {"action": "perform-action", "perform_action": "script.merge_bt_fingerprint", "data": {"location_index": loc_header_idx, "rssi_only": true}} -%}
-            {%- set header_hold = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_all", "data": {"location_index": loc_header_idx}} -%}
+            {%- set header_tap = {"action": "perform-action", "perform_action": "script.merge_bt_fingerprint", "data": {"location_index": loc_header_idx, "rssi_only": true, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
+            {%- set header_hold = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_all", "data": {"location_index": loc_header_idx, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
             {# Add location header card #}
             {%- set ns.cards = ns.cards + [{
               "type": "custom:button-card",
               "layout": "vertical",
               "show_icon": false,
               "show_name": true,
-              "name": loc.name | upper ~ " " ~ loc.matched ~ "/" ~ loc.total ~ " [" ~ known_in_scan ~ "] • " ~ (loc.score | round(3) | string),
+              "name": loc.name ~ " " ~ loc.matched ~ "/" ~ loc.total ~ " [" ~ known_in_scan ~ "] • " ~ (loc.score | round(3) | string),
               "tap_action": header_tap,
               "hold_action": header_hold,
               "styles": {
@@ -954,12 +954,11 @@ decluttering_templates:
                     {%- set is_in_scan = mac_upper in ns.scan_map -%}
                     {%- set scan_rssi = ns.scan_map[mac_upper] if is_in_scan else none -%}
                     {%- set bname = names_map.get(mac_upper, '?') -%}
-                    {%- set merge_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_merge", "data": {"location_index": loc_idx, "mac": mac_upper}} -%}
-                    {%- set reset_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_minmax", "data": {"location_index": loc_idx, "mac": mac_upper}} -%}
+                    {%- set merge_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_merge", "data": {"location_index": loc_idx, "mac": mac_upper, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
+                    {%- set reset_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_minmax", "data": {"location_index": loc_idx, "mac": mac_upper, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
                     {%- set fp_min = beacon.min if 'min' in beacon else (fp_rssi - tolerance) -%}
                     {%- set fp_max = beacon.max if 'max' in beacon else (fp_rssi + tolerance) -%}
-                    {%- set scan_ref = scan_rssi | string if is_in_scan else '' -%}
-                    {%- set range_edit_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_range_editor_open", "data": {"browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]", "location_index": loc_idx, "mac": mac_upper, "beacon_name": bname, "current_min": fp_min, "current_max": fp_max, "scan_rssi": scan_ref, "tolerance": tolerance}} -%}
+                    {%- set range_edit_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_range_editor_open", "data": {"browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]", "location_index": loc_idx, "mac": mac_upper, "beacon_name": bname, "current_min": fp_min, "current_max": fp_max, "tolerance": tolerance}} -%}
                     {%- set s_readings = ns_stats.beacons.get(mac_upper, []) -%}
                     {%- set ns_sv = namespace(vals=[]) -%}
                     {%- for r in s_readings -%}{%- if r[0] is not none -%}{%- set ns_sv.vals = ns_sv.vals + [r[0]] -%}{%- endif -%}{%- endfor -%}
@@ -974,86 +973,34 @@ decluttering_templates:
                     {%- else -%}
                       {%- set stats_val = '' -%}
                     {%- endif -%}
-                    {%- if is_locally_ignored -%}
-                      {%- if is_in_scan -%}
-                        {%- set is_match = (scan_rssi >= beacon.min and scan_rssi <= beacon.max) if 'min' in beacon else ((scan_rssi - fp_rssi) | abs <= tolerance) -%}
-                        {%- set diff = ([0, beacon.min - scan_rssi, scan_rssi - beacon.max] | max) if 'min' in beacon else ((scan_rssi - fp_rssi) | abs) -%}
-                        {%- set ns.cards = ns.cards + [{
-                          "type": "custom:button-card",
-                          "show_icon": false,
-                          "show_name": false,
-                          "tap_action": merge_tap,
-                          "double_tap_action": range_edit_tap,
-                          "hold_action": reset_tap,
-                          "styles": {
-                            "card": [{"height": "20px"}, {"padding": "0px 8px"}, {"border": "none"}, {"box-shadow": "none"}, {"background": color_beacon_rssi_match if is_match else color_beacon_in_scan}],
-                            "grid": [{"grid-template-columns": "125px 52px 36px 28px 44px 1fr"}, {"grid-template-areas": "'mac fp scan diff stats name'"}],
-                            "custom_fields": {
-                              "mac":    [{"font-size": "12px"}, {"justify-self": "start"},  {"align-self": "center"}, {"font-family": "monospace"}, {"text-decoration": "line-through"}],
-                              "fp":     [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if is_high_span else []),
-                              "scan":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"text-decoration": "line-through"}],
-                              "diff":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"text-decoration": "line-through"}],
-                              "stats":  [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if s_count > 0 and s_stddev > (tolerance / 2) else []),
-                              "name":   [{"font-size": "11px"}, {"justify-self": "start"},  {"align-self": "center"}, {"padding": "0 10px"}, {"overflow": "hidden"}, {"text-overflow": "ellipsis"}, {"color": "var(--secondary-text-color)"}, {"text-decoration": "line-through"}]
-                            }
-                          },
-                          "custom_fields": {
-                            "mac": mac_upper,
-                            "fp":  "<span style='text-decoration:line-through'>" ~ fp_display ~ "</span>",
-                            "scan": scan_rssi | string,
-                            "diff": diff | string,
-                            "stats": "<span style='text-decoration:line-through'>" ~ stats_val ~ "</span>",
-                            "name": bname
-                          }
-                        }] -%}
-                      {%- endif -%}
-                    {%- elif is_in_scan -%}
-                      {%- set is_match = (scan_rssi >= beacon.min and scan_rssi <= beacon.max) if 'min' in beacon else ((scan_rssi - fp_rssi) | abs <= tolerance) -%}
-                      {%- set diff = ([0, beacon.min - scan_rssi, scan_rssi - beacon.max] | max) if 'min' in beacon else ((scan_rssi - fp_rssi) | abs) -%}
-                      {%- set ns.cards = ns.cards + [{
-                        "type": "custom:button-card",
-                        "show_icon": false,
-                        "show_name": false,
-                        "tap_action": merge_tap,
-                        "double_tap_action": range_edit_tap,
-                        "hold_action": reset_tap,
-                        "styles": {
-                          "card": [{"height": "20px"}, {"padding": "0px 8px"}, {"border": "none"}, {"box-shadow": "none"}, {"background": color_beacon_rssi_match if is_match else color_beacon_in_scan}],
-                          "grid": [{"grid-template-columns": "125px 52px 36px 28px 44px 1fr"}, {"grid-template-areas": "'mac fp scan diff stats name'"}],
-                          "custom_fields": {
-                            "mac":    [{"font-size": "12px"}, {"justify-self": "start"},  {"align-self": "center"}, {"font-family": "monospace"}],
-                            "fp":     [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if is_high_span else []),
-                            "scan":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}],
-                            "diff":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}],
-                            "stats":  [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if s_count > 0 and s_stddev > (tolerance / 2) else []),
-                            "name":   [{"font-size": "11px"}, {"justify-self": "start"},  {"align-self": "center"}, {"padding": "0 10px"}, {"overflow": "hidden"}, {"text-overflow": "ellipsis"}, {"color": "var(--secondary-text-color)"}]
-                          }
-                        },
-                        "custom_fields": {"mac": mac_upper, "fp": fp_display, "scan": scan_rssi | string, "diff": diff | string, "stats": stats_val, "name": bname}
-                      }] -%}
-                    {%- else -%}
-                      {%- set ns.cards = ns.cards + [{
-                        "type": "custom:button-card",
-                        "show_icon": false,
-                        "show_name": false,
-                        "tap_action": {"action": "none"},
-                        "double_tap_action": range_edit_tap,
-                        "hold_action": reset_tap,
-                        "styles": {
-                          "card": [{"height": "20px"}, {"padding": "0px 8px"}, {"border": "none"}, {"box-shadow": "none"}, {"background": "none"}],
-                          "grid": [{"grid-template-columns": "125px 52px 36px 28px 44px 1fr"}, {"grid-template-areas": "'mac fp scan diff stats name'"}],
-                          "custom_fields": {
-                            "mac":    [{"font-size": "12px"}, {"justify-self": "start"},  {"align-self": "center"}, {"font-family": "monospace"}],
-                            "fp":     [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if is_high_span else []),
-                            "scan":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}],
-                            "diff":   [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}],
-                            "stats":  [{"font-size": "12px"}, {"justify-self": "end"},    {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if s_count > 0 and s_stddev > (tolerance / 2) else []),
-                            "name":   [{"font-size": "11px"}, {"justify-self": "start"},  {"align-self": "center"}, {"padding": "0 10px"}, {"overflow": "hidden"}, {"text-overflow": "ellipsis"}, {"color": "var(--secondary-text-color)"}]
-                          }
-                        },
-                        "custom_fields": {"mac": mac_upper, "fp": fp_display, "scan": "", "diff": "—", "stats": stats_val, "name": bname}
-                      }] -%}
-                    {%- endif -%}
+                    {%- set is_match = (scan_rssi >= beacon.min and scan_rssi <= beacon.max) if ('min' in beacon and is_in_scan) else ((scan_rssi - fp_rssi) | abs <= tolerance) if is_in_scan else false -%}
+                    {%- set diff = ([0, beacon.min - scan_rssi, scan_rssi - beacon.max] | max) if ('min' in beacon and is_in_scan) else ((scan_rssi - fp_rssi) | abs) if is_in_scan else 0 -%}
+                    {%- set lt = [{"text-decoration": "line-through"}] -%}
+                    {%- set card_bg = (color_beacon_rssi_match if is_match else color_beacon_in_scan) if is_in_scan else "none" -%}
+                    {%- set card_tap = merge_tap if is_in_scan else {"action": "none"} -%}
+                    {%- set fp_cell = ("<span style='text-decoration:line-through'>" ~ fp_display ~ "</span>") if is_locally_ignored else fp_display -%}
+                    {%- set stats_cell = ("<span style='text-decoration:line-through'>" ~ stats_val ~ "</span>") if is_locally_ignored else stats_val -%}
+                    {%- set ns.cards = ns.cards + [{
+                      "type": "custom:button-card",
+                      "show_icon": false,
+                      "show_name": false,
+                      "tap_action": card_tap,
+                      "double_tap_action": range_edit_tap,
+                      "hold_action": reset_tap,
+                      "styles": {
+                        "card": [{"height": "20px"}, {"padding": "0px 8px"}, {"border": "none"}, {"box-shadow": "none"}, {"background": card_bg}],
+                        "grid": [{"grid-template-columns": "125px 52px 36px 28px 44px 1fr"}, {"grid-template-areas": "'mac fp scan diff stats name'"}],
+                        "custom_fields": {
+                          "mac":   [{"font-size": "12px"}, {"justify-self": "start"}, {"align-self": "center"}, {"font-family": "monospace"}] + (lt if is_locally_ignored else []),
+                          "fp":    [{"font-size": "12px"}, {"justify-self": "end"},   {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if is_high_span else []),
+                          "scan":  [{"font-size": "12px"}, {"justify-self": "end"},   {"align-self": "center"}, {"font-family": "monospace"}] + (lt if is_locally_ignored else []),
+                          "diff":  [{"font-size": "12px"}, {"justify-self": "end"},   {"align-self": "center"}, {"font-family": "monospace"}] + (lt if is_locally_ignored else []),
+                          "stats": [{"font-size": "12px"}, {"justify-self": "end"},   {"align-self": "center"}, {"font-family": "monospace"}, {"overflow": "visible"}] + ([{"text-decoration": "underline wavy var(--warning-color)"}] if s_count > 0 and s_stddev > (tolerance / 2) else []),
+                          "name":  [{"font-size": "11px"}, {"justify-self": "start"}, {"align-self": "center"}, {"padding": "0 10px"}, {"overflow": "hidden"}, {"text-overflow": "ellipsis"}, {"color": "var(--secondary-text-color)"}] + (lt if is_locally_ignored else [])
+                        }
+                      },
+                      "custom_fields": {"mac": mac_upper, "fp": fp_cell, "scan": scan_rssi | string if is_in_scan else "", "diff": diff | string if is_in_scan else "—", "stats": stats_cell, "name": bname}
+                    }] -%}
                   {%- endif -%}
                 {%- endfor -%}
               {%- endif -%}
@@ -1224,7 +1171,7 @@ views:
               {%- if scores and scores | length > 0 %}
                 {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) %}
                 {%- for location, metrics in scores | dictsort %}
-              | {{ '🎯 **' if (metrics.total_score | float | round(3)) >= ns.max_val }}{{ location | capitalize }}{{ '**' if (metrics.total_score | float | round(3)) >= ns.max_val }} | `{{ metrics.matched | int }}/{{ metrics.total | int }} [{{ known_in_scan }}]` | `{{ metrics.total_score | float | round(3) }}` |
+              | {{ '🎯 **' if (metrics.total_score | float | round(3)) >= ns.max_val }}{{ location }}{{ '**' if (metrics.total_score | float | round(3)) >= ns.max_val }} | `{{ metrics.matched | int }}/{{ metrics.total | int }} [{{ known_in_scan }}]` | `{{ metrics.total_score | float | round(3) }}` |
                 {%- endfor %}
               {%- else %}
               | _No data_ | _-_ | _-_ |

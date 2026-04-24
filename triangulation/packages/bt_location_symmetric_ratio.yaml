@@ -21,7 +21,7 @@ script:
       scan_context: "{{ scan_context | default('Latest scan') }}"
 
       # Load global ignored list from sensor attribute (file-backed, unlimited capacity)
-      global_ignored_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+      global_ignored_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
 
       # Create a map of current scan MAC -> RSSI for fast lookup (filtered by global ignored)
       current_scan_map: |
@@ -42,7 +42,7 @@ script:
       # Calculate fresh from fingerprints to avoid sensor stale data race conditions
       scan_valid_count: |
         {%- set ns = namespace(active_beacons=[], count=0) -%}
-        {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+        {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
         {%- for fp in fingerprints -%}
           {%- for mac, beacon in fp.beacons.items() -%}
             {%- set mac_upper = mac | upper -%}

@@ -25,8 +25,7 @@ input_text:
     name: "BT Range Editor Context"
     max: 50
     initial: ""
-    # Temporary storage for range editor popup. Format: "location_index|mac|scan_rssi|tolerance"
-    # scan_rssi field is empty string when beacon is not present in the current scan.
+    # Temporary storage for range editor popup. Format: "location_index|mac|tolerance|current_min|current_max|p10|p90|n"
 
   device_charger_locations:
     name: "Device Charger Locations"
@@ -192,7 +191,7 @@ template:
         icon: mdi:bluetooth
         state: >
           {%- set ns = namespace(macs=[]) -%}
-          {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
+          {%- set global_ignored = (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list -%}
           {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
           {%- for fp in fingerprints -%}
             {%- if fp.beacons is not none -%}
@@ -210,7 +209,7 @@ template:
         attributes:
           mac_locs: >
             {%- set ns = namespace(mac_locs={}) -%}
-            {%- set global_ignored = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list -%}
+            {%- set global_ignored = (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list -%}
             {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
             {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') or [] -%}
             {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
@@ -340,7 +339,7 @@ template:
             {%- set ns = namespace(count=0) -%}
             {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
             {%- set active_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
-            {%- set devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
+            {%- set devices = state_attr('sensor.bt_latest_scan_full', 'devices') or [] -%}
             {%- for device in devices -%}
               {%- set mac = device.mac | upper -%}
               {%- if mac in active_beacons -%}
@@ -438,10 +437,10 @@ script:
     mode: restart
     sequence:
       - variables:
-          fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
           rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
-          global_ignored_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+          global_ignored_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
 
       # Build map: location_name → beacons dict
       - variables:
@@ -579,7 +578,7 @@ script:
       # Log location detection result
       - action: system_log.write
         data:
-          message: "Charger location detected: {{ detected_location | upper }} (Score: {{ detection_result.score }}, Confidence: {{ \"%.1f\" | format(detection_result.confidence * 100) }}%)"
+          message: "Charger location detected: {{ detected_location }} (Score: {{ detection_result.score }}, Confidence: {{ \"%.1f\" | format(detection_result.confidence * 100) }}%)"
           level: info
 
 # ------------------------------------------------------------------
@@ -596,8 +595,8 @@ script:
         example: "AA:BB:CC:DD:EE:FF"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
           location_idx: "{{ location_index | int(-1) }}"
           beacon_mac: "{{ mac | upper }}"
           location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
@@ -640,7 +639,7 @@ script:
           # Log the action
           - action: system_log.write
             data:
-              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name | upper }}"
+              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name }}"
               level: debug
 
   bt_beacon_toggle_all_locations_ignored:
@@ -651,7 +650,7 @@ script:
         example: "AA:BB:CC:DD:EE:FF"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           beacon_mac: "{{ mac | upper }}"
 
       - variables:
@@ -710,8 +709,8 @@ script:
         example: "AA:BB:CC:DD:EE:FF"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
           location_idx: "{{ location_index | int(-1) }}"
           beacon_mac: "{{ mac | upper }}"
           location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
@@ -746,7 +745,7 @@ script:
           # Log the action
           - action: system_log.write
             data:
-              message: "Removed beacon {{ beacon_mac }} from fingerprint for location {{ location_name | upper }}"
+              message: "Removed beacon {{ beacon_mac }} from fingerprint for location {{ location_name }}"
               level: debug
 
   bt_beacon_remove_from_all_fingerprints:
@@ -757,7 +756,7 @@ script:
         example: "AA:BB:CC:DD:EE:FF"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           beacon_mac: "{{ mac | upper }}"
 
       - variables:
@@ -798,7 +797,7 @@ script:
       - variables:
           beacon_mac: "{{ mac | upper }}"
           # Read current ignored list from sensor attribute (file-backed)
-          current_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+          current_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
 
       # Check if MAC is already in the list
       - variables:
@@ -828,7 +827,7 @@ script:
       - if: "{{ not is_ignored }}"
         then:
           - variables:
-              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           - variables:
               cleaned_fingerprints: |
                 {%- set ns = namespace(fp_list=[]) -%}
@@ -856,7 +855,7 @@ script:
     sequence:
       # Load latest scan from sensor
       - variables:
-          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
       # Call location detection with loaded scan data
       - action: script.detect_location_from_signals
@@ -881,7 +880,7 @@ script:
       # Context for logging (latest scan or fingerprint number)
       scan_context: "{{ scan_context | default('Latest scan') }}"
       locations_map: "{{ state_attr('sensor.bt_location_array', 'locations') | default(none) }}"
-      raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+      raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
       fingerprints_parsed: |
         {%- set ns = namespace(data=[]) -%}
         {%- for fp in raw_fingerprints -%}
@@ -937,13 +936,16 @@ script:
       location_index:
         description: "Location index (0-based, required)"
         example: "0"
+      browser_id:
+        description: "Browser ID for toast notification (optional)"
+        example: "peers_mobil"
     sequence:
       - variables:
           # Get all detected beacons from latest scan (full device list from file sensor)
-          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           # Get weak signal threshold, global ignored list, and ghost signal toggle
           weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
-          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
@@ -987,7 +989,7 @@ script:
 
           - variables:
               # Read current fingerprints from sensor attribute (file-backed, no 255-char limit)
-              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
               # Filter out any existing entry for this location and append new one
               updated_fingerprints: |
                 {%- set ns = namespace(fp_list=[]) -%}
@@ -1021,30 +1023,40 @@ script:
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
-          - action: persistent_notification.create
-            data:
-              title: "BT Fingerprint Captured"
-              message: "Location: {{ location | upper }}\nBeacons: {{ scan | length }}\nDevices:\n{{ device_details | trim }}"
-              notification_id: "bt_fingerprint_{{ location }}"
+          - if:
+              - condition: template
+                value_template: "{{ browser_id is defined and browser_id != '' }}"
+            then:
+              - action: browser_mod.notification
+                continue_on_error: true
+                data:
+                  browser_id: "{{ browser_id }}"
+                  message: "Captured {{ scan | length }} beacons @{{ location }}"
+                  duration: 5000
 
           - action: system_log.write
             data:
-              message: "Captured BT fingerprint for index {{ location_index }}: {{ new_fp_beacons | length }} beacons"
-              level: debug
+              message: "Location: {{ location }}\nBeacons: {{ scan | length }}\nDevices:\n{{ device_details | trim }}"
+              level: info
 
           - action: script.bt_record_merge_statistics
             data:
               location_index: "{{ location_index }}"
         else:
-          - action: persistent_notification.create
-            data:
-              title: "BT Scan Required"
-              message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
-              notification_id: "bt_no_scan"
+          - if:
+              - condition: template
+                value_template: "{{ browser_id is defined and browser_id != '' }}"
+            then:
+              - action: browser_mod.notification
+                continue_on_error: true
+                data:
+                  browser_id: "{{ browser_id }}"
+                  message: "No scan data — place phone on charger and wait for scan"
+                  duration: 5000
 
           - action: system_log.write
             data:
-              message: "Fingerprint capture failed: No BT scan data available for location {{ location | upper }}"
+              message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
               level: warning
 
   merge_bt_fingerprint:
@@ -1056,12 +1068,15 @@ script:
       rssi_only:
         description: "If true, only update RSSI for existing beacons (no new beacons added). Default: false (merge mode)"
         example: "false"
+      browser_id:
+        description: "Browser ID for toast notification (optional)"
+        example: "peers_mobil"
     sequence:
       - variables:
-          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           # Get weak signal threshold, global ignored list, and ghost signal toggle
           weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
-          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) }}"
+          global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           rssi_only: "{{ rssi_only | default(false) | bool }}"
@@ -1095,7 +1110,7 @@ script:
                 {%- endfor -%}
                 {{ ns.map }}
               # Read current fingerprints
-              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
 
           - variables:
               # Extract existing beacons dict for this location
@@ -1176,29 +1191,59 @@ script:
               fingerprints_json: "{{ updated_fingerprints }}"
 
           - variables:
-              locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
+              locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
               location_name: "{{ locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else 'unknown' }}"
 
-          - action: persistent_notification.create
-            data:
-              title: "BT Fingerprint Updated ({{ 'RSSI' if rssi_only else 'Merged' }})"
-              message: "Location: {{ location_name | upper }}\n{% if rssi_only %}Beacons updated: {{ merged_beacons | length }} (RSSI refreshed, no new beacons added){% else %}Beacons added: {{ (merged_beacons | length) - (existing_beacons | length) }} new\nBeacons existing: {{ existing_beacons | length }}\nTotal: {{ merged_beacons | length }} beacons{% endif %}"
-              notification_id: "bt_fingerprint_merged"
+          - variables:
+              refreshed_count: "{{ scan_map.keys() | select('in', existing_beacons) | list | length }}"
+              changed_beacons: |
+                {%- set ns = namespace(changes=[]) -%}
+                {%- for mac, new_b in merged_beacons.items() -%}
+                  {%- set old_b = existing_beacons.get(mac, {}) -%}
+                  {%- if old_b -%}
+                    {%- if 'min' in new_b -%}
+                      {%- if new_b.min != old_b.get('min', new_b.min) or new_b.max != old_b.get('max', new_b.max) -%}
+                        {%- set ns.changes = ns.changes + [mac ~ ': [' ~ old_b.get('min') ~ '/' ~ old_b.get('max') ~ '] → [' ~ new_b.min ~ '/' ~ new_b.max ~ ']'] -%}
+                      {%- endif -%}
+                    {%- else -%}
+                      {%- if new_b.rssi != old_b.get('rssi', new_b.rssi) -%}
+                        {%- set ns.changes = ns.changes + [mac ~ ': ' ~ old_b.get('rssi') ~ ' → ' ~ new_b.rssi] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.changes | join('\n') if ns.changes else 'no changes' }}
+
+          - if:
+              - condition: template
+                value_template: "{{ browser_id is defined and browser_id != '' }}"
+            then:
+              - action: browser_mod.notification
+                continue_on_error: true
+                data:
+                  browser_id: "{{ browser_id }}"
+                  message: "{{ 'Updated RSSI' if rssi_only else 'Merged' }} {% if rssi_only %}{{ refreshed_count }}/{{ merged_beacons | length }} beacons @{{ location_name }}{% else %}{{ merged_beacons | length }} beacons @{{ location_name }} (+{{ (merged_beacons | length) - (existing_beacons | length) }} new){% endif %}"
+                  duration: 5000
 
           - action: system_log.write
             data:
-              message: "{{ 'RSSI-updated' if rssi_only else 'Merged' }} BT fingerprint for location {{ location_index }}: {{ merged_beacons | length }} beacons"
-              level: debug
+              message: "Location: {{ location_name }}\n{% if rssi_only %}Beacons: {{ refreshed_count }} refreshed / {{ merged_beacons | length }} total\n{{ changed_beacons }}{% else %}Beacons added: {{ (merged_beacons | length) - (existing_beacons | length) }} new\nBeacons existing: {{ existing_beacons | length }}\nTotal: {{ merged_beacons | length }} beacons\n{{ changed_beacons }}{% endif %}"
+              level: info
 
           - action: script.bt_record_merge_statistics
             data:
               location_index: "{{ location_index }}"
         else:
-          - action: persistent_notification.create
-            data:
-              title: "BT Scan Required"
-              message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
-              notification_id: "bt_no_scan"
+          - if:
+              - condition: template
+                value_template: "{{ browser_id is defined and browser_id != '' }}"
+            then:
+              - action: browser_mod.notification
+                continue_on_error: true
+                data:
+                  browser_id: "{{ browser_id }}"
+                  message: "No scan data — place phone on charger and wait for scan"
+                  duration: 5000
 
   bt_beacon_reset_minmax:
     description: "Reset a single beacon entry from current scan: mean mode writes scan RSSI; min/max mode writes [scan−tol, scan+tol]. No-op if beacon absent from scan."
@@ -1209,13 +1254,16 @@ script:
       mac:
         description: "Beacon MAC address (uppercase)"
         example: "DE:E3:0B:7D:6B:0B"
+      browser_id:
+        description: "Browser ID for toast notification (optional)"
+        example: "peers_mobil"
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           mac_upper: "{{ mac | upper }}"
           tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
-          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
       - variables:
           updated_fingerprints: |
@@ -1278,10 +1326,24 @@ script:
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
+      - variables:
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+          location_name: "{{ locations_list[location_index | int] if location_index | int >= 0 and location_index | int < locations_list | length else 'unknown' }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ browser_id is defined and browser_id != '' }}"
+        then:
+          - action: browser_mod.notification
+            data:
+              browser_id: "{{ browser_id }}"
+              message: "Reset {{ mac_upper }} @ {{ location_name }} ({{ 'Min/Max [scan ± ' + tolerance | string + ']' if minmax_mode else 'Mean' }})"
+              duration: 5000
+
       - action: system_log.write
         data:
-          message: "Reset beacon {{ mac_upper }} in location {{ location_index }}, minmax_mode={{ minmax_mode }}, tolerance={{ tolerance }}"
-          level: debug
+          message: "Location: {{ location_name }}\nBeacon: {{ mac_upper }}\nMode: {{ 'Min/Max [scan ± ' + tolerance | string + ']' if minmax_mode else 'Mean (scan RSSI)' }}"
+          level: info
 
   bt_beacon_range_editor_open:
     alias: "BT: Open beacon range editor popup"
@@ -1306,9 +1368,6 @@ script:
       beacon_name:
         description: "Human-readable beacon name (for popup title)"
         default: ""
-      scan_rssi:
-        description: "Current scan RSSI for this beacon (empty string if not in scan)"
-        default: ""
       tolerance:
         description: "Current RSSI tolerance setting"
         example: "10"
@@ -1325,7 +1384,7 @@ script:
           value: "{{ current_max | int }}"
       - variables:
           stats_p10_p90: |
-            {%- set all_stats = state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) -%}
+            {%- set all_stats = state_attr('sensor.bt_merge_statistics', 'statistics') or [] -%}
             {%- set ns_s = namespace(beacons={}) -%}
             {%- for entry in all_stats -%}
               {%- if entry.loc | int == location_index | int -%}
@@ -1335,7 +1394,7 @@ script:
             {%- set readings = ns_s.beacons.get(mac | upper, []) -%}
             {%- set s_count = readings | length -%}
             {%- if s_count >= 10 -%}
-              {%- set rssi_vals = readings | map(attribute=0) | list | sort -%}
+              {%- set rssi_vals = readings | map(attribute=0) | reject('none') | list | sort -%}
               {%- set p10 = rssi_vals[(s_count * 0.1) | int] -%}
               {%- set p90 = rssi_vals[(s_count * 0.9) | int] -%}
               {{ p10 | string ~ '|' ~ p90 | string ~ '|' ~ s_count | string }}
@@ -1346,7 +1405,7 @@ script:
         target:
           entity_id: input_text.bt_range_editor_context
         data:
-          value: "{{ location_index }}|{{ mac | upper }}|{{ scan_rssi }}|{{ tolerance }}|{{ current_min }}|{{ current_max }}|{{ stats_p10_p90 | trim }}"
+          value: "{{ location_index }}|{{ mac | upper }}|{{ tolerance }}|{{ current_min }}|{{ current_max }}|{{ stats_p10_p90 | trim }}"
       - action: browser_mod.popup
         data:
           browser_id: "{{ browser_id }}"
@@ -1365,9 +1424,9 @@ script:
                 name: |
                   [[[
                     const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
-                    const tol = parseInt(ctx[3]);
-                    const cMin = parseFloat(ctx[4]);
-                    const cMax = parseFloat(ctx[5]);
+                    const tol = parseInt(ctx[2]);
+                    const cMin = parseFloat(ctx[3]);
+                    const cMax = parseFloat(ctx[4]);
                     if (isNaN(cMin) || isNaN(cMax)) return 'Apply midpoint ± tolerance';
                     const mid = Math.round((cMin + cMax) / 2);
                     return `Apply midpoint ${mid} dBm:  ${mid - tol} / ${mid + tol}`;
@@ -1385,8 +1444,8 @@ script:
                     - opacity: |
                         [[[
                           const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
-                          const tol = parseInt(ctx[3]);
-                          const mid = Math.round((parseFloat(ctx[4]) + parseFloat(ctx[5])) / 2);
+                          const tol = parseInt(ctx[2]);
+                          const mid = Math.round((parseFloat(ctx[3]) + parseFloat(ctx[4])) / 2);
                           const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
                           const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
                           return (curMin === mid - tol && curMax === mid + tol) ? '0.3' : '1';
@@ -1398,9 +1457,9 @@ script:
                 name: |
                   [[[
                     const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
-                    const p10 = parseFloat(ctx[6]);
-                    const p90 = parseFloat(ctx[7]);
-                    const n = parseInt(ctx[8]) || 0;
+                    const p10 = parseFloat(ctx[5]);
+                    const p90 = parseFloat(ctx[6]);
+                    const n = parseInt(ctx[7]) || 0;
                     if (isNaN(p10) || isNaN(p90)) return `Apply P10/P90  (n=${n}, need ≥10)`;
                     return `Apply P10/P90:  ${p10} / ${p90}  (n=${n})`;
                   ]]]
@@ -1417,8 +1476,8 @@ script:
                     - opacity: |
                         [[[
                           const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
-                          const p10 = parseFloat(ctx[6]);
-                          const p90 = parseFloat(ctx[7]);
+                          const p10 = parseFloat(ctx[5]);
+                          const p90 = parseFloat(ctx[6]);
                           const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
                           const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
                           if (isNaN(p10) || isNaN(p90)) return '0.3';
@@ -1441,8 +1500,8 @@ script:
                     - opacity: |
                         [[[
                           const ctx = states['input_text.bt_range_editor_context']?.state?.split('|') || [];
-                          const fpMin = parseFloat(ctx[4]);
-                          const fpMax = parseFloat(ctx[5]);
+                          const fpMin = parseFloat(ctx[3]);
+                          const fpMax = parseFloat(ctx[4]);
                           const curMin = parseInt(states['input_number.bt_range_editor_min']?.state);
                           const curMax = parseInt(states['input_number.bt_range_editor_max']?.state);
                           return (curMin === fpMin && curMax === fpMax) ? '0.3' : '1';
@@ -1455,9 +1514,9 @@ script:
     sequence:
       - variables:
           ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
-          tolerance_val: "{{ ctx[3] | int(10) if ctx | length > 3 else 10 }}"
-          fp_min: "{{ ctx[4] | float(0) if ctx | length > 4 else 0 }}"
-          fp_max: "{{ ctx[5] | float(0) if ctx | length > 5 else 0 }}"
+          tolerance_val: "{{ ctx[2] | int(10) if ctx | length > 2 else 10 }}"
+          fp_min: "{{ ctx[3] | float(0) if ctx | length > 3 else 0 }}"
+          fp_max: "{{ ctx[4] | float(0) if ctx | length > 4 else 0 }}"
           mid: "{{ ((fp_min + fp_max) / 2) | round | int }}"
       - action: input_number.set_value
         target:
@@ -1477,8 +1536,8 @@ script:
     sequence:
       - variables:
           ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
-          p10: "{{ ctx[6] | int(0) if ctx | length > 6 else 0 }}"
-          p90: "{{ ctx[7] | int(0) if ctx | length > 7 else 0 }}"
+          p10: "{{ ctx[5] | int(0) if ctx | length > 5 else 0 }}"
+          p90: "{{ ctx[6] | int(0) if ctx | length > 6 else 0 }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.bt_range_editor_min
@@ -1505,7 +1564,7 @@ script:
           mac_upper: "{{ ctx[1] | upper }}"
           new_min_raw: "{{ states('input_number.bt_range_editor_min') | int }}"
           new_max_raw: "{{ states('input_number.bt_range_editor_max') | int }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
 
       - variables:
           new_min: "{{ [new_min_raw, new_max_raw] | min }}"
@@ -1569,12 +1628,15 @@ script:
       mac:
         description: "Beacon MAC address (uppercase)"
         example: "DE:E3:0B:7D:6B:0B"
+      browser_id:
+        description: "Browser ID for toast notification (optional)"
+        example: "peers_mobil"
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           mac_upper: "{{ mac | upper }}"
-          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
       - variables:
           scan_rssi: |
@@ -1640,10 +1702,25 @@ script:
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
+          - variables:
+              locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+              location_name: "{{ locations_list[location_index | int] if location_index | int >= 0 and location_index | int < locations_list | length else 'unknown' }}"
+
+          - if:
+              - condition: template
+                value_template: "{{ browser_id is defined and browser_id != '' }}"
+            then:
+              - action: browser_mod.notification
+                continue_on_error: true
+                data:
+                  browser_id: "{{ browser_id }}"
+                  message: "Merged {{ mac_upper }} @ {{ location_name }} ({{ 'Min/Max' if minmax_mode else 'Mean' }})"
+                  duration: 5000
+
           - action: system_log.write
             data:
-              message: "Merged beacon {{ mac_upper }} in location {{ location_index }}, scan_rssi={{ scan_rssi }}, minmax_mode={{ minmax_mode }}"
-              level: debug
+              message: "Merged {{ mac_upper }} @ {{ location_name }} ({{ 'Min/Max' if minmax_mode else 'Mean' }})"
+              level: info
 
   bt_beacon_reset_all:
     description: "Reset all beacons for a location. Min/max mode: P10/P90 if ≥10 samples, else midpoint±tolerance. Mean mode: current scan RSSI if present, else unchanged."
@@ -1651,13 +1728,16 @@ script:
       location_index:
         description: "Location index (0-based, required)"
         example: "0"
+      browser_id:
+        description: "Browser ID for toast notification (optional)"
+        example: "peers_mobil"
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
           tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
-          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
+          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
+          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
 
       - variables:
           scan_map: |
@@ -1721,10 +1801,27 @@ script:
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
+      - variables:
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+          location_name: "{{ locations_list[location_index | int] if location_index | int >= 0 and location_index | int < locations_list | length else 'unknown' }}"
+          beacon_count: >
+            {%- set fp = current_fingerprints | selectattr('loc', 'equalto', location_index | int) | list -%}
+            {{ ((fp | first).beacons if fp | length > 0 else {}) | length }}
+
+      - if:
+          - condition: template
+            value_template: "{{ browser_id is defined and browser_id != '' }}"
+        then:
+          - action: browser_mod.notification
+            data:
+              browser_id: "{{ browser_id }}"
+              message: "Reset {{ beacon_count }} beacons @{{ location_name }}: {{ 'Min/Max (P10/P90 or ± ' + tolerance | string + ')' if minmax_mode else 'Mean' }}"
+              duration: 5000
+
       - action: system_log.write
         data:
-          message: "Reset all beacons for location {{ location_index }}, minmax_mode={{ minmax_mode }}"
-          level: debug
+          message: "Reset all beacons\nLocation: {{ location_name }}\nBeacons: {{ beacon_count }}\nMode: {{ 'Min/Max (P10/P90 or ± ' + tolerance | string + ')' if minmax_mode else 'Mean (scan RSSI)' }}"
+          level: info
 
       - action: script.bt_record_merge_statistics
         data:
@@ -1738,9 +1835,9 @@ script:
         example: "0"
     sequence:
       - variables:
-          current_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
-          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) }}"
-          global_ignored: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+          current_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
+          raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
+          global_ignored: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
           ts: "{{ now().timestamp() | int }}"
 
       - variables:
@@ -1755,7 +1852,7 @@ script:
             {{ ns.map }}
           fp_mac_set: |
             {%- set ns = namespace(macs=[]) -%}
-            {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+            {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
             {%- for fp in fingerprints -%}
               {%- if fp.loc | int == location_index | int -%}
                 {%- for mac in fp.beacons.keys() -%}
@@ -1817,12 +1914,12 @@ script:
     description: "Generate and log beacon status report with per-beacon statistics and warnings"
     sequence:
       - variables:
-          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') | default([]) }}"
-          fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) }}"
-          global_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | map('upper') | list }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+          fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          global_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
           weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
           tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
-          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') | default([]) }}"
+          all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
           names_raw: "{{ state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') }}"
 
       - variables:
@@ -1967,8 +2064,8 @@ script:
                   {%- endif -%}
                 {%- endif -%}
               {%- endfor -%}
-              {%- set loc_summary = location_name | upper ~ ': ' ~ ns.active ~ ' active  (' ~ ns.total ~ ' total, ' ~ ns.weak ~ ' weak, ' ~ ns.locally_ignored ~ ' locally ignored' ~ (', ' ~ ns.warnings ~ ' warning' ~ ('s' if ns.warnings != 1 else '') if ns.warnings > 0 else '') ~ ')' -%}
-              {%- set report.loc_warn_list = report.loc_warn_list + [{'loc': location_name | upper, 'w': ns.warnings}] -%}
+              {%- set loc_summary = location_name ~ ': ' ~ ns.active ~ ' active  (' ~ ns.total ~ ' total, ' ~ ns.weak ~ ' weak, ' ~ ns.locally_ignored ~ ' locally ignored' ~ (', ' ~ ns.warnings ~ ' warning' ~ ('s' if ns.warnings != 1 else '') if ns.warnings > 0 else '') ~ ')' -%}
+              {%- set report.loc_warn_list = report.loc_warn_list + [{'loc': location_name, 'w': ns.warnings}] -%}
               {%- set report.lines = report.lines + ['', loc_summary, ''] + ns.beacon_lines -%}
             {%- endfor -%}
             {%- set ns_sum = namespace(warn_parts=[]) -%}
@@ -2092,7 +2189,7 @@ automation:
         data:
           message: |
             BT scan received:
-            {%- for device in state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) %}
+            {%- for device in state_attr('sensor.bt_latest_scan_full', 'devices') or [] %}
             {{ device['mac'] }} | {{ (device['rssi'] | string).rjust(5) }} dBm | {{ device['name'] | default('unknown') }}
             {%- endfor %}
           level: info
