@@ -387,6 +387,7 @@ script:
           - action: script.musiccast_scenario_mixer
             data:
               scenario: "{{ scenario }}"
+              force_randomize: false
 
           - action: input_boolean.turn_off
             target:

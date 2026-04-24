@@ -226,11 +226,11 @@ template:
       - name: musiccast_player_ips
         unique_id: musiccast_player_ips
         state: >
-          {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') | default([]) -%}
+          {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') or [] -%}
           {{ matched | length }}
         attributes:
           by_entity: >
-            {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') | default([]) -%}
+            {%- set matched = state_attr('sensor.musiccast_media_players', 'matched') or [] -%}
             {%- set ns = namespace(result={}) -%}
             {%- for item in matched | default([]) -%}
               {%- set player = item.entity.split('.')[1] -%}
