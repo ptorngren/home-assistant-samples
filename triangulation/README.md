@@ -683,7 +683,7 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 3. Return to each location repeatedly and tap the header to merge (expand bounds from repeated scans), until the ranges appear stable across visits
 4. Check Beacon Breakdown: FP column shows `min/max` ranges; Δ shows 0 when matched
 5. Monitor the nσ column — as samples accumulate across merges, a high standard deviation flags beacons with inconsistent signal and narrows your ignore candidates
-6. Once ≥ 10 samples exist per beacon, hold the location header in Beacon Breakdown to apply P10/P90 to all beacons at once — cutting outlier readings in a single action. For per-beacon control, double-tap a beacon row to open the Range Editor and use the "Apply P10/P90" button instead. Run **Beacon Status** (Settings card) to get a per-beacon report showing which ranges extend beyond observed statistics and are candidates for trimming.
+6. Once ≥ 10 samples exist per beacon, hold the location header in Beacon Breakdown to apply P10/P90 to all beacons at once — cutting outlier readings in a single action. For per-beacon control, double-tap a beacon row to open the Range Editor and use the "Apply P10/P90" button instead. Run **Log Beacon Status** (Review tab) to get a per-beacon report showing which ranges extend beyond observed statistics and are candidates for trimming.
 7. Verify scores stabilize — narrow ranges indicate well-captured beacons; wide ranges indicate high signal variance. If a beacon's range grows very wide, consider ignoring it locally or globally — a wide range means the beacon is unreliable and contributes little to accurate detection
 
 ## Mean Mode
@@ -708,7 +708,7 @@ Statistics are accumulated each time you tap, double-tap, or hold a location hea
 - **Wavy underline on nσ** — σ exceeds tolerance/2, meaning the 95% confidence interval of the signal is wider than the matching window; the beacon is likely causing missed detections
 - **Intermittent beacon** — beacon was missing from the scan in more than 30% of sessions; it adds noise to detection without contributing reliably; consider removing it from the fingerprint
 - **P10/P90 in Range Editor** — once ≥ 10 samples exist, use this to set min/max from the 10th/90th percentile of actual observations, trimming outliers that inflated the range
-- **Beacon Status report** — click "Beacon Status" in Settings to write a per-beacon report to the HA log, including warnings for deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place
+- **Log Beacon Status** — click **▶️ Log Beacon Status** in the Review tab to write a per-beacon report to the HA log, including warnings for deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place
 
 Use **Clear Statistics** (Settings) to reset all history after relocating a beacon, replacing a device, or after a major environment change — old readings no longer represent current conditions.
 
@@ -833,7 +833,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - Use this to diagnose why a location scores below expected, or why the wrong location wins
 3. **Adjust algorithm parameters** in Algorithm Settings:
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
-   - **RSSI Match Tolerance** — How closely scan signal strength must match fingerprint (lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
+   - **Signal Tolerance (±)** — How closely scan signal strength must match fingerprint (±N dBm; lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
    - **Min/Max Mode** — When ON, new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean. See Min/Max Mode section below. When OFF (default), standard running-mean behavior. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
    - **Distance-Weighted Scoring** — When ON, each beacon's match contribution is a continuous quality score (0.0–1.0) based on how centered the scan RSSI is within the fingerprint range: midpoint = 1.0, edges = 0.0, outside = 0. When OFF (default), binary matching — in range = 1, out of range = 0. Adds scoring resolution within ranges and can break ties between locations that share beacons at different RSSI levels.
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
@@ -913,7 +913,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 ### Task 7: Check Beacon Signal Health
 
-Click the **"Beacon Status"** button to write a report to the HA log (Developer Tools → Logs). The report shows each active beacon per location with its fingerprint value, rich signal statistics, and warnings about deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place.
+Click the **▶️ Log Beacon Status** button in the Review tab to write a report to the HA log (Developer Tools → Logs). The report shows each active beacon per location with its fingerprint value, rich signal statistics, and warnings about deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place. (The **↗️ Open Log** button next to it navigates directly to the HA log viewer.)
 
 ### Task 8: Clear Scan History Statistics
 

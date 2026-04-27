@@ -1077,18 +1077,6 @@ views:
 
           - type: horizontal-stack
             cards:
-              # Report beacon status button (lowest risk)
-              - type: custom:button-card
-                name: "Beacon Status"
-                tap_action:
-                  action: perform-action
-                  perform_action: script.report_beacon_status
-                styles:
-                  card:
-                    - background-color: *color_success
-                  name:
-                    - font-size: 12px
-
               # Load from file button (medium risk)
               - type: custom:button-card
                 name: "Load Fingerprints"
@@ -1131,7 +1119,8 @@ views:
         show_header_toggle: false
         entities:
           - input_number.bt_location_detection_weak_signal_threshold
-          - input_number.bt_location_detection_rssi_tolerance
+          - entity: input_number.bt_location_detection_rssi_tolerance
+            name: "Signal Tolerance (±)"
           - input_boolean.bt_fingerprint_minmax_mode
           - input_boolean.bt_distance_weighted_scoring
           - input_boolean.bt_filter_zero_rssi_signals
@@ -1260,6 +1249,27 @@ views:
 
           - type: custom:decluttering-card
             template: matrix_drilldown_template
+
+      # Beacon Status buttons
+      - type: horizontal-stack
+        cards:
+          - type: custom:button-card
+            name: "▶️ Log Beacon Status"
+            tap_action:
+              action: perform-action
+              perform_action: script.report_beacon_status
+            styles:
+              name:
+                - font-size: 12px
+
+          - type: custom:button-card
+            name: "↗️ Open Log"
+            tap_action:
+              action: navigate
+              navigation_path: /config/logs
+            styles:
+              name:
+                - font-size: 12px
 
       # All Active Beacons
       - type: custom:stack-in-card
@@ -1393,9 +1403,9 @@ views:
 
           **How to use:**
           - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). ⚠️ **Maintain order** — fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints. Once defined, keep the order fixed (renaming is OK); if you must reorder, recapture all fingerprints from scratch.
-          - **Action Buttons**: **Beacon Status** logs a per-location report to the HA log (Developer Tools → Logs) showing active beacons with fingerprint values, signal statistics, and any warnings. **Load Fingerprints** reloads fingerprint data from file. **Clear Fingerprints** and **Clear Statistics** reset the respective data.
+          - **Action Buttons**: **Load Fingerprints** reloads fingerprint data from file. **Clear Fingerprints** and **Clear Statistics** reset the respective data.
           - Adjust **Weak Signal Threshold** to ignore weak beacons when capturing fingerprints (used to keep anchors stable; not used during matching)
-          - Adjust **RSSI Match Tolerance** (dBm). **Mean mode:** scan RSSI must be within ±tolerance of the fingerprint value to count as a match. **Min/Max mode:** matching uses stored bounds (tolerance not applied to matching); tolerance sets the initial range on reset (`[scan ± tolerance]`) and triggers the wavy-underline warning when the stored range exceeds 2× tolerance.
+          - Adjust **Signal Tolerance** (±, dBm). **Mean mode:** scan RSSI must be within ±tolerance of the fingerprint value to count as a match. **Min/Max mode:** matching uses stored bounds (tolerance not applied to matching); tolerance sets the initial range on reset (`[scan ± tolerance]`) and triggers the wavy-underline warning when the stored range exceeds 2× tolerance.
           - Toggle **Min/Max Fingerprint Mode** to switch between two fingerprint strategies:
             - **OFF (default):** Each beacon stores a single running-mean RSSI. Capture overwrites; merge averages the new scan into the stored value. Matching uses ±RSSI Match Tolerance.
             - **ON:** Each beacon stores a `[min, max]` range. Capture starts as a collapsed point; each merge expands the range if the new scan falls outside. Matching is strict — scan RSSI must fall within `[min, max]`, no tolerance applied. Produces per-beacon adaptive tolerance (stable beacons stay narrow; volatile ones widen naturally). Mode is data-driven: existing `rssi` entries continue to use tolerance matching until recaptured.
@@ -1451,9 +1461,11 @@ views:
              - **Scores are directional** — A→B and B→A will typically differ. This is expected: A→B means "if I'm at A, could the system think I'm at B?", B→A means the reverse. Asymmetry reflects differences in fingerprint size and beacon signal ranges.
              - **Scores are worst-case** — each beacon's effective range ([min,max] or [rssi±tolerance]) is compared against the column's range; a match is counted if the ranges overlap at all
              - **Tap any non-diagonal cell** to open the drill-down detail below the matrix — shows each overlapping beacon with row range, col range, and overlap extent. Tap a diagonal cell to close. Note: green cells can still have overlapping beacons (low score means few overlaps relative to total, not zero)
-             - Adjust **RSSI Match Tolerance** in Settings view to see how sensitivity affects overlap
+             - Adjust **Signal Tolerance** in Settings view to see how sensitivity affects overlap
 
-          2. **All Active Beacons** — Master reference of all beacons across locations:
+          2. **▶️ Log Beacon Status** — Writes a per-location beacon report to the HA log (Developer Tools → Logs). Shows each active beacon with its fingerprint value, signal statistics, and warnings about deviation, drift, range quality, and intermittent presence — more detail than the dashboard provides in one place. **↗️ Open Log** (next to it) navigates directly to the HA log viewer.
+
+          3. **All Active Beacons** — Master reference of all beacons across locations:
              - Shows every beacon currently in use (active, non-weak, non-ignored)
              - Columns: MAC address | Device name | Which locations it appears in
              - Background color indicates beacon discriminator quality:
@@ -1465,7 +1477,7 @@ views:
              - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
              - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution
 
-          3. **Globally Ignored** — Management of globally ignored beacons:
+          4. **Globally Ignored** — Management of globally ignored beacons:
              - Lists all beacons you've marked as globally ignored
              - Styled in grey with strikethrough to indicate ignored status
              - **Hold any beacon** to restore it (remove from global ignore list)
