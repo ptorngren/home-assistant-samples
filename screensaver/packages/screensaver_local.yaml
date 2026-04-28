@@ -293,5 +293,23 @@ automation:
               - action: switch.turn_on
                 target:
                   entity_id: switch.pp14_koksplatta
+        default:
+          - choose:
+              - conditions:
+                  - condition: numeric_state
+                    entity_id: sensor.koksplatta_fkb_battery
+                    above: 80
+                sequence:
+                  - action: switch.turn_off
+                    target:
+                      entity_id: switch.pp14_koksplatta
+              - conditions:
+                  - condition: numeric_state
+                    entity_id: sensor.koksplatta_fkb_battery
+                    below: 20
+                sequence:
+                  - action: switch.turn_on
+                    target:
+                      entity_id: switch.pp14_koksplatta
     mode: restart
 
