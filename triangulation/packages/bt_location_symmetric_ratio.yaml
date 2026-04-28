@@ -36,7 +36,7 @@ script:
 
       # Algorithm parameters
       rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
-      distance_weighted_scoring: "{{ states('input_boolean.bt_distance_weighted_scoring_scoring') | bool(false) }}"
+      distance_weighted_scoring: "{{ states('input_boolean.bt_distance_weighted_scoring') | bool(false) }}"
 
       # Symmetric ratio denominator: count of beacons in current scan that are active (non-ignored) and known
       # Calculate fresh from fingerprints to avoid sensor stale data race conditions

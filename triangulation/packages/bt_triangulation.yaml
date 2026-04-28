@@ -2163,6 +2163,7 @@ automation:
         entity_id:
           - sensor.bt_fingerprint_database_file
           - sensor.bt_ignored_beacons
+          - input_boolean.bt_distance_weighted_scoring
     # NOTE: Timing issue - sensors may not be ready immediately after YAML reload
     # Condition checks all three sensors are valid to avoid errors during initialization
     condition:
