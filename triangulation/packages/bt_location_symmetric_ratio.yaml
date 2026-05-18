@@ -4,6 +4,7 @@
 # Eliminates small-fingerprint bias and alien beacon noise without tuning parameters
 script:
   bt_location_symmetric_ratio:
+    alias: "BT: Calculate symmetric ratio scores"
     description: "Symmetric Ratio Location Matching: (matched/fingerprint) × (matched/scan_valid)"
     # This generic protocol allows algorithm swapping without orchestrator changes.
     fields:
@@ -62,7 +63,7 @@ script:
       # BEACON EXCLUSION FILTER (used in location_scores calculations)
       # Skip beacon if any condition is true:
       #   - fp_mac in global_ignored_list (beacon globally ignored as irrelevant)
-      #   - pair.endswith(':X') (beacon locally ignored for this location)
+      #   - beacon.ignored == true (beacon locally ignored for this location)
       # Keep beacon in total count only if ALL conditions are false
       # Note: Weak signal threshold is NOT used during matching. Tolerance alone determines validity.
       # Note: 0 dBm fingerprint beacons ARE included. If scan also shows 0 dBm, diff = 0 ≤ tolerance → matches.

@@ -239,7 +239,7 @@ This feature requires:
    adb shell pm grant net.dinglisch.android.taskerm android.permission.BLUETOOTH_CONNECT
    ```
 3. **Home Assistant webhook** — Already available (configured below)
-4. **Anchor devices** — Bluetooth beacons in each room (MusicCast speakers, Shelly Plugs with BT enabled, etc.)
+4. **Anchor devices** — Bluetooth beacons in each room (Shelly Plugs with BT enabled, dedicated iBeacons, ESP32-C3 beacons, etc.). Note: MusicCast speakers only advertise when powered on and are unreliable as anchors.
 
 </details>
 
@@ -560,6 +560,12 @@ A matrix score of 1.0 means all beacons in both fingerprints have overlapping ra
 - Recapture both locations more carefully from fixed positions; if any genuine RF difference exists, a stable capture with a stationary phone may expose it
 - If the locations are RF-identical, no algorithm tuning will fix it — the signal data does not contain enough information to separate them
 
+**Dedicated iBeacons for adjacent locations:** If two locations share the same RF environment (e.g. adjacent rooms or a charger close to a bed), place a cheap BLE iBeacon physically at one location. The strong close-range signal (-40 to -50 dBm) versus attenuated signal in the adjacent room (-75 to -85 dBm) creates a 30–40 dBm discriminator that is highly reliable. Any broadcasting BLE beacon works — fixed UUID/TX power is fine for fingerprinting. Many cost just a few euros and require no configuration. Example: generic beacons sold as "CP101" work out of the box despite not being configurable via Minew tools.
+
+**Preferred option — USB-powered ESP32:** For zero maintenance, use an ESP32-C3 SuperMini (~€3) flashed as a BLE iBeacon. USB-C powered from any USB charger, stable RSSI, no battery to replace. Takes a few minutes to flash with Arduino IDE or ESPHome.
+
+**Battery warning:** Cheap coin-cell beacons (CR2032) typically last 1–2 years and are often sealed/non-replaceable. When a beacon dies and is replaced, its MAC address changes — all fingerprints that included it will need to be recaptured for the affected locations.
+
 ### Narrowing wide ranges
 
 Wide min/max ranges (visible as wavy-underlined values in Beacon Breakdown) inflate matrix scores by creating artificial overlap. A beacon captured at both -60 and -95 across multiple sessions covers almost the entire RSSI spectrum and will overlap with every other location.
@@ -835,7 +841,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **Signal Tolerance (±)** — How closely scan signal strength must match fingerprint (±N dBm; lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
    - **Min/Max Mode** — When ON, new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean. See Min/Max Mode section below. When OFF (default), standard running-mean behavior. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
-   - **Distance-Weighted Scoring** — When ON, each beacon's match contribution is a continuous quality score (0.0–1.0) based on how centered the scan RSSI is within the fingerprint range: midpoint = 1.0, edges = 0.0, outside = 0. When OFF (default), binary matching — in range = 1, out of range = 0. Adds scoring resolution within ranges and can break ties between locations that share beacons at different RSSI levels.
+   - **Distance-Weighted Scoring** — When ON, each beacon's match contribution is a continuous quality score (0.0–1.0) based on how centered the scan RSSI is within the fingerprint range: midpoint = 1.0, edges = 0.0, outside = 0. When OFF (default), binary matching — in range = 1, out of range = 0. Adds scoring resolution within ranges and can break ties between locations that share beacons at different RSSI levels. **Caveat:** Natural RSSI volatility means scan values often land near the edges of min/max ranges, not at midpoints — weighted scoring penalizes this and can produce worse results than binary matching. Recommended: leave OFF unless you have very stable beacon signals with narrow ranges.
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
    - **Include Random MACs** — Toggle controls whether rotating/privacy-mode MAC addresses are included in scan processing. OFF (default) = exclude rotating MACs (iPhones, Android privacy mode) — they won't appear in Latest BT Scan or All Active Beacons. ON = include all MACs; rotating MACs appear in amber italic so they can be identified. See "Random MAC Filtering" section for details.
 
@@ -889,7 +895,7 @@ In the Fingerprint Details table, manage beacon which beacons to ignores to impr
 
 **Local ignore (single-tap toggle):**
 1. Find the beacon in Fingerprint Details
-2. **Tap the beacon** again to toggle it active (removes `:X` suffix)
+2. **Tap the beacon** again to toggle it active
 3. Beacon now counts in scoring again for that location
 
 **Global ignore (long-press toggle):**
@@ -1069,13 +1075,13 @@ All technical details have been moved to collapsible sections below for easy ref
 - No entity size limits (uses sensor attributes)
 
 ✅ **Persistent Storage**
-- Per-location: `:X` suffix in fingerprint CSV
+- Per-location: inline flag per beacon in fingerprint file
 - Global: File-backed sensor attributes
 - Both survive HA restarts and YAML reloads
 
 ✅ **Algorithm Integration**
 - Seamless filtering (no performance impact)
-- Works with existing match_ratio algorithm
+- Works with the Symmetric Ratio algorithm
 - Transparent to detection logic
 - Prepared for alternative algorithms
 
@@ -1260,38 +1266,34 @@ total_score: 0.727  # (12/15) × (12/16.5) = 0.8 × 0.909 = 0.727
 <details>
 <summary><strong>Data Formats</strong></summary>
 
+### Fingerprints
+
+**File:** `packages/triangulation/data/bt_fingerprints.json`
+
+```json
+{"fingerprints":[
+  {"loc":0,"beacons":{
+    "AA:BB:CC:DD:EE:FF":{"min":-70,"max":-60},
+    "11:22:33:44:55:66":{"rssi":-72,"ignored":true}
+  }},
+  {"loc":1,"beacons":{
+    "AA:BB:CC:DD:EE:FF":{"min":-85,"max":-75}
+  }}
+]}
+```
+
+- Per-location ignores are stored inline as `"ignored": true` on the beacon entry
+- Beacons can use either mean (`"rssi"`) or range (`"min"`/`"max"`) format; both can coexist within a location
+
 ### Global Ignore List
 
-**File:** `.cache/bt_bt_ignored.csv`
+**File:** `packages/triangulation/data/bt_ignored.json`
 
-**Stored (newline-separated):**
-```
-AA:BB:CC:DD:EE:FF
-11:22:33:44:55:66
-22:33:44:55:66:77
-```
-
-**When read (JSON array via sensor):**
 ```json
-{
-  "ignored": ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66", "22:33:44:55:66:77"]
-}
+{"ignored":["AA:BB:CC:DD:EE:FF","11:22:33:44:55:66"]}
 ```
 
-**Capacity:** Unlimited (supports 100+ beacons without issues)
-
-### Per-Location Ignores
-
-**File:** ``packages/triangulation/data/bt_fingerprints.csv`` (same as fingerprints)
-
-**Format:**
-```
-0|AA:BB:CC:DD:EE:FF=-65,11:22:33:44:55:66=-72:X,22:33:44:55:66:77=-80:X
-```
-
-- `:X` suffix = ignored for this location only
-- `:X` goes AFTER RSSI value
-- Case-insensitive (normalized to uppercase in algorithm)
+**Capacity:** Unlimited (file system limited, not Home Assistant)
 
 </details>
 
@@ -1336,17 +1338,16 @@ Returns best match location
 ### Algorithm Filtering Logic
 ```jinja2
 # Skip ignored beacons when counting
-for beacon in fingerprint:
-    if beacon.endswith(':X'):
-        continue  # Skip local ignored
-    if beacon_mac in global_ignored_list:
+for mac, beacon in fingerprint.beacons.items():
+    if mac in global_ignored_list:
         continue  # Skip global ignored
+    if beacon.get('ignored', false):
+        continue  # Skip local ignored
     # Count as active beacon
     score += calculate_match(beacon, scan)
 ```
 
 ### Performance Impact
-- **Storage:** +2 bytes per ignored beacon (minimal)
 - **Algorithm:** O(n) filtering, happens once per scan
 - **UI:** Generated from existing data, no extra queries
 
@@ -1403,11 +1404,6 @@ service: script.report_beacon_status
 <details>
 <summary><strong>Important Notes</strong></summary>
 
-### CSV Format is Critical
-- `:X` must come AFTER RSSI value: `MAC=RSSI:X`
-- No spaces around `=` or `,`
-- Case-insensitive (normalized to uppercase)
-
 ### Storage Patterns
 - **File + Sensor Attributes:** Same proven pattern as fingerprints and scans
 - **No Entity Size Limits:** Uses sensor attributes, not state
@@ -1418,5 +1414,84 @@ service: script.report_beacon_status
 - All ignored beacons are skipped
 - Both local and global ignored checked
 - Performance remains constant
+
+</details>
+
+<details>
+<summary><strong>Dedicated Discriminator Beacons: ESP32-C3 Deployment</strong></summary>
+
+When two locations share the same RF environment (adjacent rooms, charger close to a bed), a dedicated BLE beacon at one location creates a strong discriminator. The ESP32-C3 SuperMini is the preferred choice: USB-C powered, no battery to replace, stable RSSI.
+
+### Wi-Fi Coexistence Issue
+
+The initial firmware design used Wi-Fi for HA API access and OTA updates. The ESP32-C3 shares a single 2.4 GHz antenna between its Wi-Fi and Bluetooth controllers. Under Ubiquiti UniFi access points, the device repeatedly dropped the connection immediately after a successful handshake:
+
+```
+[W][wifi_esp32:795]: Disconnected ssid='p2r-IoT' bssid=[...] reason='Auth Expired'
+```
+
+Each Wi-Fi reconnection cycle forced a hardware adapter reset, which interrupted the BLE advertising loop:
+
+```
+[D][esp32_ble_beacon:122]: BLE stopped advertising successfully
+```
+
+**Resolution:** Wi-Fi, native API, OTA, and captive portal are stripped entirely from production firmware. The Bluetooth radio gets exclusive antenna control and broadcasts continuously without interruption.
+
+### Framework Choice
+
+Arduino framework is used instead of ESP-IDF for faster compilation cycles and a smaller binary — both relevant to the USB flashing workflow when there is no OTA.
+
+### Logger Configuration
+
+`USB_SERIAL_JTAG` is the internal serial console peripheral on ESP32-C3 silicon. Routing the logger here allows boot-time output when connected to a computer. When running headless from a USB wall charger (no data host), the microcontroller detects the absence of a USB host and discards the log buffer silently — no CPU impact on the BLE loop.
+
+### Production Configuration
+
+```yaml
+esphome:
+  name: esp32-1
+  friendly_name: esp32-1
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+# No wifi, api, ota, or captive_portal configured to prevent coexistence issues.
+# This gives the Bluetooth radio exclusive control of the antenna.
+
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: "EB241603-2D59-4402-A833-255427940212"
+  major: 100
+  minor: 1
+  measured_power: -65
+```
+
+Additional nodes (`esp32-2`, `esp32-3`) use identical configurations with incremented `name` values only.
+
+### iBeacon Parameters
+
+The `esp32_ble_beacon` component requires a valid iBeacon payload to compile. In this deployment the payload fields are dummy data — **the tracking logic ignores all of them**:
+
+- **UUID / Major / Minor** — Required by the iBeacon spec. Not read by the tracker.
+- **Measured Power** — Declares expected RSSI at 1 m (-65 dBm). Not used; the tracker works with raw observed RSSI, not calibrated distance estimates.
+
+### How Tasker Identifies Beacons
+
+Tasker performs a one-shot triggered scan on charger connect, capturing all ambient BLE advertisements indiscriminately (beacons, printers, TVs, etc.) and does not parse the iBeacon payload. Location detection relies entirely on the **hardware MAC address** embedded in the Bluetooth radio.
+
+The ESP32-C3's Bluetooth MAC is its Wi-Fi MAC + 2 (a fixed hardware offset in the silicon). The MAC is visible in the ESPHome boot log when connected via USB:
+
+```
+[C][esp32_ble:665]: BLE:
+[C][esp32_ble:665]:   MAC address: A0:F2:62:A4:1A:1A
+```
+
+This MAC is permanent and does not change across reboots or firmware updates, making it a reliable fingerprint anchor.
 
 </details>

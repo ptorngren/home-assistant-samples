@@ -406,31 +406,6 @@ template:
 # SCRIPTS
 # ------------------------------------------------------------------
 script:
-  get_active_fingerprint_beacons:
-    alias: "Get Active Fingerprint Beacons"
-    description: "Extract active beacons from fingerprint string. Filters out locally-ignored (:X marked) beacons."
-    fields:
-      mac_rssi_str:
-        description: "Fingerprint beacon string (e.g. 'AA:BB:CC:DD:EE:FF=-52,11:22:33:44:55:66=-65:X')"
-        example: "AA:BB:CC:DD:EE:FF=-52,11:22:33:44:55:66=-65:X"
-    sequence:
-      - variables:
-          # Filter out :X-marked (locally-ignored) beacons
-          active_beacons_str: |
-            {%- set ns = namespace(pairs=[]) -%}
-            {%- if mac_rssi_str and mac_rssi_str | length > 0 -%}
-              {%- for pair in (mac_rssi_str | string).split(',') -%}
-                {%- if '=' in pair and not pair.endswith(':X') -%}
-                  {%- set ns.pairs = ns.pairs + [pair.rstrip(':X')] -%}
-                {%- endif -%}
-              {%- endfor -%}
-            {%- endif -%}
-            {{ ns.pairs | join(',') }}
-          result:
-            fingerprint: "{{ active_beacons_str }}"
-      - stop: "Active beacons extracted"
-        response_variable: result
-
   generate_confusion_matrix:
     alias: "Generate BT Confusion Matrix"
     description: "Calculate location confusion scores using worst-case range overlap (no midpoint approximation)"
@@ -534,6 +509,7 @@ script:
           level: info
 
   detect_charger_location:
+    alias: "BT: Detect charger location"
     description: "Analyze BT signals from Tasker scan and detect phone charger location"
     mode: queued
     fields:
@@ -585,6 +561,7 @@ script:
 # AUTOMATIONS
 # ------------------------------------------------------------------
   bt_beacon_toggle_location_ignored:
+    alias: "BT: Toggle beacon ignored at location"
     description: "Toggle beacon ignored status for a specific location (tap action)"
     fields:
       location_index:
@@ -643,6 +620,7 @@ script:
               level: debug
 
   bt_beacon_toggle_all_locations_ignored:
+    alias: "BT: Toggle beacon ignored at all locations"
     description: "Toggle beacon locally ignored across ALL locations (tap action in all-beacons table)"
     fields:
       mac:
@@ -699,6 +677,7 @@ script:
           level: debug
 
   bt_beacon_remove_from_fingerprint:
+    alias: "BT: Remove beacon from fingerprint"
     description: "Remove beacon from fingerprint for a specific location (double-tap action)"
     fields:
       location_index:
@@ -749,6 +728,7 @@ script:
               level: debug
 
   bt_beacon_remove_from_all_fingerprints:
+    alias: "BT: Remove beacon from all fingerprints"
     description: "Remove beacon from ALL location fingerprints (double-tap action in all-beacons table)"
     fields:
       mac:
@@ -788,6 +768,7 @@ script:
           level: debug
 
   bt_beacon_toggle_global_ignored:
+    alias: "BT: Toggle beacon globally ignored"
     description: "Toggle beacon in global ignored list (hold/double-tap action)"
     fields:
       mac:
@@ -851,6 +832,7 @@ script:
               fingerprints_json: "{{ cleaned_fingerprints }}"
 
   calculate_location_scores:
+    alias: "BT: Calculate location scores"
     description: "Calculate location scores against latest BT scan and update location metrics"
     sequence:
       # Load latest scan from sensor
@@ -863,6 +845,7 @@ script:
           devices: "{{ scan_devices }}"
 
   detect_location_from_signals:
+    alias: "BT: Detect location from signals"
     description: "Apply location detection rules to BT signal data (user-customizable)"
     fields:
       devices:
@@ -931,6 +914,7 @@ script:
         response_variable: result
 
   capture_bt_fingerprint:
+    alias: "BT: Capture fingerprint"
     description: "Capture current RSSI values as fingerprint for location"
     fields:
       location_index:
@@ -1060,6 +1044,7 @@ script:
               level: warning
 
   merge_bt_fingerprint:
+    alias: "BT: Merge fingerprint"
     description: "Merge or update the fingerprint for a location from the latest BT scan"
     fields:
       location_index:
@@ -1246,6 +1231,7 @@ script:
                   duration: 5000
 
   bt_beacon_reset_minmax:
+    alias: "BT: Reset beacon min/max"
     description: "Reset a single beacon entry from current scan: mean mode writes scan RSSI; min/max mode writes [scan−tol, scan+tol]. No-op if beacon absent from scan."
     fields:
       location_index:
@@ -1620,6 +1606,7 @@ script:
           browser_id: "{{ browser_id }}"
 
   bt_beacon_merge:
+    alias: "BT: Merge beacon data"
     description: "Merge a single beacon from the current scan into its fingerprint entry (expand min/max or update running mean)"
     fields:
       location_index:
@@ -1723,6 +1710,7 @@ script:
               level: info
 
   bt_beacon_reset_all:
+    alias: "BT: Reset all beacons"
     description: "Reset all beacons for a location. Min/max mode: P10/P90 if ≥10 samples, else midpoint±tolerance. Mean mode: current scan RSSI if present, else unchanged."
     fields:
       location_index:
@@ -1828,6 +1816,7 @@ script:
           location_index: "{{ location_index }}"
 
   bt_record_merge_statistics:
+    alias: "BT: Record merge statistics"
     description: "Append current scan RSSI readings for a location to bt_statistics.json (called after capture/merge/reset)"
     fields:
       location_index:
@@ -1911,6 +1900,7 @@ script:
           level: debug
 
   report_beacon_status:
+    alias: "BT: Report beacon status"
     description: "Generate and log beacon status report with per-beacon statistics and warnings"
     sequence:
       - variables:
@@ -2081,6 +2071,7 @@ script:
           level: info
 
   load_bt_fingerprints_from_file:
+    alias: "BT: Load fingerprints from file"
     description: "Refresh BT fingerprints sensor from file backup"
     sequence:
       # Force sensor to re-read current file contents
@@ -2089,6 +2080,7 @@ script:
           entity_id: sensor.bt_fingerprint_database_file
 
   write_bt_fingerprints:
+    alias: "BT: Write fingerprints to file"
     description: "Write fingerprints JSON string to file and refresh sensor. Single write path for all fingerprint writers."
     fields:
       fingerprints_json:
@@ -2102,6 +2094,7 @@ script:
           entity_id: sensor.bt_fingerprint_database_file
 
   clear_bt_fingerprints:
+    alias: "BT: Clear fingerprints"
     description: "Clear BT fingerprints database and refresh sensor"
     sequence:
       - action: script.write_bt_fingerprints
@@ -2110,6 +2103,7 @@ script:
             fingerprints: []
 
   clear_bt_statistics:
+    alias: "BT: Clear statistics"
     description: "Clear all scan history statistics and refresh sensor"
     sequence:
       - action: shell_command.bt_statistics_clear
