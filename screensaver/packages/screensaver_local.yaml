@@ -103,6 +103,7 @@ template:
 # screensaver_tap/double_tap/hold: Tap action handlers that call the shared resolver and execute specific actions
 script:
   screensaver_resolve_scenario:
+    alias: "Screensaver: Resolve scenario"
     description: "Resolve browser_id to target scenario using device location and time-of-day rules"
     fields:
       browser_id:
@@ -168,6 +169,7 @@ script:
         response_variable: result
 
   screensaver_tap:
+    alias: "Screensaver: Handle tap"
     description: "Toggle scenario via browser_id and location"
     sequence:
       - action: script.screensaver_resolve_scenario
@@ -184,6 +186,7 @@ script:
                   scenario: "{{ resolved.target_scenario }}"
 
   screensaver_double_tap:
+    alias: "Screensaver: Handle double tap"
     description: "Randomize scenario via browser_id and location IF a scenario is active"
     sequence:
       - action: script.screensaver_resolve_scenario
@@ -204,6 +207,7 @@ script:
         default: []
 
   screensaver_hold:
+    alias: "Screensaver: Handle hold"
     description: "Screensaver hold - volume control popup via browser_id and location"
     # Long press (hold) shows a browser_mod popup with volume control for the scenario's master player
     # Popup shows: Volume Down/Up buttons for master player volume control
