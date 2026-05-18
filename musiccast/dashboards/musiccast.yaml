@@ -1049,6 +1049,8 @@ views:
                       template: musiccast_player_tile
                       variables:
                         - entity: this.entity_id
+            sort:
+              method: friendly_name
             card:
               type: vertical-stack
             card_param: cards

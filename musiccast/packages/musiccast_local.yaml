@@ -23,6 +23,25 @@ automation:
         enabled: false
     mode: single
 
+  # Kitchen door closed -> altan music off
+  - id: musik_kokdorr_stangd_altanmusik_off_switch
+    alias: 'Köksdörr stängd -> Altanmusik OFF'
+    description: Stäng av musik på uteplats när köksdörren stängs
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.dorr_kok
+        to: 'off'
+        for:
+          minutes: 2
+    conditions: []
+    actions:
+      - action: media_player.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: media_player.altan
+    mode: restart
+
   # Garage LUX-triggered automation
   - id: musiccast_lux_garage_low_musik_off
     alias: Garage LUX låg -> Musik OFF

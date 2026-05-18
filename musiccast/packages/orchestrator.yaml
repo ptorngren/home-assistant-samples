@@ -230,6 +230,8 @@ automation:
           # so the subsequent event will re-run detection automatically.
           # Template does strict comparison between expected players and current
           # (with passive partners filtered out via musiccast_players).
+          # Delay before clearing: debounces transient group_members glitches from MC devices.
+          # mode: restart means a recovering glitch fires a new trigger and cancels the delay.
           - conditions:
               - condition: template
                 value_template: |
@@ -247,6 +249,8 @@ automation:
                     {{ gm_full != (expected | list | sort) }}
                   {% endif %}
             sequence:
+              - delay:
+                  seconds: 5
               - action: input_text.set_value
                 target:
                   entity_id: input_text.active_scenario

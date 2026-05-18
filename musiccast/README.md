@@ -290,6 +290,13 @@ Furthermore, the MusicCast app is slow and often fails to link groups. For some 
 ## Known Limitations
 
 <details>
+<summary><strong>Players view sorts Å/Ä/Ö as A/A/O</strong></summary>
+
+The Players view sorts alphabetically but not locale-aware. Swedish characters Å, Ä, Ö are treated as A, A, O rather than sorted after Z as Swedish requires. This is a limitation of the `auto-entities` card's sort implementation. Accepted — better than no sort at all.
+
+</details>
+
+<details>
 <summary><strong>Long-pressing a linked player in the Players view deactivates the scenario</strong></summary>
 
 Long-pressing a player tile in the Players view unlinks it and powers it off. The power-off is asynchronous — the device goes offline after the HA action completes — and HA interprets this the same way it would if the device were powered off externally via the MusicCast app: the scenario is no longer active. For scenario management, use single-tap to link/unlink players while keeping the scenario active; reserve long-press for when you intentionally want to remove a player from playback entirely.
@@ -362,6 +369,22 @@ Any source saved as a MusicCast favorite should work in principle, but other sou
 <summary><strong>Icon picker is text input</strong></summary>
 
 When creating or editing scenarios, the icon field requires typing `mdi:icon-name` manually. HA's native icon picker is not available in this context.
+
+</details>
+
+---
+
+## Troubleshooting
+
+<details>
+<summary><strong>Player name appears duplicated (e.g. "Garage Garage")</strong></summary>
+
+A trailing space in the device name in the MusicCast app causes the HA integration to register a duplicated device name. The entity name then reflects this duplicated name.
+
+**Fix:**
+1. Remove the trailing space from the device name in the MusicCast app
+2. Reload the MusicCast integration in HA (Settings → Devices & Services → Yamaha MusicCast → Reload)
+3. Recreate the entity ID (Settings → Entities → find the entity → edit → regenerate)
 
 </details>
 
