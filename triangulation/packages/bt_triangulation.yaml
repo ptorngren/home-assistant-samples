@@ -306,6 +306,7 @@ template:
         allowed_methods:
           - POST
           - PUT
+        local_only: false
     sensor:
       - name: "BT Latest Scan Full"
         unique_id: bt_latest_scan_full
@@ -2201,6 +2202,7 @@ automation:
     trigger:
       - trigger: webhook
         webhook_id: phone_charger_disconnect
+        local_only: false
         # Triggered by Tasker when phone is removed from charger (power source disconnected)
         # Webhook receives JSON: {"browser_id": "peers_mobil", "event": "power_disconnected"}
     action:

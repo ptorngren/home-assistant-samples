@@ -102,9 +102,20 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
      ```
      https://your-ha-url/dashboard-screensaver/home?kiosk
      ```
-   - Use HTTPS to let the Companion App open in normal mode for regular use
    - The `?kiosk` parameter hides Home Assistant chrome for a pure screensaver appearance
    - Enable **Keep Screen On** in FKB settings
+
+   **Recommendation: Use your Nabu Casa URL, not the local IP**
+
+   Using `http://192.168.x.x:8123/...` only works on your home network. If the phone is away (or briefly off WiFi), FKB will show a "Loading..." screen indefinitely.
+
+   Use your Nabu Casa URL instead:
+   ```
+   https://xxxxx.ui.nabu.casa/dashboard-screensaver/home?kiosk
+   ```
+   This works both at home and away, with no change in behavior.
+
+   **This does not interfere with the HA Companion App.** FKB and the Companion App are separate browsers with separate Browser IDs (e.g. `my_phone_fkb` vs `my_phone`). Each registers independently in Browser Mod and behaves independently — kiosk mode in FKB has no effect on the Companion App.
 
 10. **Install Tasker on the Android device**
    - Used to detect display timeout, charging state, and app activity
@@ -522,10 +533,28 @@ var payload = JSON.stringify({ devices: devices });
 **Action 3: HTTP Request**
 - **Category:** `Net` → `HTTP Request`
 - **Method:** `POST`
-- **URL:** `http://[YOUR_HA_IP]:8123/api/webhook/phone_charger_bt`
+- **URL:** `https://[YOUR_HA_DOMAIN]/api/webhook/phone_charger_bt`
 - **Headers:** `Content-Type:application/json`
 - **Body:** `%payload`
-- **Purpose:** Transmits the JSON to Home Assistant webhook. Using port `8123` explicitly bypasses default port issues.
+- **Purpose:** Transmits the JSON to Home Assistant webhook.
+
+  **Use your remote domain, not the local IP.** `http://192.168.x.x:8123/...` only works on home WiFi. Use your Nabu Casa or custom domain URL with HTTPS so the scan works from anywhere.
+
+  **Enable remote webhook access in HA.** By default, HA rejects webhook requests arriving via remote access (Nabu Casa). Add `local_only: false` to both webhook triggers in `bt_triangulation.yaml`:
+  ```yaml
+  - platform: webhook
+    webhook_id: phone_charger_bt
+    allowed_methods:
+      - POST
+      - PUT
+    local_only: false
+  ```
+  ```yaml
+  - trigger: webhook
+    webhook_id: phone_charger_disconnect
+    local_only: false
+  ```
+  The disconnect webhook clears the stored location when the phone is removed from the charger. Without `local_only: false`, this never fires via remote access, and the stale location persists into the next docking session.
 
 **Action 4: Flash (Optional Verification)**
 - **Category:** `Alert` → `Flash`
