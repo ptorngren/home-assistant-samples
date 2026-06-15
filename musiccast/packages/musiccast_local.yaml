@@ -2,6 +2,45 @@
 # MUSICCAST LOCAL: Miscellaneous musiccast automations
 # -------------------------------------------------------------------------------
 
+# -------------------------------------------------------------------------------
+# HELPERS
+# -------------------------------------------------------------------------------
+timer:
+  # Delay between garage lights coming on and the garage scenario starting.
+  # Duration is set from input_number.garagemusik_timer_start when started.
+  garagemusik_start_timer:
+    name: Garagemusik Start Timer
+    duration: "00:01:00"
+
+  # Grace period between garage lights going off and the music turning off.
+  # Duration is set from input_number.garagemusik_timer_stop when started.
+  garagemusik_stop_timer:
+    name: Garagemusik Stop Timer
+    duration: "00:02:00"
+
+input_number:
+  # Configurable start delay (seconds) for garage music after lights on.
+  # 0 = DISABLED (never auto-start on LUX). 1-300 s = delay before starting.
+  # The actual start happens only in garagemusik_start_timer_expired (single source of truth).
+  garagemusik_timer_start:
+    name: Garagemusik Start
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:timer-edit-outline
+
+  # Configurable stop delay (seconds) for garage music after lights off.
+  # 0 = DISABLED (never auto-stop on LUX). 1-300 s = grace period before stopping.
+  # The actual turn-off happens only in garagemusik_stop_timer_expired.
+  garagemusik_timer_stop:
+    name: Garagemusik Stop
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:timer-edit-outline
+
 automation:
   # Alarm-triggered automation
   - id: belysning_huset_larmat_musik_off
@@ -50,10 +89,114 @@ automation:
       - trigger: numeric_state
         entity_id: sensor.lux_garage_illuminance
         below: 10
+        # Short debounce against LUX glitches/flicker. The stop timer + cancel-on-
+        # lights-on already handle most flicker, but this also guards transients where
+        # the sensor recovers to a mid-range value (10–100) rather than back above 100.
         for:
-          seconds: 15
+          seconds: 5
     conditions: []
     actions:
+      # Cancel any pending garage-music start timer (lights went off during the delay).
+      # Unconditional: a pending start must be aborted even when auto-stop is disabled.
+      - action: timer.cancel
+        target:
+          entity_id: timer.garagemusik_start_timer
+      # Start the grace-period stop timer (music keeps playing until it expires, then
+      # garagemusik_stop_timer_expired performs the single shutdown).
+      # 0 = disabled -> skip; never auto-stop on LUX.
+      - if:
+          - condition: template
+            value_template: "{{ states('input_number.garagemusik_timer_stop') | int(0) > 0 }}"
+        then:
+          - action: timer.start
+            target:
+              entity_id: timer.garagemusik_stop_timer
+            data:
+              duration: "{{ states('input_number.garagemusik_timer_stop') | int(2) }}"
+    mode: single
+
+  # Garage LUX-triggered automation (reverse of musiccast_lux_garage_low_musik_off)
+  # When the garage lights come on (LUX > 100), start a configurable delay timer
+  # (input_number.garagemusik_timer_start). When it expires, the garage scenario
+  # starts — see musiccast_garagemusik_start_timer_expired (single source of truth).
+  #
+  # NOTE: This duplicates `garage_scenario_auto_load` (screensaver_local.yaml), which
+  # starts the same garage scenario when the phone is detected on the garage charger.
+  # Both are redundant ways to trigger the garage scenario — there is little point
+  # running both enabled. A dashboard toggle will be added to disable one or both.
+  - id: musiccast_lux_garage_high_musik_on
+    alias: Garage LUX hög -> Musik ON 
+    description: Starta garagemusik när ljuset tänds i garaget
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.lux_garage_illuminance
+        above: 100
+    conditions: []
+    actions:
+      # Lights came back on — always cancel any pending stop timer so music keeps
+      # playing, even if garage is already the active scenario.
+      - action: timer.cancel
+        target:
+          entity_id: timer.garagemusik_stop_timer
+      # Start the delay timer. The actual start happens in the timer-expired automation.
+      # 0 = disabled -> skip; never auto-start on LUX. Also skip if garage is already
+      # active (toggle would otherwise turn it OFF).
+      - if:
+          - condition: template
+            value_template: "{{ states('input_number.garagemusik_timer_start') | int(0) > 0 }}"
+          - condition: template
+            value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+        then:
+          - action: timer.start
+            target:
+              entity_id: timer.garagemusik_start_timer
+            data:
+              duration: "{{ states('input_number.garagemusik_timer_start') | int(1) }}"
+    mode: restart
+
+  # Garage start-delay timer expired -> activate the garage scenario
+  - id: musiccast_garagemusik_start_timer_expired
+    alias: Garagemusik START Timer expired
+    description: När fördröjningstimern löper ut, starta garage-scenariot om ljuset fortfarande är på och scenariot inte redan är aktivt
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.garagemusik_start_timer
+    conditions:
+      # Lights must still be on (LUX above threshold) and garage not already active
+      - condition: numeric_state
+        entity_id: sensor.lux_garage_illuminance
+        above: 100
+      - condition: template
+        value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+    actions:
+      - action: script.musiccast_scenario_toggle
+        data:
+          scenario: garage
+    mode: single
+
+  # Garage stop-delay timer expired -> turn off garage music (single shutdown point)
+  - id: musiccast_garagemusik_stop_timer_expired
+    alias: Garagemusik STOP Timer expired
+    description: När stopptimern löper ut, slå av garage- och skidverkstadshögtalarna (om ljuset fortfarande är släckt)
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.garagemusik_stop_timer
+    conditions:
+      # Safety: only turn off if the lights are still off (returning would have cancelled the timer)
+      - condition: numeric_state
+        entity_id: sensor.lux_garage_illuminance
+        below: 100
+    actions:
+      # Power off the players. Turning off the master normally dissolves the MusicCast
+      # group, which detect_manual_scenario (orchestrator.yaml) detects → clears
+      # active_scenario. KNOWN ISSUE: if a doorbell ring mutes these players during the
+      # stop delay, the doorbell's delayed unmute can re-wake them after this turn_off
+      # and the group may not dissolve, leaving a stale active_scenario. See
+      # progress-musiccast.md (doorbell race). Not fixed yet — accepted for now.
       - action: media_player.turn_off
         target:
           entity_id:

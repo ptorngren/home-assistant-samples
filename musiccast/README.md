@@ -224,7 +224,7 @@ Admin view for discovering player IPs on the local network. Run once during setu
 
 ### Adding Your Automations
 
-Put all site-specific automations in `musiccast_local.yaml`. The package ships with examples (alarm → stop music, garage LUX → stop music, kitchen TV → stop music). Replace or add to these without touching `orchestrator.yaml`.
+Put all site-specific automations in `musiccast_local.yaml`. The package ships with examples (alarm → stop music, garage LUX → start/stop music, kitchen TV → stop music). Replace or add to these without touching `orchestrator.yaml`.
 
 #### Check if a scenario is active
 

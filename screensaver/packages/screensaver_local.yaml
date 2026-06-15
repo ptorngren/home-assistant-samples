@@ -317,3 +317,35 @@ automation:
                       entity_id: switch.pp14_koksplatta
     mode: restart
 
+  # Auto-load the garage scenario as soon as the phone's charger location is
+  # detected as garage — no screensaver tap needed. Scope (set via design):
+  # - Phone only (peers_mobil)
+  # - Always switches to garage, replacing any other active scenario
+  # - Load only; leaving the garage does NOT auto-stop the scenario
+  #
+  # NOTE: This duplicates `musiccast_lux_garage_high_musik_on` (musiccast_local.yaml),
+  # which starts the same garage scenario when the garage lights come on. Both are
+  # redundant ways to trigger the garage scenario — there is little point running
+  # both enabled. A dashboard toggle will be added to disable one or both.
+  - alias: 'Screensaver: Automatisk Garagemusik'
+    id: screensaver_garage_music
+    description: Load the garage MusicCast scenario when the phone is detected in the garage
+    triggers:
+      - trigger: state
+        entity_id: input_text.device_charger_locations
+    conditions:
+      # Fire only when the phone's location NEWLY became 'garage' (was something else before)
+      - condition: template
+        value_template: >
+          {% set device = 'peers_mobil' %}
+          {% set old_map = (trigger.from_state.state if trigger.from_state else '{}') | from_json({}) %}
+          {% set new_map = (trigger.to_state.state if trigger.to_state else '{}') | from_json({}) %}
+          {{ new_map.get(device, '') == 'garage' and old_map.get(device, '') != 'garage' }}
+      # Skip if garage is already active — toggle would turn it OFF
+      - condition: template
+        value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+    action:
+      - action: script.musiccast_scenario_toggle
+        data:
+          scenario: garage
+    mode: single

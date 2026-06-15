@@ -582,7 +582,7 @@ The Bluetooth triangulation system is fully documented as a standalone system wi
 - Refining beacon selection
 - Advanced algorithm tuning
 
-**Quick summary:** The system sends location data to `input_text.device_charger_locations`, which the screensaver can use for location-aware logic via tap action scripts. Full end-to-end setup (including Tasker configuration, HACS components, and fingerprint workflow) is documented in the triangulation README.
+**Quick summary:** The system sends location data to `input_text.device_charger_locations`, which the screensaver can use for location-aware logic via tap action scripts — and other, possibly automated, actions (e.g. starting a scenario automatically when the phone is detected in a given room). Full end-to-end setup (including Tasker configuration, HACS components, and fingerprint workflow) is documented in the triangulation README.
 
 ---
 
