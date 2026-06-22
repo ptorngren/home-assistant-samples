@@ -143,7 +143,7 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
 
 <img src="docs/screensaver.jpg" width="20%" alt="Screensaver Dashboard Example">
 
-Time, date, temperature, weather, and 5-day forecast in a clean, minimalist layout optimized for wall mounting. If an alarm is set on the device, the next alarm time appears at the top. Anti-burn-in animations run continuously at imperceptible speeds to protect OLED/LCD panels.
+Time, date, temperature, weather, and 5-day forecast in a clean, minimalist layout optimized for wall mounting. If an alarm is set on the device, the next alarm time appears at the top. If the device exposes a battery level sensor, its charge level is shown at the top right, combined with the detected charger location as `location:84%` (reliable on phones; on kiosk tablets the native battery sensor can be intermittent — see Battery Management). Anti-burn-in animations run continuously at imperceptible speeds to protect OLED/LCD panels.
 
 ---
 
@@ -778,6 +778,7 @@ Both configurations use the same Home Assistant dashboard architecture with devi
 - Weather forecast text and icons depend on which weather service you configure (e.g., SMHI for Sweden, Weather.com for US, etc.)
 - ⚠️ **Alarm display requires the Home Assistant Companion App** with "Next Alarm" sensor enabled on the device running the screensaver. Without this, alarm times will not appear. 
   If the sensor does not exist for a device, the alarm row will remain empty.
+- **Battery charge** (top right, combined with the charger location as `location:84%`) is device-agnostic — it's mapped per-device from the Browser ID to `sensor.{device_id}_battery_level` (see "Dynamic Sensor Mapping" below), so it shows on any device exposing that sensor (e.g. the Home Assistant Companion App's "Battery Level"), whether phone or tablet. It always shows the current level (independent of charging state). The location and charge fall back independently: `location:84%` when both are present, just `84%` when no charger location is detected (e.g. launched manually off-charger), just `location` if the battery sensor is missing/unavailable. Note: on kiosk tablets the native Android battery sensor can be intermittent (see Battery Management), so the charge may be empty or stale there even though it resolves.
 
 </details>
 
@@ -1173,7 +1174,17 @@ The screensaver uses JavaScript to dynamically map the correct Home Assistant se
 - The entity should be named: `sensor.{your_browser_id}_next_alarm`
 - Example: If your Browser ID is `bedroom_phone_fkb`, enable the "Next Alarm" sensor in Companion App settings, and it will be available as `sensor.bedroom_phone_fkb_next_alarm`
 
-This dynamic mapping pattern can be extended to other sensor types (battery level, charging state, etc.) using the same Browser ID-based naming convention.
+**Extended to battery charge:**
+
+The same pattern drives the battery charge level, which shares the top-right field with the charger location (rendered as `location:84%`). The Browser ID is transformed to `sensor.{device_id}_battery_level`, and the value is shown as a percentage (e.g. `67%`).
+
+- Replacement attribute: `battery_level_replacement: "sensor.$1_battery_level"` on `sensor.dashboard_logic_config` (alongside `alarm_id_replacement`)
+- Example: Browser ID `peers_mobil_fkb` → `sensor.peers_mobil_battery_level`
+- **Setup:** enable the "Battery Level" sensor in the Companion App so `sensor.{your_browser_id}_battery_level` exists; otherwise only the location (or nothing) is shown
+- Location and charge fall back independently: `location:84%` (both), `84%` (no charger location — e.g. launched manually off-charger), `location` (no battery sensor)
+- Shows the level regardless of charging state (the screensaver normally runs while docked, but the value still appears if launched manually off-charger)
+
+This dynamic mapping pattern can be extended to further sensor types (charging state, etc.) using the same Browser ID-based naming convention.
 
 </details>
 

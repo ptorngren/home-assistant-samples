@@ -196,8 +196,12 @@ decluttering_templates:
             }
           ]]]
 
-        # Charger location indicator (debug aid for location detection)
-        # Shows detected location at top right
+        # Charger location + battery charge indicator (top right)
+        # Combines the detected charger location and the device's battery level as "location:charge%".
+        # Both are device-aware via the same Browser ID transform used by the alarm field:
+        #   - location  ← input_text.device_charger_locations mapping (only set while docked on a known charger)
+        #   - charge    ← sensor.{device_id}_battery_level (Companion App; shown whenever the sensor has a value)
+        # Falls back to whichever is present: "location:84%" (both) / "84%" (no location) / "location" (no battery).
         charger_location: |
           [[[
             // Get browser_id from browser_mod localStorage
@@ -209,22 +213,33 @@ decluttering_templates:
             const pattern = configSensor?.attributes?.browser_id_transform_pattern;
             if (!pattern) return '';
 
-            // Apply regex to transform from browser_id to entity_id (e.g. by stripping Fully Kiosk Browser suffix)
+            // Apply regex to transform from browser_id to mapping key (e.g. by stripping Fully Kiosk Browser suffix)
             const regex = new RegExp(pattern, 'i');
             const mappingKey = browserId.replace(regex, '$1');
 
             // Read device-to-location JSON mapping from helper
+            let location = '';
             const mappingJson = states['input_text.device_charger_locations']?.state;
-            if (!mappingJson) return '';
-
-            try {
-              const mapping = JSON.parse(mappingJson);
-              // Only show location if this device has an entry in the mapping
-              const location = mapping[mappingKey];
-              return location && location !== 'unknown' ? location : '';
-            } catch (e) {
-              return '';
+            if (mappingJson) {
+              try {
+                const loc = JSON.parse(mappingJson)[mappingKey];
+                if (loc && loc !== 'unknown') location = loc;
+              } catch (e) { /* ignore malformed mapping */ }
             }
+
+            // Resolve battery charge level (device-agnostic, same Browser ID transform)
+            let charge = '';
+            const replacement = configSensor.attributes.battery_level_replacement;
+            if (replacement) {
+              const batteryLevel = states[browserId.replace(regex, replacement)]?.state;
+              if (batteryLevel && batteryLevel !== 'unavailable' && batteryLevel !== 'unknown') {
+                charge = `${batteryLevel}%`;
+              }
+            }
+
+            // Combine as "location:charge", falling back to whichever is present
+            if (location && charge) return `${location}:${charge}`;
+            return location || charge;
           ]]]
 
         # Embedded weather forecast card

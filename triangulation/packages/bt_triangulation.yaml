@@ -182,6 +182,7 @@ template:
         attributes:
           browser_id_transform_pattern: "^(.+?)(?:_fkb)?$"
           alarm_id_replacement: "sensor.$1_next_alarm"
+          battery_level_replacement: "sensor.$1_battery_level"
 
       # Active Known Beacons - single source of truth for which beacons are active
       # A beacon is active if it appears non-ignored in at least one location fingerprint
