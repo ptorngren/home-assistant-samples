@@ -33,19 +33,27 @@ colors:
   alarm_highlight: &color_alarm "#C4A050"     # Brighter gold for alarm icon/time
 
 font_sizes:
-  # vw = viewport width units (1vw = 1% of screen width)
-  # Using vw instead of px makes the layout hardware-independent (scales on any tablet size)
-  time: &font_time 32vw
-  date: &font_date 8vw
-  temp: &font_temp 18vw
-  temp_small: &font_temp_small 14vw
-  climate: &font_climate 7vw
-  climate_details: &font_climate_details 7vw
-  alarm: &font_alarm 5vw
+  # vmin = viewport min units (1vmin = 1% of the SMALLER viewport dimension)
+  # Using vmin instead of px keeps the layout hardware-independent AND scales correctly in both
+  # portrait and landscape. (Plain vw makes fonts huge on a wide landscape monitor; vmin tracks the
+  # shorter side. On a portrait phone width < height, so vmin == vw — portrait stays unchanged.)
+  time: &font_time 32vmin
+  date: &font_date 8vmin
+  temp: &font_temp 18vmin
+  temp_small: &font_temp_small 14vmin
+  climate: &font_climate 7vmin
+  climate_details: &font_climate_details 7vmin
+  alarm: &font_alarm 5vmin
 
 # Temperature display thresholds
 # - If temp string exceeds char_limit, font shrinks to prevent overflow, eg "-35.6 / -32.8°" (14 chars)
 temp_char_limit: &char_limit 12
+
+# Landscape (wide-screen) breakpoint
+# The two-column wide layout activates when the viewport is at least this wide relative to its
+# height (CSS min-aspect-ratio). "3/2" = width >= 1.5x height. Raise toward "16/9" to require a
+# wider screen before switching; lower toward "7/5" to switch on a less-wide screen.
+landscape_breakpoint: &landscape_breakpoint "3/2"
 
 # -------------------------------------------------------------------------------------
 # DECLUTTERING TEMPLATES
@@ -89,6 +97,41 @@ decluttering_templates:
           #climate_details { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
           #alarm { animation: drift-slow calc(240s / var(--anim-speed-mult)) linear infinite alternate !important; }
           #forecast { animation: drift-fast calc(200s / var(--anim-speed-mult)) linear infinite alternate !important; }
+
+          /* Wide / desktop monitors: a two-column TOP section — LEFT = clock (date + time),
+             RIGHT = weather summary (temp, conditions, humidity/wind) — plus the forecast as a
+             full-width FOOTER spanning both columns below. Implemented as a real CSS media query so
+             it re-flows automatically on resize (button-card style JS only evaluates once at render
+             time, so it could not be relied on here). #container is the button-card grid element.
+             Keyed on min-aspect-ratio (width >= 1.5x height), NOT orientation: the fonts scale with
+             vmin (the shorter side) while the columns are 50% width, so on a narrow/near-square
+             landscape window the big time/temp overflow their half-columns and collide. Requiring a
+             genuinely wide aspect ratio keeps two columns only where the content actually fits;
+             narrower windows fall back to the single-column stack (which has full width for them). */
+          @media (min-aspect-ratio: [[landscape_breakpoint]]) {
+            #container {
+              grid-template-columns: 1fr 1fr !important;
+              grid-template-rows: auto auto auto auto !important;
+              grid-template-areas:
+                "date     temp"
+                "time     climate"
+                "time     climate_details"
+                "forecast forecast" !important;
+              /* Fill the viewport so the inherited align-content:center can vertically centre the
+                 (short) landscape composition instead of letting it sit pinned to the top. */
+              min-height: 100vh !important;
+            }
+            /* Centre the content within each pane (each half-column): symmetric, and avoids the
+               ragged left edge of right-aligned weather. date<->temp align at the top row; the big
+               time spans down next to conditions + humidity; the forecast footer ties them together. */
+            #date, #time, #temp, #climate, #climate_details { justify-self: center !important; }
+            #time { font-size: 22vmin !important; width: auto !important; margin-bottom: 0 !important; align-self: start !important; }
+            /* Temp: cap by WIDTH too (the inner div is sized by JS in vmin, i.e. by height) so a long
+               dual-temp like "19° / 27.4°" can't outgrow its half-column and clip at the screen edge. */
+            #temp div { font-size: min(14vmin, 6vw) !important; }
+            /* Forecast: full-width footer stretched across the screen below both columns. */
+            #forecast { justify-self: center !important; width: 80vw !important; margin-top: 2vh !important; }
+          }
 
       show_name: false
       show_state: false
@@ -266,12 +309,19 @@ decluttering_templates:
                 }
                 .card-header { display: none !important; }
                 .forecast .temp { font-size: 1.2em !important; font-weight: 500 !important; }
+                /* Wide screens (matches the two-column breakpoint): the 18px cap makes the forecast
+                   tiny on a wide monitor — enlarge it. */
+                @media (min-aspect-ratio: [[landscape_breakpoint]]) {
+                  ha-card { font-size: clamp(18px, 3.4vmin, 44px) !important; }
+                }
       
       styles:
         card:
           - background-color: '[[color_bg]]'
           - height: 100vh
           - width: 100vw
+        # Default layout = portrait single column. The landscape (wide) two-column layout is
+        # applied via a CSS @media query in the card_mod block above (#container override).
         grid:
           - display: grid
           - grid-template-rows: auto auto auto auto auto auto
@@ -384,3 +434,4 @@ views:
           - font_climate: *font_climate
           - font_climate_details: *font_climate_details
           - font_alarm: *font_alarm
+          - landscape_breakpoint: *landscape_breakpoint

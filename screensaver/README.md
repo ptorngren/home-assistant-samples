@@ -586,6 +586,65 @@ The Bluetooth triangulation system is fully documented as a standalone system wi
 
 ---
 
+## Desktop / Landscape Display
+
+In addition to portrait wall tablets and phones, the screensaver also runs on **wide / landscape screens** such as a desktop PC monitor. The layout adapts automatically — no separate dashboard and no device-rotation handling.
+
+**How it adapts**
+- **Portrait (phones, tablets):** the original single-column stack (date, time, temperature, conditions, forecast) — unchanged.
+- **Wide / landscape:** a two-column layout — a **clock** (date + time) on the left, a **weather summary** (temperature, conditions, humidity/wind) on the right, and the **5-day forecast as a full-width footer** below.
+
+The switch is driven by a CSS `@media (min-aspect-ratio: …)` query, so it reflects the real window shape and re-flows automatically when the window is resized — no JavaScript or orientation polling. A *narrow* landscape window falls back to the single-column layout (the large fonts would otherwise overflow the half-width columns).
+
+**Running it on a PC**
+1. Open the kiosk URL in any browser: `https://your-ha-url/dashboard-screensaver/home?kiosk`
+2. Press **F11** for full-screen. Combined with `panel: true` and `?kiosk`, you get an edge-to-edge display with no browser or HA chrome.
+
+Device-specific fields degrade gracefully on a PC: the **alarm**, **charger location** and **battery** fields simply stay blank when there's no Companion App / charger / battery sensor for that browser — no errors. (Tap/double-tap/hold still fire the configured scripts, but with no charger location they generally do nothing on a desktop.)
+
+**Tuning the breakpoint**
+
+The wide layout activates when the viewport is at least 1.5× as wide as it is tall. The threshold is a single anchor near the top of `dashboards/screensaver.yaml`:
+```yaml
+landscape_breakpoint: &landscape_breakpoint "3/2"   # width >= 1.5x height
+```
+Raise it toward `16/9` to require a wider screen before switching, or lower it toward `7/5` to switch on a less-wide screen. This is a YAML value, **not** a UI helper — CSS media queries can't read a runtime `input_number`/`var()` value.
+
+### Running it as a real (idle-activated) screensaver on Windows
+
+The step above shows it as a manual full-screen window. To make it behave like an actual screensaver — auto-appear when the PC is idle, dismiss on input — use a **web-page screensaver** that renders the kiosk URL.
+
+**Chosen tool:** [`muro-dot/Webview2_WebPage_Screensaver`](https://github.com/muro-dot/Webview2_WebPage_Screensaver) — a WebView2 (Edge/Chromium) `.scr` that renders the HA frontend correctly. It passed the key test: it **exits on keyboard input but passes mouse events through to the page** (so a click can still control the dashboard). A screensaver is an executable running a browser engine with your HA session, so review the source/releases before installing. (Other WebView2 options exist — avoid any that don't exit on input.)
+
+**Setup:**
+1. Install the tool and set its URL to your kiosk dashboard. Prefer the **local** URL (e.g. `http://<your-ha-ip>:8123/dashboard-screensaver/home?kiosk`) so it keeps working if your internet / remote access is down.
+2. Set it as the Windows screensaver (Settings → Personalization → Lock screen → Screen saver) with an idle timeout. Make sure the **display-sleep** timeout is *longer* than the screensaver timeout, or the monitor blanks over it.
+
+**Logging in (the keyboard-exit catch):** the screensaver webview is a fresh browser context, so it first shows the HA login — but you can't type, because any keypress exits the screensaver. Two ways around it:
+- **Auto-login** via HA's `trusted_networks` auth provider (no password needed). Simple, but without a fixed IP it trusts the whole subnet — weigh the security trade-off (even a non-admin user can reach the menu / control devices; HA has no read-only user).
+- **Mouse-only paste-trick** (no HA change): keyboard exits, but **mouse paste/cut still work**. Copy your **username and password joined into one string** to the clipboard; in the login form, **right-click → Paste** it into *both* fields, then **mouse-select and Cut** the wrong half out of each field (drag to select → right-click → Cut). Tick **"Keep me logged in"** so the session persists in the webview's profile. Done entirely with the mouse.
+
+**Optional — let a mouse click control music:** muro-dot passes clicks through to the dashboard, so a click fires the tap action (see "Customizing Tap Actions"). For that to do anything, the screensaver webview needs a **known Browser Mod Browser ID** that your tap logic recognizes. Give it a clean name:
+1. Temporarily point the screensaver tool at `http://<your-ha-ip>:8123/browser-mod`.
+2. Trigger the screensaver; in **"This Browser → Browser ID"** set a name (mouse: triple-click the field, right-click → Paste). Turn on **Register** and **"Sync Browser ID to login session."**
+3. Point the tool back at the dashboard URL, and map that Browser ID in your tap-action config.
+
+**⚠️ Per-origin gotcha:** the HA login **and** the Browser Mod Browser ID are stored per *origin* (scheme + host + port). If you switch the URL between your remote (e.g. Nabu Casa) and local address, the webview is logged out and gets a *different* Browser ID. **Pick one URL** and do the login + Browser-ID naming on that origin.
+
+**Tip — find an unnamed webview's Browser ID:** trigger the screensaver, leave it ~30–60 s, then dismiss it; the Browser Mod `*_browser_id` sensor whose state flips offline at that moment is the screensaver's — its connect/disconnect tracks the screensaver showing and hiding.
+
+### Always-on wall display vs. turning the screen off
+
+Two independent Windows idle timers run side by side: the screensaver fires at *its* timeout, but the **"Turn off display after"** and **Sleep** timers keep counting and will blank/suspend the panel regardless — that's why a running screensaver can go black after a while. They're separate settings; decide what you want:
+
+**Always on** (e.g. a centrally-located hallway/landing wall display): set **"Turn off display"** and **Sleep** to **Never**. Whether that's safe for the panel long-term depends on the display type:
+- **LCD / LED-backlit (IPS, VA)** — most desktop monitors: **no permanent burn-in.** The continuous anti-burn-in drift animations plus the near-black (`#080808`) background make leaving it on indefinitely a non-issue. (The screensaver's dark, dim palette also means minimal light spill — handy near a bedroom.) The only real reason to ever turn an LCD off is **power** (a large panel is tens of watts).
+- **OLED**: the drift animations + dark background mitigate a lot, but OLED still ages under hours of static-ish bright content. Prefer letting it sleep after a longer idle, or use a scheduled off-window (below), rather than truly never.
+
+**Off on a schedule** (e.g. overnight): Windows' power timers are idle-based, not clock-based, so a fixed window needs **Task Scheduler** — one task to blank the monitor at the start time (a PowerShell `SC_MONITORPOWER` "off" message, or `nircmd monitor off`) and one to wake it at the end (a 1-pixel mouse nudge, which **won't** dismiss a keyboard-exit screensaver like muro-dot). The screensaver keeps running underneath the whole time; only the panel power toggles.
+
+---
+
 ## Customization Points
 
 ### Locale Configuration
@@ -710,19 +769,9 @@ Check Home Assistant's entity registry:
 ## Known Limitations
 
 <details>
-<summary><strong>Portrait Layout Only</strong></summary>
+<summary><strong>Landscape: narrow windows fall back to single column</strong></summary>
 
-The screensaver dashboard is **designed exclusively for portrait orientation**. Using it on a landscape display will result in:
-
-- Disproportionate font sizes (elements sized for portrait may appear too small or too large in landscape)
-- Poor visual hierarchy and layout balance
-- Text that doesn't align with the intended design grid
-
-The dashboard uses viewport-relative sizing (`vw` units) calibrated for portrait aspect ratios (e.g., typical tablet 4:3 or phone 9:16). Landscape displays require significant redesign of the grid layout, font sizes, and spacing.
-
-**Workaround:** If landscape display is required, consider:
-- Rotating the device to portrait (easiest solution for wall-mounted tablets)
-- Creating a separate dashboard variant optimized for landscape proportions
+Landscape / wide screens are supported (see **"Desktop / Landscape Display"**). The two-column wide layout only activates above the configured aspect-ratio breakpoint (default width ≥ 1.5× height). A *narrow* landscape window — closer to square — intentionally falls back to the single-column portrait layout, because the viewport-relative fonts would otherwise overflow the half-width columns. Adjust the `landscape_breakpoint` anchor in `screensaver.yaml` if you want the switch to happen sooner or later.
 
 </details>
 
@@ -754,7 +803,7 @@ The `input_text.device_charger_locations` helper that stores device-to-charger m
 
 ## Potential Enhancements
 
-- **Landscape mode support:** Automatic rotation detection with optimized landscape layout
+- **Landscape / desktop layout:** ✅ Implemented — see **"Desktop / Landscape Display"**. (Remaining: confirm tap behaviour on desktop browsers, where there's no charger location.)
 
 ---
 

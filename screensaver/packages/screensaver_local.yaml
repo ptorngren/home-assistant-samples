@@ -132,7 +132,9 @@ script:
           
           # Static device→scenario mapping for unknown devices
           static_devices:
-            p2r-deskp3: peer
+            p2r-deskp3: peer        # office PC app
+            p2r-deskp3-web: peer    # office PC web browser session
+            p2r-deskp3-screensaver: peer  # office PC muro-dot screensaver (.scr) webview
           
           # Scenario resolution: device location takes precedence, falls back to time-based or static mapping
           target_scenario: >
