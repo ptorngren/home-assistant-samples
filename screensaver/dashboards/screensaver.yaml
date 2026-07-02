@@ -26,7 +26,7 @@ locale: &locale sv-SE  # Swedish (Sweden)
 # Edit these values to customize the visual appearance of the screensaver.
 # Font sizes control visual hierarchy; colors set the aesthetic tone.
 colors:
-  background: &color_bg "#080808"             # Very dark background (minimizes light pollution)
+  background: &color_bg "#080808"             # Near-black, not pure #000000: keeps OLED pixels faintly lit so drifting anti-burn-in elements don't smear
   primary_text: &color_primary "#8A7057"      # Warm gold/copper for time and date
   secondary_text: &color_secondary "#808080"  # Muted grey for climate data
   forecast_accent: &color_accent "#A0A0A0"    # Forecast temperatures (brightened from #666 for OLED contrast on high-DPI phones)
@@ -99,8 +99,8 @@ decluttering_templates:
           #forecast { animation: drift-fast calc(200s / var(--anim-speed-mult)) linear infinite alternate !important; }
 
           /* Wide / desktop monitors: a two-column TOP section — LEFT = clock (date + time),
-             RIGHT = weather summary (temp, conditions, humidity/wind) — plus the forecast as a
-             full-width FOOTER spanning both columns below. Implemented as a real CSS media query so
+             RIGHT = weather summary (temp, conditions, humidity/wind) with the forecast beneath it
+             confined to the RIGHT column (left cell of that row is empty). Implemented as a real CSS media query so
              it re-flows automatically on resize (button-card style JS only evaluates once at render
              time, so it could not be relied on here). #container is the button-card grid element.
              Keyed on min-aspect-ratio (width >= 1.5x height), NOT orientation: the fonts scale with
@@ -116,21 +116,21 @@ decluttering_templates:
                 "date     temp"
                 "time     climate"
                 "time     climate_details"
-                "forecast forecast" !important;
+                ".        forecast" !important;
               /* Fill the viewport so the inherited align-content:center can vertically centre the
                  (short) landscape composition instead of letting it sit pinned to the top. */
               min-height: 100vh !important;
             }
             /* Centre the content within each pane (each half-column): symmetric, and avoids the
                ragged left edge of right-aligned weather. date<->temp align at the top row; the big
-               time spans down next to conditions + humidity; the forecast footer ties them together. */
+               time spans down next to conditions + humidity; the forecast sits below them in the right pane. */
             #date, #time, #temp, #climate, #climate_details { justify-self: center !important; }
             #time { font-size: 22vmin !important; width: auto !important; margin-bottom: 0 !important; align-self: start !important; }
             /* Temp: cap by WIDTH too (the inner div is sized by JS in vmin, i.e. by height) so a long
                dual-temp like "19° / 27.4°" can't outgrow its half-column and clip at the screen edge. */
             #temp div { font-size: min(14vmin, 6vw) !important; }
-            /* Forecast: full-width footer stretched across the screen below both columns. */
-            #forecast { justify-self: center !important; width: 80vw !important; margin-top: 2vh !important; }
+            /* Forecast: confined to the RIGHT pane (under temp/climate), filling that column. */
+            #forecast { justify-self: center !important; width: 100% !important; margin-top: 2vh !important; }
           }
 
       show_name: false

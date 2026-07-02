@@ -590,9 +590,11 @@ The Bluetooth triangulation system is fully documented as a standalone system wi
 
 In addition to portrait wall tablets and phones, the screensaver also runs on **wide / landscape screens** such as a desktop PC monitor. The layout adapts automatically — no separate dashboard and no device-rotation handling.
 
+<img src="docs/screensaver-landscape.jpg" width="50%" alt="Screensaver Landscape Layout Example">
+
 **How it adapts**
 - **Portrait (phones, tablets):** the original single-column stack (date, time, temperature, conditions, forecast) — unchanged.
-- **Wide / landscape:** a two-column layout — a **clock** (date + time) on the left, a **weather summary** (temperature, conditions, humidity/wind) on the right, and the **5-day forecast as a full-width footer** below.
+- **Wide / landscape:** a two-column layout — a **clock** (date + time) on the left, a **weather summary** (temperature, conditions, humidity/wind) on the right, with the **5-day forecast beneath the weather summary in the right column** (the left side of that row stays empty).
 
 The switch is driven by a CSS `@media (min-aspect-ratio: …)` query, so it reflects the real window shape and re-flows automatically when the window is resized — no JavaScript or orientation polling. A *narrow* landscape window falls back to the single-column layout (the large fonts would otherwise overflow the half-width columns).
 
@@ -638,7 +640,7 @@ The step above shows it as a manual full-screen window. To make it behave like a
 Two independent Windows idle timers run side by side: the screensaver fires at *its* timeout, but the **"Turn off display after"** and **Sleep** timers keep counting and will blank/suspend the panel regardless — that's why a running screensaver can go black after a while. They're separate settings; decide what you want:
 
 **Always on** (e.g. a centrally-located hallway/landing wall display): set **"Turn off display"** and **Sleep** to **Never**. Whether that's safe for the panel long-term depends on the display type:
-- **LCD / LED-backlit (IPS, VA)** — most desktop monitors: **no permanent burn-in.** The continuous anti-burn-in drift animations plus the near-black (`#080808`) background make leaving it on indefinitely a non-issue. (The screensaver's dark, dim palette also means minimal light spill — handy near a bedroom.) The only real reason to ever turn an LCD off is **power** (a large panel is tens of watts).
+- **LCD / LED-backlit (IPS, VA)** — most desktop monitors: **no permanent burn-in.** The continuous anti-burn-in drift animations plus the near-black (`#080808`) background make leaving it on indefinitely a non-issue. **Note on light spill near a bedroom:** the dark palette does *not* dim an LCD — the backlight is always on, so `#080808` and pure `#000000` emit the same light, and a large IPS panel (e.g. Dell U3818DW) throws noticeable glow through an open door. Reduce it with the monitor's **brightness/backlight** (the actual light lever), **Windows Night Light** (shifts warm, cuts blue — easier on sleep), or turning the panel off — *not* by darkening the background color. The only reason to ever turn an LCD off is **power** (a large panel is tens of watts) or that residual light.
 - **OLED**: the drift animations + dark background mitigate a lot, but OLED still ages under hours of static-ish bright content. Prefer letting it sleep after a longer idle, or use a scheduled off-window (below), rather than truly never.
 
 **Off on a schedule** (e.g. overnight): Windows' power timers are idle-based, not clock-based, so a fixed window needs **Task Scheduler** — one task to blank the monitor at the start time (a PowerShell `SC_MONITORPOWER` "off" message, or `nircmd monitor off`) and one to wake it at the end (a 1-pixel mouse nudge, which **won't** dismiss a keyboard-exit screensaver like muro-dot). The screensaver keeps running underneath the whole time; only the panel power toggles.
@@ -668,7 +670,7 @@ Modify the `vw` (viewport width) values in `custom_fields` styling:
 Update the hex color values in `custom_fields`:
 - `#8A7057` — Primary text color (time, date)
 - `#808080` — Secondary text color (temperature, climate)
-- `#080808` — Background color
+- `#080808` — Background color (near-black, deliberately *not* pure `#000000`: keeps OLED pixels faintly lit so the drifting anti-burn-in elements don't smear as they cross the background)
 
 ### Adjusting Anti-Burn-In Animation Speed
 
@@ -889,7 +891,7 @@ This can be locally implemented using a custom sensor; see `screensaver_local.ya
 These animations operate at imperceptible speeds to the human eye—just fast enough to prevent pixel fatigue without being noticeable.
 
 **Color Scheme:**
-- **Background:** Very dark (`#080808`) to minimize light pollution at night
+- **Background:** Near-black (`#080808`), deliberately not pure `#000000` — keeps pixels faintly lit so the drifting anti-burn-in elements don't smear on OLED. (This is *not* a light-pollution control: on an LCD the backlight is always on, so `#080808` and `#000000` emit the same light. To cut light spill near a bedroom, lower the monitor brightness / use Windows Night Light / turn the panel off — see "Always-on wall display vs. turning the screen off".)
 - **Primary Text:** Warm gold/copper tones (`#8A7057`) for time display
 - **Secondary Text:** Muted grey (`#808080`) for temperature and climate data
 
