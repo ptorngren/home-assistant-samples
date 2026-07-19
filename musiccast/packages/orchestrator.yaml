@@ -225,11 +225,13 @@ automation:
                 data:
                   value: ""
 
-          # If active scenario exists but grouping no longer matches -> clear
+          # If active scenario exists but an expected player left the group -> clear
           # Rationale: MusicCast emits two state_changed events on unlink (master + member),
           # so the subsequent event will re-run detection automatically.
-          # Template does strict comparison between expected players and current
+          # Template checks that all expected players are still in the group
           # (with passive partners filtered out via musiccast_players).
+          # Extra members are tolerated: overlay players (e.g. patio player joined on
+          # kitchen-door open) may join without ending the scenario.
           # Delay before clearing: debounces transient group_members glitches from MC devices.
           # mode: restart means a recovering glitch fires a new trigger and cancels the delay.
           - conditions:
@@ -246,7 +248,7 @@ automation:
                     {% set gm_raw = state_attr(master, 'group_members') or [] %}
                     {% set gm = gm_raw | select('in', musiccast_players) | list %}
                     {% set gm_full = (gm + [master]) | unique | sort %}
-                    {{ gm_full != (expected | list | sort) }}
+                    {{ expected | reject('in', gm_full) | list | length > 0 }}
                   {% endif %}
             sequence:
               - delay:
@@ -574,10 +576,11 @@ automation:
           accumulated_delta: "{{ states('input_number.musiccast_volume_sync_delta') | float(0.0) }}"
           original_master_volume: "{{ current_master_volume - accumulated_delta }}"
           volume_ratio: "{{ (current_master_volume / original_master_volume) if original_master_volume > 0.001 else 1.0 }}"
-          scenario_players: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('players', []) if active_scenario not in ['', 'None', 'unknown', 'unavailable'] else [] }}"
+          musiccast_players: "{{ state_attr('group.musiccast_players', 'entity_id') or [] }}"
           group_members: "{{ state_attr(master, 'group_members') | default([], true) if master else [] }}"
-          # Sync only members in BOTH group_members AND scenario players (excludes stereo pair slaves)
-          clients: "{{ group_members | select('in', scenario_players) | reject('eq', master) | list if master else [] }}"
+          # Sync ALL live group members (incl. overlay players like altan), filtered to
+          # group.musiccast_players — stereo pair slaves stay excluded (not in the group)
+          clients: "{{ group_members | select('in', musiccast_players) | reject('eq', master) | list if master else [] }}"
 
       # Only proceed if we have clients to sync
       - if:

@@ -41,6 +41,50 @@ input_number:
     unit_of_measurement: s
     icon: mdi:timer-edit-outline
 
+  # Outdoor temperature gate for the altan overlay automation.
+  # 0 = DISABLED (no temperature gating). Otherwise the overlay only links altan
+  # when sensor.relax_baksidan_temperature is at or above this threshold.
+  altanmusik_temp_threshold:
+    name: Altanmusik Temp
+    min: 0
+    max: 30
+    step: 1
+    unit_of_measurement: °C
+    icon: mdi:thermometer
+
+  # Loudness calibration: multiplier applied to the master's volume when altan joins
+  # (altan = master volume x factor, clamped to 1.0). Compensates for different
+  # amplifier/speaker sensitivity (kök ISX-80 vs altan R-N602 + passive speakers;
+  # measured 2026-07-19: kök 0.5 ~ altan 0.65 -> factor 1.3). The ratio-based volume
+  # sync preserves the factor while linked. NOTE: no 0 = disabled semantics here;
+  # 1.0 = neutral (no adjustment).
+  altanmusik_volume_factor:
+    name: Altanmusik Volymfaktor
+    min: 0.5
+    max: 2
+    step: 0.05
+    icon: mdi:volume-equal
+
+  # Delay (seconds) the kitchen door must stay open before altan is linked.
+  # 0 = DISABLED (overlay never auto-links, including on scenario start).
+  altanmusik_start_delay:
+    name: Altanmusik Start
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:timer-edit-outline
+
+  # Delay (seconds) the kitchen door must stay closed before altan is turned off.
+  # 0 = DISABLED (never auto-turn-off on door close).
+  altanmusik_stop_delay:
+    name: Altanmusik Stop
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:timer-edit-outline
+
 automation:
   # Alarm-triggered automation
   - id: belysning_huset_larmat_musik_off
@@ -63,6 +107,7 @@ automation:
     mode: single
 
   # Kitchen door closed -> altan music off
+  # Delay is user-configurable via input_number.altanmusik_stop_delay (0 = never auto-off)
   - id: musik_kokdorr_stangd_altanmusik_off_switch
     alias: 'Köksdörr stängd -> Altanmusik OFF'
     description: Stäng av musik på uteplats när köksdörren stängs
@@ -70,16 +115,184 @@ automation:
       - trigger: state
         entity_id: binary_sensor.dorr_kok
         to: 'off'
-        for:
-          minutes: 2
-    conditions: []
+        # NOTE: input_number states are float strings ("10.0") — must go through float
+        # before int, or the int filter silently falls back to the default
+        for: "{{ states('input_number.altanmusik_stop_delay') | float(120) | int }}"
+    conditions:
+      - condition: numeric_state
+        entity_id: input_number.altanmusik_stop_delay
+        above: 0
     actions:
+      # Unjoin before power-off: turn_off alone leaves a linked client muted but still
+      # in the master's group (observed 2026-07-19 with the altan overlay). Harmless
+      # no-op when altan is ungrouped or is itself the master (grilla).
+      - action: media_player.unjoin
+        continue_on_error: true
+        target:
+          entity_id: media_player.altan
       - action: media_player.turn_off
         metadata: {}
         data: {}
         target:
           entity_id: media_player.altan
     mode: restart
+
+  # Kitchen door open + warm outside -> link altan to the playing kitchen master (overlay).
+  # Altan is never a scenario member; it joins as an extra group member, tolerated by the
+  # scenario watchdog (subset comparison in orchestrator.yaml). active_scenario is untouched
+  # and the playing favorite continues uninterrupted. Turn-off is handled by the existing
+  # door-closed automation above.
+  - id: musik_kokdorr_oppen_altan_overlay
+    alias: 'Köksdörr öppen -> Altan overlay ON'
+    description: Länka altanhögtalaren till köksmastern när köksdörren är öppen och det är varmt ute
+    triggers:
+      # T1: door opens (and stays open) during kitchen-mastered playback.
+      # Delay is user-configurable via input_number.altanmusik_start_delay.
+      # NOTE: input_number states are float strings ("10.0") — must go through float
+      # before int, or the int filter silently falls back to the default
+      - trigger: state
+        entity_id: binary_sensor.dorr_kok
+        to: 'on'
+        for: "{{ states('input_number.altanmusik_start_delay') | float(60) | int }}"
+      # T2: kitchen-mastered scenario starts while the door is already open
+      - trigger: state
+        entity_id: input_text.active_scenario
+    conditions:
+      # 0 = overlay DISABLED entirely (blocks T2 as well, not just the door delay)
+      - condition: numeric_state
+        entity_id: input_number.altanmusik_start_delay
+        above: 0
+      - condition: state
+        entity_id: binary_sensor.dorr_kok
+        state: 'on'
+      # Active scenario must be mastered by kök (dynamic check - no scenario names).
+      # Deliberately NO "master is on" condition here: at scenario start (T2) the
+      # integration still reports kök as off for a few seconds after the join —
+      # the wait-for-playing step in the actions handles master readiness instead.
+      - condition: template
+        value_template: >
+          {% set active = states('input_text.active_scenario') %}
+          {% set sc = state_attr('sensor.musiccast_scenarios', 'scenarios') or {} %}
+          {{ sc.get(active, {}).get('master', '') == 'media_player.kok' }}
+      # Skip if altan is already linked
+      - condition: template
+        value_template: "{{ 'media_player.altan' not in (state_attr('media_player.kok', 'group_members') or []) }}"
+      # Temperature gate: 0 = disabled -> always allow. Unavailable sensor blocks the
+      # overlay (defaults to -99) unless the gate is disabled.
+      - condition: template
+        value_template: >
+          {% set threshold = states('input_number.altanmusik_temp_threshold') | float(0) %}
+          {{ threshold == 0 or states('sensor.relax_baksidan_temperature') | float(-99) >= threshold }}
+    actions:
+      # Block feedback loops while restructuring the group (same guard as musiccast_toggle_link)
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.scenario_updating
+      - if:
+          - condition: state
+            entity_id: media_player.altan
+            state: 'off'
+        then:
+          - action: media_player.turn_on
+            target:
+              entity_id: media_player.altan
+          - wait_template: "{{ states('media_player.altan') not in ['off', 'unavailable', 'unknown'] }}"
+            timeout: "00:00:15"
+            continue_on_timeout: true
+      - if:
+          - condition: template
+            value_template: "{{ states('media_player.altan') in ['off', 'unavailable', 'unknown'] }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Altan overlay aborted - altan did not power on within 15 s"
+              level: warning
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.scenario_updating
+          - stop: "Altan did not power on"
+      # When triggered by scenario activation (T2), the master may still be starting
+      # up (link + preset playback in flight) — wait until the integration reports it
+      # powered on, then join right away (no need to wait for 'playing'; the verify +
+      # retry below covers a join that lands too early or is rejected)
+      - wait_template: "{{ states('media_player.kok') not in ['off', 'unavailable', 'unknown'] }}"
+        timeout: "00:00:20"
+        continue_on_timeout: true
+
+      # Door-recheck guard: the door may have closed while we waited for the master.
+      # Without this, the join can land AFTER the stop automation already turned
+      # altan off, leaving altan playing behind a closed door (see roadmap issue)
+      - if:
+          - condition: state
+            entity_id: binary_sensor.dorr_kok
+            state: 'off'
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.scenario_updating
+          - action: system_log.write
+            data:
+              message: "MusicCast: Altan overlay aborted - kitchen door closed while waiting for master"
+              level: info
+          - stop: "Door closed during overlay startup"
+
+      # Join at the master's current volume scaled by the calibration factor
+      # (compensates amplifier/speaker sensitivity difference; the ratio-based
+      # volume sync keeps altan following the master afterwards).
+      # continue_on_error throughout: a failed step must not abort the script and
+      # leave scenario_updating stuck ON (observed 2026-07-19)
+      - variables:
+          master_volume: "{{ state_attr('media_player.kok', 'volume_level') | float(0.3) }}"
+          altan_volume: "{{ [master_volume * (states('input_number.altanmusik_volume_factor') | float(1.0)), 1.0] | min }}"
+      - action: media_player.volume_set
+        continue_on_error: true
+        target:
+          entity_id: media_player.altan
+        data:
+          volume_level: "{{ altan_volume }}"
+      - action: media_player.join
+        continue_on_error: true
+        target:
+          entity_id: media_player.kok
+        data:
+          group_members:
+            - media_player.altan
+      # Verify the join landed; retry once if not (MC devices occasionally reject
+      # a join right after group/playback changes). Door-recheck on the retry too:
+      # no point re-joining if the door closed meanwhile
+      - delay: "00:00:02"
+      - if:
+          - condition: template
+            value_template: "{{ 'media_player.altan' not in (state_attr('media_player.kok', 'group_members') or []) }}"
+          - condition: state
+            entity_id: binary_sensor.dorr_kok
+            state: 'on'
+        then:
+          - action: media_player.join
+            continue_on_error: true
+            target:
+              entity_id: media_player.kok
+            data:
+              group_members:
+                - media_player.altan
+          - delay: "00:00:02"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.scenario_updating
+      - if:
+          - condition: template
+            value_template: "{{ 'media_player.altan' in (state_attr('media_player.kok', 'group_members') or []) }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Altan overlay linked to media_player.kok at volume {{ altan_volume }} (master {{ master_volume }} x factor {{ states('input_number.altanmusik_volume_factor') }}, scenario: {{ states('input_text.active_scenario') }})"
+              level: info
+        else:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Altan overlay join FAILED after retry (master state: {{ states('media_player.kok') }}, scenario: {{ states('input_text.active_scenario') }})"
+              level: warning
+    mode: single
 
   # Garage LUX-triggered automation
   - id: musiccast_lux_garage_low_musik_off

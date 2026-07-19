@@ -125,10 +125,10 @@ script:
           mobile_is_morning: "{{ current_hour > 6 and current_hour <= 9 }}"
           mobile_is_day: "{{ current_hour > 9 and current_hour <= 22 }}"
 
-          # Time-based scenario thresholds for kitchen tablet (koksplatta)
+          # Time-based scenario threshold for kitchen resolution (koksplatta + kök-docked mobile)
+          # Single breakpoint: godmorgon during the morning slot, matlagning otherwise.
+          # Middag is manual-only (selected from the dashboard, never auto-resolved).
           kitchen_is_morning: "{{ current_hour > 5 and current_hour <= 10 }}"
-          kitchen_is_day: "{{ current_hour > 10 and current_hour <= 17 }}"
-          kitchen_is_evening: "{{ current_hour > 17 and current_hour <= 23 }}"
           
           # Static device→scenario mapping for unknown devices
           static_devices:
@@ -144,7 +144,7 @@ script:
               {% elif charger_location == 'bastu' %}
                 bastu
               {% elif charger_location == 'kök' %}
-                {% if kitchen_is_morning %}godmorgon{% elif kitchen_is_day %}matlagning{% else %}middag{% endif %}
+                {% if kitchen_is_morning %}godmorgon{% else %}matlagning{% endif %}
               {% elif charger_location == 'peer' %}
                 peer
               {% elif charger_location == 'sovrum' %}
@@ -156,7 +156,7 @@ script:
               {% endif %}
 
             {% elif browser_id in ['koksplatta', 'koksplatta_fkb'] %}
-              {% if kitchen_is_morning %}godmorgon{% elif kitchen_is_day %}matlagning{% else %}middag{% endif %}
+              {% if kitchen_is_morning %}godmorgon{% else %}matlagning{% endif %}
             {% else %}
               {{ static_devices.get(browser_id, 'unknown') }}
             {% endif %}

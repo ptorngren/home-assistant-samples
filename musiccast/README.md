@@ -46,6 +46,7 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
   - **Locked** — always plays on activation
   - **Excluded** — never selected
 - **Player Linking** — Players are linked under a master using MusicCast's native group feature. All linked players play the same source; volume can be adjusted independently. Group configuration can be saved per scenario and is automatically restored on next activation.
+- **Overlay Player** — A player joined dynamically to a playing scenario's master by an automation, without being a scenario member (e.g. a patio speaker linked while the kitchen door is open). The active scenario and playing preset are untouched; extra members are tolerated by scenario detection, and master volume changes propagate to all linked players. See Customization → Overlay Players.
 - **Multi-Zone Devices** — Some devices expose multiple players (e.g., Zone 2 on an AV receiver), but Zone 2 players cannot currently be used as a scenario master — they share their parent device's IP address and preset list.
 - **Stereo Pairs** — Stereo pair slaves must be manually excluded in the Settings view.
 - **Terminology** — The MusicCast app has **rooms**, **favorites**, and **routines**, whereas Home Assistant uses **zone** for geographic areas and **scene** for saved entity states. In this package: **player** = MC room, **preset** = MC favorite, **scenario** ≈ MC routine.
@@ -224,7 +225,7 @@ Admin view for discovering player IPs on the local network. Run once during setu
 
 ### Adding Your Automations
 
-Put all site-specific automations in `musiccast_local.yaml`. The package ships with examples (alarm → stop music, garage LUX → start/stop music, kitchen TV → stop music). Replace or add to these without touching `orchestrator.yaml`.
+Put all site-specific automations in `musiccast_local.yaml`. The package ships with examples (alarm → stop music, garage LUX → start/stop music, kitchen TV → stop music, kitchen door → patio overlay). Replace or add to these without touching `orchestrator.yaml`.
 
 #### Check if a scenario is active
 
@@ -253,6 +254,24 @@ actions:
     data:
       scenario: "{{ states('input_text.active_scenario') }}"
 ```
+
+### Overlay Players
+
+An overlay player is joined to a playing scenario on the fly by an automation, without being part of the scenario definition. The scenario, its playing preset, and `active_scenario` are all untouched — the player simply appears in the group and disappears again. Two package behaviors make this work:
+
+- **Scenario detection tolerates extra members** — an active scenario is only cleared when one of its *defined* players leaves the group, never because an extra player joined (`orchestrator.yaml`, detect manual scenario).
+- **Master volume sync covers all live group members** — volume changes on the master scale every linked player proportionally, overlay players included.
+
+The shipped example (`musiccast_local.yaml`) links a patio speaker to the playing kitchen master when the kitchen door stays open, and turns it off again after the door closes:
+
+- **Kitchen door open → patio overlay ON** — triggers when the door has been open for a configurable delay, or when a kitchen-mastered scenario starts while the door is already open. Conditions: the active scenario's master is the kitchen player (dynamic check — no scenario names in code), the patio player isn't already linked, and an optional outdoor temperature gate passes. The overlay joins at the master's current volume scaled by the volume factor (below), waits for the master to be powered on first, verifies the join and retries once, and aborts cleanly if the door closes meanwhile.
+- **Kitchen door closed → patio music OFF** — unlinks and turns off the patio player after the door has been closed for a configurable delay. (Unlink before power-off matters: turning off a linked group member alone leaves it muted but still registered in the master's group.)
+
+Helpers (sliders; the first three use **0 = disabled**, matching the garage music timers):
+- **Patio music start delay** (seconds) — how long the door must stay open before linking. 0 disables the overlay entirely.
+- **Patio music stop delay** (seconds) — how long the door must stay closed before turn-off. 0 disables auto-off.
+- **Patio temperature threshold** (°C) — minimum outdoor temperature for linking. 0 disables the temperature gate.
+- **Patio volume factor** (0.5–2.0, neutral 1.0) — multiplier applied to the master's volume when the overlay joins, compensating for different amplifier/speaker sensitivity (Home Assistant's 0–1 volume scale is percent-of-device-range, not loudness). The ratio-based volume sync preserves the factor while linked. Alternative: cap **Max Volume** on the overlay device in the MusicCast app, which rescales what 0–1 means for that device.
 
 ### Excluding Players
 

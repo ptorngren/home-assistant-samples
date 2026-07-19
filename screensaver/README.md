@@ -105,15 +105,21 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
    - The `?kiosk` parameter hides Home Assistant chrome for a pure screensaver appearance
    - Enable **Keep Screen On** in FKB settings
 
-   **Recommendation: Use your Nabu Casa URL, not the local IP**
+   **Which URL: local vs. remote — decide based on where the phone charges**
 
-   Using `http://192.168.x.x:8123/...` only works on your home network. If the phone is away (or briefly off WiFi), FKB will show a "Loading..." screen indefinitely.
+   `http://192.168.x.x:8123/...` only works on your home network. If a phone charges *away* from home (e.g. wireless charging in a car) and the screensaver profile fires there, the local URL leaves FKB stuck on a "Loading..." screen.
 
-   Use your Nabu Casa URL instead:
-   ```
-   https://xxxxx.ui.nabu.casa/dashboard-screensaver/home?kiosk
-   ```
-   This works both at home and away, with no change in behavior.
+   There are two ways to handle this — pick one:
+
+   - **Recommended for phones — keep the local URL and gate the screensaver to home WiFi.** The screensaver is tailored for home use (home weather, alarm, and location-aware music scenarios that need home Bluetooth beacons); away from home its location logic resolves to `unknown` and the music control is meaningless. So restrict the phone's screensaver Tasker profile to fire only on home WiFi (see the Tasker step below). It then never launches away, the local URL is all you need, it loads faster, and — importantly — the FKB Browser ID stays **stable** (see the per-origin note below).
+
+   - **Alternative — use your Nabu Casa / remote URL** so the screensaver loads both at home and away:
+     ```
+     https://xxxxx.ui.nabu.casa/dashboard-screensaver/home?kiosk
+     ```
+     Choose this only if you genuinely want the full home screensaver to appear away from home.
+
+   > ⚠️ **Per-origin gotcha — pick ONE URL and stick with it.** The HA login *and* the Browser Mod Browser ID are stored per *origin* (scheme + host + port), so `http://192.168.1.41:8123` and `https://…nabu.casa` are different origins. Switching FKB between them logs it out and gives it a *different* Browser ID — which breaks any tap-action / scenario logic that keys on the id (it comes up as an anonymous `browser_mod_*` id instead of e.g. `my_phone_fkb`). Do the login and Browser-ID naming once, on whichever origin you commit to.
 
    **This does not interfere with the HA Companion App.** FKB and the Companion App are separate browsers with separate Browser IDs (e.g. `my_phone_fkb` vs `my_phone`). Each registers independently in Browser Mod and behaves independently — kiosk mode in FKB has no effect on the Companion App.
 
@@ -128,11 +134,13 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
 12. **Create Tasker profiles**
    - **Tablet:** Launch screensaver on *Display Off*
    - **Phone:** Launch screensaver on *Display Off + Wireless Charging*
+     - **Restrict to home** (if the phone also charges away, e.g. in a car): add a **State → Net → WiFi Connected** context so the profile fires only on your home network. Enter your home SSID in the field; if you have several home SSIDs sharing a prefix, use a wildcard (e.g. `p2r-*`), or list them separated by `/`. This keeps the home-tailored screensaver from launching away from home and lets you use the local Start URL (stable Browser ID). Alternatively, gate on reachability of the HA server IP for a name-independent "am I home" check.
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
 13. **Reference configuration examples** (Recommended)
    - `fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
-   - `tasker-backup.xml` — Tasker profiles export for both tablet and phone (import via Tasker)
+   - `tasker-mobile.xml` — Tasker profiles for the phone (wireless-charging activation + BT scan; import via Tasker)
+   - `tasker-kitchentablet.xml` — Tasker profiles for the kitchen tablet (always-on activation; import via Tasker)
 
 ➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display.
 ➡️ If you are not interested in Android automation, you can still use the dashboard as a clean, always-on wall display.
@@ -298,10 +306,12 @@ Two Tasker profiles work together to implement charging-conditional activation:
 **Trigger:**
 - Event: Display → Display Off
 - Condition: State → Power → Wireless (charging state)
+- *Optional:* Condition: State → Net → WiFi Connected (restrict to home — see [Restricting Activation to Home WiFi](#restricting-activation-to-home-wifi-phones-that-also-charge-away) below)
 
 **Entry Task:** Calls a master "Docked" task that orchestrates both screensaver launch and Bluetooth scanning asynchronously. The master task executes:
 1. **UI Task (Start FKB):** Standard priority → launches screensaver immediately
-2. **BT Scan Task:** Lower priority (%priority - 1) → detects charger location in background (5+ seconds)
+2. **Wait 1 second** → gives the screensaver launch a head start before the scan starts competing for resources
+3. **BT Scan Task:** Lower priority (%priority - 1) → detects charger location in background (5+ seconds)
 
 By using asynchronous execution, the screensaver appears the moment the phone touches the charger, while location detection runs silently in the background.
 
@@ -317,18 +327,70 @@ By using asynchronous execution, the screensaver appears the moment the phone to
 
 **Entry Task:** Empty
 
-**Exit Task:**
+**Exit Task:** a named, reusable task — **"Charger Disconnected"** — that performs the full teardown:
 ```
-HTTP Request: http://localhost:2323/?cmd=exit&password=YOUR_PASSWORD
+1. Stop the "BT Scan" task (kills a scan still in flight)
+2. Go Home
+3. HTTP Request: http://localhost:2323/?cmd=exitApp&password=YOUR_PASSWORD
+   (Continue Task After Error: ON — fails silently if Fully Kiosk isn't running)
+4. Send the phone_charger_disconnect webhook (clears the stored charger location in HA)
 ```
 
-**Purpose:** When the phone is removed from the wireless charger, the exit task sends the REST API command to cleanly shut down Fully Kiosk. As a consequence, the home screen or lock screen automatically appears.
+**Purpose:** When the phone is removed from the wireless charger, the exit task cleanly shuts down Fully Kiosk and clears the HA-side charger location. As a consequence, the home screen or lock screen automatically appears. Keep this task **named** — Profile 3 below reuses it.
 
 ### Why Two Profiles with Asynchronous Execution?
 
 In Tasker, **event profiles don't have exit tasks**—they only detect when an event occurs. To properly handle both "entering charging mode" and "exiting charging mode," we need two profiles. Additionally, sequential task execution would block the screensaver launch while the 5-second Bluetooth scan runs, causing noticeable lag. The solution uses asynchronous task execution: the master "Docked" task launches both UI and data tasks with different priorities, allowing the screensaver to appear immediately while the scan runs in the background.
 
 **Result:** Zero UI lag, complete charging lifecycle, and location detection without blocking.
+
+### Restricting Activation to Home WiFi (phones that also charge away)
+
+The screensaver is tailored for **home** use: it shows home weather and alarm, and its music-scenario logic depends on home Bluetooth beacons (location detection). If the phone also wireless-charges away from home — for example in a car — Profile 1 would otherwise fire there too, launching a home dashboard whose location resolves to `unknown` and whose music controls do nothing. It would also force you onto a remote (Nabu Casa) Start URL just to make that dashboard load where it isn't useful.
+
+The fix is to add a **home-WiFi condition** to Profile 1 so it only ever activates at home. Then you can keep the **local** Start URL (`http://192.168.1.41:8123/...`), which loads faster and keeps a stable Browser ID (see the per-origin note in the setup steps).
+
+**Step-by-step:**
+
+1. Open **Tasker** → **Profiles** tab.
+2. Long-press the **"Display Off => FKB + BT Scan"** profile → **Add** (a context).
+3. Choose **State** → **Net** → **WiFi Connected**.
+4. In the **SSID** field, enter the network(s) that mean "home":
+   - **Shared prefix (recommended):** if all your home access points / mesh nodes share a prefix, use a wildcard — e.g. `p2r-*` matches `p2r-2G`, `p2r-5G`, `p2r-guest`, every node, and nothing elsewhere. New APs are covered automatically as long as they keep the prefix.
+   - **Explicit list:** enter each SSID separated by a forward slash, e.g. `HomeNet-2G/HomeNet-5G`.
+   - Leave **MAC** and **IP** blank.
+5. Press **back** to save. The profile now shows **three** contexts (Display Off event + Wireless state + WiFi Connected state), all combined with **AND** — so it fires only when the display turns off *while wireless-charging on home WiFi*.
+6. **Grant the permission Tasker needs to read the SSID.** On Android 8+ the WiFi Connected context can only see the SSID if Tasker has **Location permission** *and* **Location services are turned on** (system-wide). If the context never matches at home, this is almost always why: Android → Settings → Apps → Tasker → Permissions → **Location = Allow all the time**, and toggle Location services on.
+
+**Test it:**
+- Dock at home on WiFi → screensaver launches as before.
+- Turn WiFi off (or dock in the car) → docking no longer launches the screensaver; the phone shows its normal charging / lock screen.
+
+**Alternative — reachability check (name-independent):** instead of SSID matching, gate on whether the HA server is reachable. Replace the WiFi condition with a **State → Variable** condition driven by a small task that does an **HTTP Get** to `http://192.168.1.41:8123/` (the Manifest or any lightweight path) with a short timeout, setting a flag variable on success. This matches "actually on the home LAN" regardless of SSID names, mesh, or even a wired dock — at the cost of a little more setup than the one-field wildcard.
+
+#### Profile 3: "Home WiFi Exit Handler" (companion to the home-WiFi gating)
+
+**Type:** State profile — active only while **both** states hold
+
+**Contexts:**
+- State → Net → **WiFi Connected**, SSID = your home pattern (e.g. `p2r-*`) — identical to the Profile 1 gating context
+- State → Power → **Wireless**
+
+**Entry Task:** none (empty)
+
+**Exit Task:** the same **"Charger Disconnected"** task Profile 2 uses — no new task needed
+
+**Purpose:** the launch gating above cannot distinguish "docked at home" from "docked in a car on the driveway" — the WiFi looks identical, so the screensaver still launches there. Without this profile, driving off would leave Fully Kiosk stuck showing a stale, unreachable local dashboard for the whole drive, because Profile 2 only exits when charging *stops*. This profile is active only while *docked on home WiFi*; the moment that combined state ends — home WiFi lost while still charging — the exit task closes Fully Kiosk and (if your webhooks use the remote-domain URL) clears the stored charger location over cellular.
+
+**In practice, a car with wireless Android Auto defuses the scenario by itself:** the car's own WiFi comes up with the ignition — the same moment the charging pad powers on — and the phone hops onto it, leaving home WiFi before the launch conditions can line up. The launch gating alone then blocks the car case, and this profile serves as a **safety net** for what remains: the brief window before the phone switches networks, WiFi-less vehicles or chargers used within home WiFi range, and home-WiFi outages while docked (Fully Kiosk closes cleanly instead of sitting on a frozen dashboard, self-healing when WiFi returns).
+
+**Why the Power → Wireless context is essential:** with the WiFi context alone, every WiFi loss while simply *using* the phone (walking out the front door) would run the exit task — whose **Go Home** action would yank you out of whatever app you're in. With both contexts, WiFi loss while not charging fires nothing, because the profile was never active.
+
+**Self-healing at home:** a momentary WiFi blip while docked closes the screensaver; the next display timeout (still charging, WiFi restored) relaunches it with a fresh location scan.
+
+**Undock overlap (harmless):** removing the phone from the charger at home deactivates both Profile 2 and this profile, so "Charger Disconnected" may run twice — the second exit call fails silently (Continue After Error), and Go Home / the webhook are idempotent.
+
+**Testing gotcha:** a State profile only becomes *active* on a context **transition** to true. If you create or edit this profile while the phone is already docked on home WiFi, both states are already true, the profile stays inactive, and the exit will never fire — a test right then falsely fails. Undock and redock once after any context edit, then test.
 
 ### Fully Kiosk Configuration for Mobile
 
@@ -385,6 +447,7 @@ Two separate Tasker exports are provided for device-specific configurations:
   - **"Display Off => FKB" profile:** Display timeout handling and Fully Kiosk management
   - **"Charger Disconnected" task:** Explicit exit process management - stops BT scan, clears FKB, sends power-disconnect webhook to HA
   - **"BT Scan" task:** Performs Bluetooth scan of anchor devices, builds JSON payload, sends to HA webhook (unless interrupted by Task Stop when device removed from charger)
+- **Not included (optional, add manually):** the home-WiFi additions for phones that also charge away from home — the WiFi Connected gating context on the launch profile and the "Home WiFi Exit Handler" profile (Profile 3). Both are quick to add in Tasker's UI; see "Restricting Activation to Home WiFi" and "Profile 3" above.
 - **Charger Location Detection Features (Multi-Device Support):**
   - Automatically detects which charger location the device is placed on via Bluetooth anchor triangulation
   - Sends `browser_id` parameter to HA for device-specific location storage
@@ -533,14 +596,14 @@ var payload = JSON.stringify({ devices: devices });
 **Action 3: HTTP Request**
 - **Category:** `Net` → `HTTP Request`
 - **Method:** `POST`
-- **URL:** `https://[YOUR_HA_DOMAIN]/api/webhook/phone_charger_bt`
+- **URL:** `http://[YOUR_HA_IP]:8123/api/webhook/phone_charger_bt`
 - **Headers:** `Content-Type:application/json`
 - **Body:** `%payload`
 - **Purpose:** Transmits the JSON to Home Assistant webhook.
 
-  **Use your remote domain, not the local IP.** `http://192.168.x.x:8123/...` only works on home WiFi. Use your Nabu Casa or custom domain URL with HTTPS so the scan works from anywhere.
+  **The local IP is the right default.** It works on every HA install with no extra setup, and with the screensaver gated to home WiFi (see "Restricting Activation to Home WiFi") the BT scan only ever fires at home anyway.
 
-  **Enable remote webhook access in HA.** By default, HA rejects webhook requests arriving via remote access (Nabu Casa). Add `local_only: false` to both webhook triggers in `bt_triangulation.yaml`:
+  **Use your remote domain instead if webhooks must fire away from home.** This applies if you *don't* gate to home WiFi, or you charge the phone away and want the disconnect webhook to still clear the stored location (e.g. dock at home → drive off while charging → undock in the car: with a local-IP URL that disconnect call fails silently and the stale location persists until the next home scan). Note the modest stakes: the next docking's fresh scan overwrites the stale entry anyway, so the worst case is a few seconds of stale scenario content while that scan completes — weigh that against the setup cost before bothering with remote access. It requires remote access (Nabu Casa or a custom domain with HTTPS) — replace the URL with `https://[YOUR_HA_DOMAIN]/api/webhook/...` — **and** enabling remote webhook access in HA, since HA rejects webhook requests arriving via remote access by default. Add `local_only: false` to both webhook triggers in `bt_triangulation.yaml`:
   ```yaml
   - platform: webhook
     webhook_id: phone_charger_bt
@@ -554,7 +617,7 @@ var payload = JSON.stringify({ devices: devices });
     webhook_id: phone_charger_disconnect
     local_only: false
   ```
-  The disconnect webhook clears the stored location when the phone is removed from the charger. Without `local_only: false`, this never fires via remote access, and the stale location persists into the next docking session.
+  The disconnect webhook clears the stored location when the phone is removed from the charger. Without `local_only: false`, it never fires via remote access, and the stale location persists into the next docking session. (Harmless to leave enabled even if you later switch back to local URLs.)
 
 **Action 4: Flash (Optional Verification)**
 - **Category:** `Alert` → `Flash`
@@ -778,6 +841,17 @@ Landscape / wide screens are supported (see **"Desktop / Landscape Display"**). 
 </details>
 
 <details>
+<summary><strong>Android's built-in Screen saver must not auto-start while charging</strong></summary>
+
+If Android's Screen saver (Daydream) is set to start **while charging**, it silently breaks the screensaver launch on that device: at the display timeout the dream starts *instead of* the screen turning off, so Tasker's **Display Off event never fires** and the launch profile never runs. Docking the phone (especially with the screen already off) then shows the system clock/photos screen saver instead of the dashboard.
+
+**Turn the Screen saver feature off entirely** (the master toggle at the top of its settings page). Note that some skins — OxygenOS on OnePlus among them — offer no "Never" choice under "When to start", only charging variants, so the master toggle is the only safe setting. If you want a clock while charging *away* from home (e.g. in a car), don't use auto-start — have a Tasker profile enable the feature only there: contexts *Power → Wireless* + *WiFi Connected [your home SSID] inverted*, entry task setting the secure setting `screensaver_enabled` to 1 (exit task back to 0) via **Custom Setting** — requires a one-time ADB grant of `WRITE_SECURE_SETTINGS` to Tasker. (On ROMs that allow manually started dreams, the built-in **Display → Daydream** action is a simpler no-ADB alternative.) The home flow stays untouched either way.
+
+Related: the Always-On Display is a conflict-free alternative for away-charging (at home, Tasker intercepts the timeout before AOD matters) — but note the AOD is portrait-only and never rotates.
+
+</details>
+
+<details>
 <summary><strong>Motion Detection Not Supported</strong></summary>
 
 The tablet's built-in motion sensor (Fully Kiosk motion detection) **cannot be used** for automations or detection scripts because:
@@ -989,7 +1063,7 @@ The foundation of reliable screensaver exit is the **Fully Kiosk REST API**, whi
 
 The REST API command is simple:
 ```
-http://localhost:2323/?cmd=exit&password=YOUR_PASSWORD
+http://localhost:2323/?cmd=exitApp&password=YOUR_PASSWORD
 ```
 
 ### Requirements
@@ -1041,7 +1115,7 @@ If you get an error, verify:
 Once Remote Admin is enabled and verified, use this command to cleanly exit the screensaver:
 
 ```
-http://localhost:2323/?cmd=exit&password=YOUR_PASSWORD
+http://localhost:2323/?cmd=exitApp&password=YOUR_PASSWORD
 ```
 
 This command:
@@ -1056,7 +1130,7 @@ In your Tasker exit tasks (described in the sections below), use the **HTTP Requ
 **Tasker Action Setup:**
 1. **Action:** Net → HTTP Request
 2. **Method:** GET
-3. **URL:** `http://localhost:2323/?cmd=exit&password=YOUR_PASSWORD`
+3. **URL:** `http://localhost:2323/?cmd=exitApp&password=YOUR_PASSWORD`
 4. **Timeout:** 5 seconds
 5. Leave other settings at defaults
 
