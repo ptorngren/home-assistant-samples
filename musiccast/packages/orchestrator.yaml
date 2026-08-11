@@ -14,25 +14,25 @@
 # File-based persistence for per-scenario volumes (read/write via helper script)
 shell_command:
   # Write volumes: Calls helper script with 'write' argument
-  musiccast_volumes_write: '/config/packages/musiccast/scenario_persistor.sh write "{{ scenario }}" "{{ csv_content }}"'
+  musiccast_volumes_write: 'bash /config/packages/musiccast/scenario_persistor.sh write "{{ scenario }}" "{{ csv_content }}"'
 
   # Read volumes: Calls helper script with 'read' argument
   # Returns JSON dict {player: volume, ...}
-  musiccast_volumes_read: '/config/packages/musiccast/scenario_persistor.sh read "{{ scenario }}"'
+  musiccast_volumes_read: 'bash /config/packages/musiccast/scenario_persistor.sh read "{{ scenario }}"'
 
   # Read group: Returns ordered JSON array of player entity IDs [master, member1, member2, ...]
   # First element is master (always first line in CSV), rest are members
-  musiccast_group_read: '/config/packages/musiccast/scenario_persistor.sh players "{{ scenario }}"'
+  musiccast_group_read: 'bash /config/packages/musiccast/scenario_persistor.sh players "{{ scenario }}"'
 
   # Scenario lifecycle: create/delete/rename entries in scenarios.json + CSV files
   # create: derives scenario_id from name (strip diacritics, lowercase, spaces and
   # hyphens to underscores, keep only a-z0-9_, trim leading/trailing underscores)
   # name and icon are free text; master is an entity id.
-  musiccast_scenario_create: '/config/packages/musiccast/scenario_persistor.sh create {{ name | base64_encode }} {{ icon | base64_encode }} "{{ master }}"'
-  musiccast_scenario_delete: '/config/packages/musiccast/scenario_persistor.sh delete "{{ scenario }}"'
-  musiccast_scenario_rename: '/config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" {{ new_name | base64_encode }}'
-  musiccast_scenario_set_icon: '/config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" {{ icon | base64_encode }}'
-  musiccast_scenario_set_master: '/config/packages/musiccast/scenario_persistor.sh set_master "{{ scenario }}" "{{ master }}"'
+  musiccast_scenario_create: 'bash /config/packages/musiccast/scenario_persistor.sh create {{ name | base64_encode }} {{ icon | base64_encode }} "{{ master }}"'
+  musiccast_scenario_delete: 'bash /config/packages/musiccast/scenario_persistor.sh delete "{{ scenario }}"'
+  musiccast_scenario_rename: 'bash /config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" {{ new_name | base64_encode }}'
+  musiccast_scenario_set_icon: 'bash /config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" {{ icon | base64_encode }}'
+  musiccast_scenario_set_master: 'bash /config/packages/musiccast/scenario_persistor.sh set_master "{{ scenario }}" "{{ master }}"'
 
 # ================================================================
 # HELPERS

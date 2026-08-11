@@ -37,7 +37,7 @@ group:
 # ================================================================
 
 shell_command:
-  musiccast_network_scan: /config/packages/musiccast/media_players_writer.sh "{{ start_ip }}" "{{ end_ip }}" "{{ entities | tojson | base64_encode }}" "{{ output_csv }}" "{{ output_include }}"
+  musiccast_network_scan: bash /config/packages/musiccast/media_players_writer.sh "{{ start_ip }}" "{{ end_ip }}" "{{ entities | tojson | base64_encode }}" "{{ output_csv }}" "{{ output_include }}"
 
   # Toggle a player in/out of the exclude list (media_players.exclude)
   # Input: entity_id (e.g. media_player.peer_vanster)

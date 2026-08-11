@@ -123,6 +123,11 @@ Install via HACS (Settings → Devices & Services → HACS → Integrations):
 | `browser-mod` | Scenario editor popup (create/edit/delete scenarios) |
 | `card-mod` | CSS styling for cards |
 
+⚠️ **`browser-mod` needs a second step the others do not.** It is an integration as well as a card, so
+after installing it from HACS you must also add it under **Settings → Devices & Services → Add
+Integration → Browser Mod**, and restart if prompted. Skipping this fails quietly: the dashboard loads
+and every view works, but the scenario editor popup never opens.
+
 ---
 
 ## Installation
@@ -170,10 +175,25 @@ config/
             └── ...                     ← scenario_*.csv and presets_*.csv created as you add scenarios
 ```
 
-Make all `.sh` scripts executable:
-```bash
-chmod +x /config/packages/musiccast/*.sh
+The `.sh` scripts do not need to be made executable — every `shell_command` invokes them as
+`bash /config/packages/musiccast/<script>.sh`, so file permissions do not matter. This means you can
+install the package with the File Editor add-on or a Samba share alone, without terminal access.
+
+**You do not need to create `data/` yourself** — the scripts that write into it create it on first use,
+and the scripts that read from it exit quietly while it is still missing. It fills up as you run the
+network scan and add scenarios.
+
+**If your config directory is a Git repository**, the two halves of `data/` deserve different treatment:
+
+```gitignore
+# Machine-specific, rebuilt by any network scan — safe to ignore
+packages/musiccast/data/media_players.csv
+packages/musiccast/data/media_players.include
 ```
+
+Everything else in `data/` — `scenarios.json`, `scenario_*.csv`, `presets_*.csv` — *is* your
+configuration: scenario definitions, per-player volumes and preset states, all edited through the
+dashboard rather than by hand. Keeping those in version control gives you the only backup they have.
 
 ### 3. Enable Packages
 
@@ -185,6 +205,12 @@ homeassistant:
 ```
 
 Then restart HA.
+
+⚠️ **A full restart, not a YAML reload — and the same applies to every later change.** The package
+defines `shell_command` entries, and those are only re-read on a full restart. *Reload All YAML
+Configuration* leaves the previous definitions live in memory, so an edited or newly added
+`shell_command` silently keeps running its old version. If a change to this package appears to have no
+effect, this is the first thing to check.
 
 ### 4. Run Network Scan
 

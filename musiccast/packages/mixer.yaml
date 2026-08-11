@@ -13,11 +13,11 @@ shell_command:
 
   # Read randomization state: CSV file with preset_num,state pairs
   # Returns JSON: {"1": "normal", "3": "locked", "5": "excluded"}
-  musiccast_randomization_read: '/config/packages/musiccast/randomization_persistor.sh read "{{ scenario }}"'
+  musiccast_randomization_read: 'bash /config/packages/musiccast/randomization_persistor.sh read "{{ scenario }}"'
 
   # Write randomization state: Save preset states to CSV file
   # Takes: scenario, csv_content (preset_num,state lines)
-  musiccast_randomization_write: '/config/packages/musiccast/randomization_persistor.sh write "{{ scenario }}" "{{ csv_content }}"'
+  musiccast_randomization_write: 'bash /config/packages/musiccast/randomization_persistor.sh write "{{ scenario }}" "{{ csv_content }}"'
 
   # List all persisted randomization scenarios (CSV files in /config/packages/musiccast/data/)
   musiccast_randomization_list: 'find /config/packages/musiccast/data -name "presets_*.csv" | xargs -I {} basename {} | sed "s/presets_//; s/.csv//" | jq -R -s -c "split(\"\\n\") | map(select(length > 0))"'
