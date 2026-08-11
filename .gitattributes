@@ -1,0 +1,27 @@
+# Default: enforce LF for text, whatever the contributor's platform does locally
+* text=auto eol=lf
+
+# Explicit text types
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.xml  text eol=lf
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+
+# Shell scripts must be LF: a CRLF shebang fails at runtime with
+# "/bin/bash^M: bad interpreter: No such file or directory"
+
+# Binary files (NO EOL conversion — CRLF translation corrupts these)
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.gif  binary
+*.webp binary
+*.gz   binary
+*.zip  binary
+*.pdf  binary
