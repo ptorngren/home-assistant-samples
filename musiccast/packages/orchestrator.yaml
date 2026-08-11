@@ -3,10 +3,9 @@
 # ----------------------------------------------------------------
 
 # ================================================================
-# CONSTANTS & PATHS
+# SCENARIO DATA FORMAT
 # ================================================================
-# Centralized file path for scenario config (Java-style constants)
-# Format: /config/packages/musiccast/data/scenario_{scenario}.csv (one file per scenario)
+# /config/packages/musiccast/data/scenario_{scenario}.csv — one file per scenario
 # Content: player:volume (one per line; first line = master)
 
 # ================================================================
@@ -26,11 +25,13 @@ shell_command:
   musiccast_group_read: '/config/packages/musiccast/scenario_persistor.sh players "{{ scenario }}"'
 
   # Scenario lifecycle: create/delete/rename entries in scenarios.json + CSV files
-  # create: derives scenario_id from name (strip diacritics, lowercase, a-z0-9 only)
-  musiccast_scenario_create: '/config/packages/musiccast/scenario_persistor.sh create "{{ name }}" "{{ icon }}" "{{ master }}"'
+  # create: derives scenario_id from name (strip diacritics, lowercase, spaces and
+  # hyphens to underscores, keep only a-z0-9_, trim leading/trailing underscores)
+  # name and icon are free text; master is an entity id.
+  musiccast_scenario_create: '/config/packages/musiccast/scenario_persistor.sh create {{ name | base64_encode }} {{ icon | base64_encode }} "{{ master }}"'
   musiccast_scenario_delete: '/config/packages/musiccast/scenario_persistor.sh delete "{{ scenario }}"'
-  musiccast_scenario_rename: '/config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" "{{ new_name }}"'
-  musiccast_scenario_set_icon: '/config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" "{{ icon }}"'
+  musiccast_scenario_rename: '/config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" {{ new_name | base64_encode }}'
+  musiccast_scenario_set_icon: '/config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" {{ icon | base64_encode }}'
   musiccast_scenario_set_master: '/config/packages/musiccast/scenario_persistor.sh set_master "{{ scenario }}" "{{ master }}"'
 
 # ================================================================
@@ -40,41 +41,74 @@ shell_command:
 
 # Active scenario tracking
 input_text:
-  active_scenario:
-    name: Active Scenario
+  musiccast_active_scenario:
+    name: "MusicCast Active Scenario"
     max: 20
-  active_scenario_source_caption:
-    name: Active Scenario Source Caption
+  musiccast_active_source_caption:
+    name: "MusicCast Active Source Caption"
     max: 100
-  active_scenario_source_uri:
-    name: Active Scenario Source URI
+  musiccast_active_source_uri:
+    name: "MusicCast Active Source URI"
     max: 200
-  active_preset_timestamp:
-    name: Active Preset Timestamp
+  # Device preset slot behind the caption above, written wherever the caption is.
+  # The URI is a display string the device cannot be asked to play; `presets:N` is
+  # what media_player.play_media accepts, so this is the only stored value that can
+  # reproduce what is playing. Blank whenever the caption is blank, or whenever the
+  # device is playing something no preset of ours selected.
+  musiccast_active_source_preset:
+    name: "MusicCast Active Source Preset"
+    max: 4
+  # Records when the source was last written; stale-caption detection measures age
+  # against it. initial: blanks it on restart, because a timestamp from before a restart
+  # measures an interval nothing was watching.
+  musiccast_active_source_timestamp:
+    name: "MusicCast Active Source Timestamp"
     max: 30
     initial: ""
 
+  # Last active scenario NAME, kept so a dropped scenario stays restorable. Name
+  # (not the master) because rejoin needs the member set and masters are shared
+  # (two scenarios can use the same master).
+  musiccast_last_scenario:
+    name: "MusicCast Last Scenario"
+    max: 20
+  # Last non-blank playing-favorite caption/uri, kept so the favorite indicator can
+  # be restored when a dropped scenario is re-activated by tapping it.
+  musiccast_last_caption:
+    name: "MusicCast Last Caption"
+    max: 100
+  musiccast_last_uri:
+    name: "MusicCast Last URI"
+    max: 200
+  musiccast_last_preset:
+    name: "MusicCast Last Preset"
+    max: 4
   # Scenario editor helpers (used by browser_mod popup flow)
-  scenario_editor_name:
-    name: Scenario Editor — Name
+  # These hold popup form state. initial: clears them on restart, so a fresh popup opens
+  # empty instead of showing a half-typed name, and the icon opens at a default.
+  musiccast_scenario_editor_name:
+    name: "MusicCast Scenario Editor — Name"
     max: 100
     initial: ""
-  scenario_editor_icon:
-    name: Scenario Editor — Icon
+  musiccast_scenario_editor_icon:
+    name: "MusicCast Scenario Editor — Icon"
     max: 50
     initial: "mdi:music"
-  scenario_editor_id:
-    name: Scenario Editor — ID
+  musiccast_scenario_editor_id:
+    name: "MusicCast Scenario Editor — ID"
     max: 50
     initial: ""
 
 input_select:
-  scenario_editor_master:
-    name: Scenario Editor — Master Player
+  musiccast_scenario_editor_master:
+    name: "MusicCast Scenario Editor — Master Player"
     options:
       - ---
 
 input_number:
+  # Scratch value handed from the volume-sync detect automation to the execute one,
+  # not a setting. initial: is deliberate: it belongs to one in-flight sync, so a
+  # restart must not leave a stale delta waiting to be applied to the next one.
   musiccast_volume_sync_delta:
     name: "MusicCast Volume Sync Delta"
     min: -1.0
@@ -82,11 +116,98 @@ input_number:
     step: 0.001
     initial: 0
 
+  # Safety ceiling for volumes the package applies (apply_volumes + master->member sync).
+  # Percent, to match the player volume sliders — sensor.musiccast_volume_ceiling turns
+  # this into the 0-1 fraction the clamps use.
+  # 0 = disabled (no cap); a positive value caps every applied volume at it. No initial:
+  # so it persists (a fresh install sits at 0 = no cap, no surprise over-clamping).
+  musiccast_max_volume:
+    name: "MusicCast Max Volume"
+    min: 0
+    max: 100
+    step: 5
+    unit_of_measurement: "%"
+  # Seconds scenario activation keeps holding input_boolean.musiccast_scenario_updating after
+  # playback starts, so the master's late source/media_artist update is not mistaken
+  # for an external change. 0 releases the guard as soon as the mixer returns.
+  # Entity id stays mechanism-level (this is the activation settle); the name matches
+  # the dashboard label, which encodes the reason rather than the mechanism.
+  musiccast_activation_settle:
+    name: "MusicCast Trust Players After"
+    min: 0
+    max: 30
+    step: 1
+    unit_of_measurement: s
+  # How long input_boolean.musiccast_scenario_updating may stay held before it is
+  # released automatically. This is a safety net for a script that died part-way, not a
+  # timing parameter: it has to exceed the longest legitimate hold, which is a full
+  # scenario rebuild with every join and settle, and that depends on how many players
+  # the house has and how quickly they answer. Raise it if the release ever fires during
+  # a real activation.
+  musiccast_scenario_guard_timeout:
+    name: "MusicCast Drop Scenario Lock After"
+    min: 30
+    max: 600
+    step: 30
+    unit_of_measurement: s
+    icon: mdi:timer-alert
+  # The unit the settles between grouping steps are expressed in — unjoin, join and
+  # stop each wait a documented multiple (0.5x, 1x, 2x). Distinct from the helper
+  # above: this one covers grouping commands executing *before* playback starts, that
+  # one covers what a player reports about itself *after* it does, and they differ by
+  # an order of magnitude.
+  #
+  # These stay blind delays deliberately. Measured: HA's `group_members` matches the
+  # device's own role the instant unjoin is called, so a wait_template on it waits for
+  # nothing, and using one here breaks a live scenario switch. `source`
+  # lags six seconds and is no better. The device's true role lives only in
+  # dist/getDistributionInfo, which a template cannot reach. Configurable is therefore
+  # the best available answer: the values are one installation's measurements, and a
+  # slower setup needs to be able to raise them.
+  #
+  # Minimum is the working default: a fresh install starts there.
+  musiccast_device_settle:
+    name: "MusicCast Settle Between Steps"
+    min: 1
+    max: 10
+    step: 0.5
+    unit_of_measurement: s
+  # Ceiling on the waits that watch for devices to confirm a group or power change,
+  # not a delay: a teardown returns as soon as the devices report the new state and
+  # only spends this when one is slow or gone. Raise it for slower hardware; nothing
+  # waits it out in normal operation. Applies per wait, so a script with two waits
+  # can spend it twice in the worst case.
+  # Minimum is the working default: a fresh install starts there. A ceiling below 5 s
+  # buys nothing — it is only ever spent when something is already wrong — so the
+  # floor costs no tuning range.
+  musiccast_player_settle_timeout:
+    name: "MusicCast Wait At Most"
+    min: 5
+    max: 30
+    step: 1
+    unit_of_measurement: s
+
 input_boolean:
+  # The locks below are mutexes, not settings, and initial: false clears them on restart.
+  # A lock left on would silently disable whatever it guards, with nothing logged and
+  # nothing to see: scenario_updating alone gates drop detection, the stale-caption check
+  # and the volume sync. Clearing is the safe direction — at worst it costs one spurious
+  # detection while nothing is being changed.
+
   # Lock to prevent race conditions between scripts and automation
-  scenario_updating:
-    name: Scenario Updating
+  musiccast_scenario_updating:
+    name: "MusicCast Scenario Updating"
     icon: mdi:sync
+    initial: false
+
+  # Set while a scenario group is being torn down or rebuilt, i.e. while the
+  # now-playing state on the dashboard would be the OLD scenario's. Distinct from
+  # scenario_updating, which stays up past this through the device settle: by then
+  # the group and the music are correct and worth showing, the devices are just
+  # still catching up. The dashboard's mini-player hides on this one.
+  musiccast_activation_in_progress:
+    name: "MusicCast Activation In Progress"
+    icon: mdi:progress-clock
     initial: false
 
   # Lock to block volume sync automation while apply_volumes is running
@@ -102,6 +223,7 @@ input_boolean:
     icon: mdi:timer
     initial: false
 
+
 timer:
   musiccast_volume_sync:
     name: "MusicCast Volume Sync Debounce"
@@ -115,6 +237,22 @@ timer:
   musiccast_apply_volumes_settle:
     name: "MusicCast Apply Volumes Settle"
     duration: "00:00:00.300"
+
+
+# ================================================================
+# DERIVED STATE
+# ================================================================
+template:
+  - sensor:
+      # The safety ceiling as a 0-1 fraction, ready to pass to media_player.volume_set.
+      # musiccast_max_volume is a percentage, 0 on it means disabled, and "no cap" is 1.0
+      # because that is the top of volume_level's range. An unset helper reads as 0 and
+      # so also yields 1.0.
+      - name: "MusicCast Volume Ceiling"
+        unique_id: musiccast_volume_ceiling
+        state: >-
+          {{ ((states('input_number.musiccast_max_volume') | float(0.0)) / 100) or 1.0 }}
+
 
 
 # ================================================================
@@ -148,7 +286,7 @@ automation:
     actions:
       - action: input_select.set_options
         target:
-          entity_id: input_select.scenario_editor_master
+          entity_id: input_select.musiccast_scenario_editor_master
         data:
           options: >
             {{ ['---'] + (expand('group.musiccast_players')
@@ -156,75 +294,192 @@ automation:
                | list) }}
       - action: input_select.select_option
         target:
-          entity_id: input_select.scenario_editor_master
+          entity_id: input_select.musiccast_scenario_editor_master
         data:
           option: >
             {% set valid = expand('group.musiccast_players') | map(attribute='attributes.friendly_name') | list %}
             {{ valid | first }}
 
+  # Track the active scenario: snapshot the scenario name so a dropped scenario stays restorable,
+  # and reset the per-player rejoin counts at each new session.
+  - id: musiccast_record_scenario
+    alias: "MusicCast: Record scenario"
+    mode: restart
+    # The states that mean "no value": '' from a cleared helper, 'None' from one
+    # holding a Python None, and HA's own 'unknown' / 'unavailable'. Defined per
+    # automation and per script rather than once per file, so a construct keeps
+    # working when it is moved to another package file.
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      - trigger: state
+        entity_id: input_text.musiccast_active_scenario
+    actions:
+      - choose:
+          # Scenario activated (or re-detected): snapshot its name, reset rejoin counts
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.to_state.state not in blank_states }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_last_scenario
+                data:
+                  value: "{{ trigger.to_state.state }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_recovery_attempts
+                data:
+                  value: "{}"
+          # Scenario cleared AND all players off (genuine shutdown): forget the master
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.to_state.state in blank_states }}"
+              - condition: state
+                entity_id: group.musiccast_players
+                state: "off"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_last_scenario
+                data:
+                  value: ""
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_last_caption
+                data:
+                  value: ""
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_last_uri
+                data:
+                  value: ""
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.musiccast_last_preset
+                data:
+                  value: ""
+        # No default: a scenario cleared while players are still on (e.g. a failed
+        # rejoin) keeps musiccast_last_scenario so tap-to-restore still works.
+
+  # Snapshot the playing favorite (caption + uri) whenever it is set to a real value.
+  # musiccast_active_source_caption/_uri are set by the mixer only and are blanked when
+  # a scenario clears or the source is changed in the MC app; keeping the last non-blank
+  # pair lets tap-to-restore relight the favorite it had. A blank value never overwrites
+  # the snapshot (see condition); the all-off branch above clears it on genuine shutdown.
+  - id: musiccast_record_source
+    alias: "MusicCast: Record source"
+    mode: restart
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_text.musiccast_active_source_caption
+          - input_text.musiccast_active_source_uri
+    conditions:
+      # Both must be real, and the URI is the load-bearing half of that test.
+      # musiccast_set_source writes preset, then uri, then caption, and this fires on
+      # the uri write too — so when a source is being *cleared*, the uri is already
+      # blank while the caption still holds the outgoing value. Testing the caption
+      # alone lets that pass and snapshots a blank uri and slot beside a live caption,
+      # leaving a snapshot that names something it can no longer replay. Requiring the
+      # uri also keeps "#error - see log#" out of the snapshot: it is written with no
+      # input type, so it never has one.
+      - condition: template
+        value_template: >-
+          {{ states('input_text.musiccast_active_source_caption') not in blank_states
+             and states('input_text.musiccast_active_source_uri') not in blank_states }}
+    actions:
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_last_caption
+        data:
+          value: "{{ states('input_text.musiccast_active_source_caption') }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_last_uri
+        data:
+          value: "{{ states('input_text.musiccast_active_source_uri') }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_last_preset
+        data:
+          value: "{{ states('input_text.musiccast_active_source_preset') }}"
+
   - id: musiccast_detect_manual_scenario
     alias: "MusicCast: Detect manual scenario"
     mode: restart
+    # Each trigger carries an id so the log line below can say which one fired.
+    # Without them the two entity triggers are indistinguishable in a template:
+    # trigger.entity_id is set for both, so a power-off would read as a grouping
+    # change and be logged as one.
     triggers:
-      # Trigger 1: Player grouping changes
-      # Fires when any player's group_members attribute changes (players link/unlink via MusicCast)
+      # Player grouping changes: fires when any player's group_members attribute
+      # changes (players link/unlink via MusicCast)
       - trigger: state
+        id: group_members
         entity_id: !include data/media_players.include
         attribute: group_members
 
-      # Trigger 2: Player power state changes
-      # Fires when any player powers off externally (e.g. MC app) — needed because
-      # powering off via MC app changes entity.state but may not change group_members
+      # Player power state changes: fires when any player powers off externally
+      # (e.g. MC app) — needed because powering off via MC app changes entity.state
+      # but leaves group_members alone; MusicCast keeps a powered-off player enrolled
       - trigger: state
+        id: player_off
         entity_id: !include data/media_players.include
         to: 'off'
 
-      # Trigger 3: Home Assistant startup
-      # Ensures active_scenario is populated on restart with current player grouping
+      # Home Assistant startup: ensures active_scenario is populated on restart with
+      # the current player grouping
       - trigger: homeassistant
+        id: startup
         event: start
 
     variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
       scenarios: >
-        {{ (state_attr('sensor.musiccast_scenario_config', 'scenarios') or {}) | list }}
+        {{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {}) | list }}
 
     action:
       - condition: state
-        entity_id: input_boolean.scenario_updating
+        entity_id: input_boolean.musiccast_scenario_updating
         state: 'off'
+      # A group list this line cannot read is reported as `unread`, never as an
+      # empty list: a player in `unavailable` carries no attributes at all, so an
+      # absent group_members means "we could not see it", which is a different
+      # claim from "this player is in no group". The reads use
+      # `.get('group_members')` because dot-access into a missing key yields
+      # undefined, which also logs a template warning on every such transition.
+      # The state lookups sit inside their branches so the startup trigger, which
+      # has no from_state or to_state at all, never touches them.
       - action: system_log.write
         data:
           message: >
-            {%- if trigger.entity_id is defined -%}
-            MusicCast: Detect manual scenario triggered by group members in {{ trigger.entity_id }}.
-            Previous group_members: {{ trigger.from_state.attributes.group_members | default([]) }}.
-            Current group_members: {{ trigger.to_state.attributes.group_members | default([]) }}.
+            {%- set unread = 'unread (player reports no attributes)' -%}
+            {%- if trigger.id == 'group_members' -%}
+            {%- set from_gm = trigger.from_state.attributes.get('group_members') if trigger.from_state else none -%}
+            {%- set to_gm = trigger.to_state.attributes.get('group_members') if trigger.to_state else none -%}
+            MusicCast: Detect manual scenario triggered by grouping change in {{ trigger.entity_id }}.
+            Previous group_members: {{ from_gm if from_gm is not none else unread }}.
+            Current group_members: {{ to_gm if to_gm is not none else unread }}.
+            {%- elif trigger.id == 'player_off' -%}
+            {%- set to_gm = trigger.to_state.attributes.get('group_members') if trigger.to_state else none -%}
+            MusicCast: Detect manual scenario triggered by {{ trigger.entity_id }} powering off
+            (was {{ trigger.from_state.state }}). Still enrolled in group:
+            {{ to_gm if to_gm is not none else unread }}.
             {%- else -%}
             MusicCast: Detect manual scenario triggered by HA startup.
             {%- endif -%}
           level: info
+          logger: musiccast
       - choose:
           # If every player is off, clear active scenario so the dashboard goes inactive
           - conditions:
               - condition: template
                 value_template: "{{ states('group.musiccast_players') == 'off' }}"
             sequence:
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario
-                data:
-                  value: ""
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_caption
-                data:
-                  value: ""
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_uri
-                data:
-                  value: ""
-
+              - action: script.musiccast_clear_scenario
           # If active scenario exists but an expected player left the group -> clear
           # Rationale: MusicCast emits two state_changed events on unlink (master + member),
           # so the subsequent event will re-run detection automatically.
@@ -237,11 +492,11 @@ automation:
           - conditions:
               - condition: template
                 value_template: |
-                  {% set active = states('input_text.active_scenario') %}
+                  {% set active = states('input_text.musiccast_active_scenario') %}
                   {% set sc = state_attr('sensor.musiccast_scenarios', 'scenarios') or {} %}
                   {% set master = sc.get(active, {}).get('master', '') %}
                   {% set expected = sc.get(active, {}).get('players', []) %}
-                  {% if active in ['', 'None', 'unknown'] or not master or expected | length == 0 %}
+                  {% if active in blank_states or not master or expected | length == 0 %}
                     false
                   {% else %}
                     {% set musiccast_players = state_attr('group.musiccast_players', 'entity_id') or [] %}
@@ -251,28 +506,40 @@ automation:
                     {{ expected | reject('in', gm_full) | list | length > 0 }}
                   {% endif %}
             sequence:
+              # float before int: the int filter silently falls back to its default when
+              # handed the string form of a float, which an input_number always is.
               - delay:
-                  seconds: 5
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario
-                data:
-                  value: ""
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_caption
-                data:
-                  value: ""
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_uri
-                data:
-                  value: ""
-
+                  seconds: "{{ states('input_number.musiccast_dropout_debounce') | float(5) | int }}"
+              - if:
+                  - condition: state
+                    entity_id: input_boolean.musiccast_auto_recovery
+                    state: 'on'
+                then:
+                  # Auto-recovery: rejoin the missing members while active_scenario
+                  # (and thus the master lookup) is still intact; the script clears
+                  # the scenario only if members remain missing after its retry.
+                  # Detached handoff (script.turn_on): the rejoin's join fires
+                  # group_members triggers that restart this automation, which
+                  # would cancel an inline script call mid-run.
+                  #
+                  # script.turn_on hands the variables straight to the script
+                  # without applying its `fields:` defaults, so every field the
+                  # script's templates read must be passed explicitly here — an
+                  # omitted one renders as undefined and logs a template warning
+                  # on each run.
+                  - action: script.turn_on
+                    target:
+                      entity_id: script.musiccast_rejoin_missing_members
+                    data:
+                      variables:
+                        manual: false
+                        clear_on_fail: true
+                else:
+                  - action: script.musiccast_clear_scenario
           # If no scenario is set, try to detect a matching scenario from live grouping + now playing
           - conditions:
               - condition: template
-                value_template: "{{ states('input_text.active_scenario') in ['', 'None', 'unknown'] }}"
+                value_template: "{{ states('input_text.musiccast_active_scenario') in blank_states }}"
             sequence:
               - variables:
                   detected: >
@@ -303,50 +570,18 @@ automation:
                     {%- endfor -%}
                     {{ ns.match }}
 
-              - variables:
-                  master: >
-                    {% if detected %}
-                      {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(detected, {}).get('master', '') }}
-                    {% else %}
-                      ""
-                    {% endif %}
-
-              - variables:
-                  master_title: >
-                    {{ state_attr(master, 'media_title') if master else '' }}
-
-                  master_uri: >
-                    {% if master %}
-                      {{ state_attr(master, 'media_content_id')
-                          or state_attr(master, 'media_content_type')
-                          or state_attr(master, 'source')
-                          or '' }}
-                    {% else %}
-                      ""
-                    {% endif %}
-
               - if:
                   - condition: template
                     value_template: "{{ detected not in ['', None] }}"
                 then:
                   - action: input_text.set_value
                     target:
-                      entity_id: input_text.active_scenario
+                      entity_id: input_text.musiccast_active_scenario
                     data:
                       value: "{{ detected }}"
 
                   # Clear caption for manually detected scenarios (MC app controls source)
-                  - action: input_text.set_value
-                    target:
-                      entity_id: input_text.active_scenario_source_caption
-                    data:
-                      value: ""
-
-                  - action: input_text.set_value
-                    target:
-                      entity_id: input_text.active_scenario_source_uri
-                    data:
-                      value: ""
+                  - action: script.musiccast_set_source
 
   # Detect when MC app changes source (clears stale preset highlighting)
   # ================================================================
@@ -362,21 +597,27 @@ automation:
   # - Spotify playlist switches (Chill → Workout)
   # - Reason: MusicCast provides no playlist context to Home Assistant. A playlist
   #   switch produces identical state changes as pressing "Next" on the same playlist.
-  # - Status: Tested extensively with real event data (2026-01-23). Distinguishing these
-  #   actions is technically impossible without external Spotify API integration.
+  # - Distinguishing these actions is technically impossible without external
+  #   Spotify API integration.
   # - Future: Could implement via Spotify Web API if playlist detection becomes critical.
   #
   # DETECTION METHOD:
   # Dual condition:
   # 1. Source attribute changed (true source type change)
   # 2. OR: Source == 'Net Radio' AND media_artist changed (channel switch)
-  # 
-  # TODO: fix - currently broken
+  #
+  # ON A DETECTED CHANGE the caption is corrected to the station now playing rather
+  # than blanked, matching what the mixer's verify-after-play step does: showing what
+  # is actually streaming beats showing nothing. Only Net Radio can be corrected —
+  # any other input reports track metadata rather than a station, so there is nothing
+  # trustworthy to put in the caption and it is cleared instead.
   # ================================================================
   - id: musiccast_detect_stale_caption
     alias: "MusicCast: Detect stale caption"
     description: "Clear caption when user changes source/channel via MC app (not via HA)"
     mode: single
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
     triggers:
       # Only trigger on source or media_artist changes (not media_position noise)
       - trigger: state
@@ -388,19 +629,19 @@ automation:
     conditions:
       # Protection: Don't run while scenario activation is in progress
       - condition: state
-        entity_id: input_boolean.scenario_updating
+        entity_id: input_boolean.musiccast_scenario_updating
         state: 'off'
 
       # Only run if there's an active scenario with a caption set
       - condition: template
         value_template: >
-          {{ states('input_text.active_scenario') not in ['', 'None', 'unknown', 'unavailable']
-             and states('input_text.active_scenario_source_caption') not in ['', 'None', 'unknown', 'unavailable'] }}
+          {{ states('input_text.musiccast_active_scenario') not in blank_states
+             and states('input_text.musiccast_active_source_caption') not in blank_states }}
     action:
       - variables:
-          active_scenario: "{{ states('input_text.active_scenario') }}"
+          active_scenario: "{{ states('input_text.musiccast_active_scenario') }}"
           active_master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') }}"
-          last_ts: "{{ states('input_text.active_preset_timestamp') | int(0) }}"
+          last_ts: "{{ states('input_text.musiccast_active_source_timestamp') | int(0) }}"
           now_ts: "{{ as_timestamp(now()) | int }}"
           age_seconds: "{{ now_ts - last_ts }}"
           # Extract source and channel info from state changes
@@ -409,7 +650,16 @@ automation:
           from_artist: "{{ trigger.from_state.attributes.get('media_artist', '') if trigger.from_state else '' }}"
           to_artist: "{{ trigger.to_state.attributes.get('media_artist', '') if trigger.to_state else '' }}"
 
-      # Only proceed if this player is the active master AND timestamp is stale (>5s)
+      # Only act on the active master, and only once our own last write to the source is
+      # more than 5 s old — otherwise the master's late source/media_artist update from an
+      # activation we performed reads as somebody changing the station in the MC app.
+      #
+      # This 5 is a floor, not a duplicate of "Trust players after". That helper holds
+      # scenario_updating across an activation and its minimum is 0; this test is keyed off
+      # the source timestamp instead, so it still covers writes that never hold the guard
+      # (tap-to-restore, the mixer's drift correction) and it survives that helper being 0.
+      # Deliberately not configurable: at 0 it would silently stop distinguishing our own
+      # writes from external ones, which is the read-before-settle race in a new disguise.
       - condition: template
         value_template: "{{ trigger.entity_id == active_master and age_seconds > 5 }}"
 
@@ -419,62 +669,41 @@ automation:
           {{ (from_source != to_source)
              or (to_source == 'Net Radio' and from_artist != to_artist) }}
 
+      # Metadata going blank while the input is unchanged is playback stopping, not
+      # the content changing: the device stays on Net Radio but has no station to
+      # report because nothing is streaming. Leave the caption showing what was
+      # playing — musiccast_detect_playback_stopped resumes into it, and a caption
+      # that survives the gap is more use than a blank one either way.
+      - condition: template
+        value_template: >-
+          {{ not (from_source == to_source
+                  and to_artist in blank_states) }}
+
+      # Net Radio reports the station in media_artist, so the caption can be corrected
+      # to what is playing. Any other input reports track metadata instead, leaving
+      # nothing trustworthy to show — those fall back to a blank caption.
+      - variables:
+          corrected: >-
+            {{ to_artist if to_source == 'Net Radio'
+               and to_artist not in blank_states else '' }}
+
       - action: system_log.write
         data:
           message: >
             MusicCast: MC app changed content on {{ trigger.entity_id }}.
             Source: {{ from_source }} → {{ to_source }}
             {% if from_source == to_source %}Channel: {{ from_artist }} → {{ to_artist }}{% endif %}
-            Clearing caption.
+            {{ 'Caption now shows "' ~ corrected ~ '".' if corrected else 'Clearing caption — the new source cannot be identified.' }}
           level: info
+          logger: musiccast
 
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_caption
+      # The station now playing was selected outside HA, so no preset of ours
+      # reproduces it: the slot is left blank, which is this script's default.
+      - action: script.musiccast_set_source
         data:
-          value: ""
+          caption: "{{ corrected }}"
+          input_type: "{{ 'net_radio' if corrected else '' }}"
 
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_uri
-        data:
-          value: ""
-
-  # Debug: Log MC events excluding media_position noise
-  - id: musiccast_detect_stale_caption_debug
-    alias: Debug MC events
-    description: 'Debug MC events by logging attribute state changes excluding media_position noise'
-    triggers:
-      - trigger: state
-        entity_id:
-          - media_player.peer_stereo
-    conditions:
-      - condition: template
-        value_template: "{{ trigger.to_state.attributes.items() | rejectattr('0', 'in',
-      ['media_position', 'media_position_updated_at']) | list != \n         trigger.from_state.attributes.items()
-      | rejectattr('0', 'in', ['media_position', 'media_position_updated_at']) | list
-      }}"
-    actions:
-      - action: system_log.write
-        data:
-          level: warning
-          logger: custom_debug.mc
-          message: |
-            {% set to = trigger.to_state.attributes %}
-            {% set fr = trigger.from_state.attributes %}
-            {# 1. Create diff (skip media_position noise) #}
-            {%- set ns = namespace(diff=[]) -%}
-            {%- for key, value in to.items() -%}
-              {%- if key not in ['media_position', 'media_position_updated_at'] and value != fr[key] -%}
-                {%- set ns.diff = ns.diff + [key ~ ': ' ~ fr[key] ~ ' -> ' ~ value] -%}
-              {%- endif -%}
-            {%- endfor -%}
-            ENTITY: {{ trigger.to_state.entity_id }}
-            STATE: {{ trigger.to_state.state }}
-            FULL_ATTRIBUTES: {{ trigger.to_state.attributes | string }}
-
-            --- DIFF (Excl. position) ---
-            {{ ns.diff | join('\n') if ns.diff | count > 0 else 'No changes except position' }}
 
   # MusicCast Group Volume Sync
   # ================================================================
@@ -498,7 +727,7 @@ automation:
     conditions:
       # Protection: Don't sync while scenario is being updated
       - condition: state
-        entity_id: input_boolean.scenario_updating
+        entity_id: input_boolean.musiccast_scenario_updating
         state: 'off'
       # Protection: Don't sync while apply_volumes is running (prevents override)
       # NOTE: ~10% edge case timing where volume change may trigger this automation before flag is checked.
@@ -510,13 +739,9 @@ automation:
       # Only sync if changed player is the master of active scenario
       - condition: template
         value_template: >
-          {%- set active_scenario = states('input_text.active_scenario') -%}
-          {%- if active_scenario not in ['', 'None', 'unknown', 'unavailable'] -%}
-            {%- set master = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') -%}
-            {{ trigger.entity_id == master }}
-          {%- else -%}
-            false
-          {%- endif -%}
+          {%- set active_scenario = states('input_text.musiccast_active_scenario') -%}
+          {%- set master = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') -%}
+          {{ trigger.entity_id == master }}
       # Anti-feedback: Only trigger on user/external changes (not from this automation)
       - condition: template
         value_template: "{{ trigger.to_state.context.parent_id == none }}"
@@ -565,21 +790,17 @@ automation:
 
       # Read state at sync time
       - variables:
-          active_scenario: "{{ states('input_text.active_scenario') }}"
-          master: >
-            {%- if active_scenario not in ['', 'None', 'unknown', 'unavailable'] -%}
-              {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') }}
-            {%- else -%}
-              ""
-            {%- endif -%}
+          active_scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') }}"
           current_master_volume: "{{ state_attr(master, 'volume_level') | float(0.0) if master else 0.0 }}"
           accumulated_delta: "{{ states('input_number.musiccast_volume_sync_delta') | float(0.0) }}"
           original_master_volume: "{{ current_master_volume - accumulated_delta }}"
           volume_ratio: "{{ (current_master_volume / original_master_volume) if original_master_volume > 0.001 else 1.0 }}"
           musiccast_players: "{{ state_attr('group.musiccast_players', 'entity_id') or [] }}"
           group_members: "{{ state_attr(master, 'group_members') | default([], true) if master else [] }}"
-          # Sync ALL live group members (incl. overlay players like altan), filtered to
-          # group.musiccast_players — stereo pair slaves stay excluded (not in the group)
+          # Sync ALL live group members (including overlay players joined outside the
+          # scenario), filtered to group.musiccast_players — stereo pair slaves stay
+          # excluded (not in the group)
           clients: "{{ group_members | select('in', musiccast_players) | reject('eq', master) | list if master else [] }}"
 
       # Only proceed if we have clients to sync
@@ -592,7 +813,7 @@ automation:
               sequence:
                 - variables:
                     member_current: "{{ state_attr(repeat.item, 'volume_level') | float(0.0) }}"
-                    member_new: "{{ [[(member_current * volume_ratio), 0.0] | max, 1.0] | min }}"
+                    member_new: "{{ [[(member_current * volume_ratio), 0.0] | max, states('sensor.musiccast_volume_ceiling') | float(1.0)] | min }}"
                     member_delta: "{{ (member_new - member_current) | abs }}"
 
                 - if:
@@ -690,13 +911,189 @@ automation:
       - action: input_boolean.turn_off
         entity_id: input_boolean.musiccast_apply_volumes_active
 
+  # The scenario guard has to be ON while the hardware calls run and released after
+  # them, so a call that raises takes the release down with it. aiomusiccast's
+  # MusicCastGroupException and MusicCastConnectionException are not HomeAssistantError,
+  # which means HA treats them as unexpected, continue_on_error does not suppress them,
+  # and the script abandons every later step. A stranded guard is silent: it gates drop
+  # detection, the stale-caption check and the volume sync, so the package simply stops
+  # noticing faults until someone clears it by hand.
+  #
+  # The hold before releasing is input_number.musiccast_scenario_guard_timeout, because it
+  # depends on how long a full scenario rebuild takes on this hardware. Clearing is the
+  # safe direction: at worst it costs one spurious detection while nothing is being
+  # changed. Logged as a warning because reaching this point always means a script died
+  # part-way.
+  - id: musiccast_release_stranded_scenario_guard
+    alias: "MusicCast: Release a stranded scenario guard"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.musiccast_scenario_updating
+        to: 'on'
+        # NOTE: input_number states are float strings ("180.0") — must go through float
+        # before int, or the int filter silently falls back to the default
+        for: "{{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }}"
+    action:
+      - action: system_log.write
+        data:
+          message: >-
+            MusicCast: scenario guard held for
+            {{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }} s
+            and was released automatically. A script holding it did not finish — check the
+            log above for an unexpected error in a media_player group call.
+          level: warning
+          logger: musiccast
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
 # ================================================================
 # SCRIPTS
 # ================================================================
 script:
 
   # ================================================================
-  # SCENARIO EDITOR — CONTROLLER + ROUTER (Phase E)
+  # PLAYING-SOURCE STATE — THE ONLY WRITERS
+  # ================================================================
+
+  # The single writer for the three helpers that describe what a scenario is
+  # playing: the caption shown on the scenario button, the URI the dashboard uses
+  # for source detection, and the device preset slot behind them. Every site that
+  # changes what is playing calls this, so the three cannot drift apart and the
+  # rules below are stated once instead of at a dozen call sites.
+  #
+  # ORDER MATTERS. The preset slot is written before the caption and the URI,
+  # because musiccast_record_source triggers on those two and snapshots all three
+  # into the musiccast_last_* set — a slot written afterwards is never captured.
+  #
+  # The URI is a display string, always `<input_type>://<caption>`. Pass `uri` only
+  # to reinstate one that was built earlier, as tap-to-restore does when it replays
+  # the snapshot rather than rebuilding it.
+  #
+  # Called with no arguments, this blanks all three.
+  musiccast_set_source:
+    alias: "MusicCast: Set playing source"
+    mode: queued
+    max: 10
+    fields:
+      caption:
+        description: "Station or preset name for the scenario button; blank clears all three"
+        default: ""
+      input_type:
+        description: "Device input the caption came from (net_radio, spotify, server, …)"
+        default: ""
+      preset:
+        description: "Device preset slot that reproduces the caption; blank when none does"
+        default: ""
+      uri:
+        description: "Prebuilt URI; derived from input_type and caption when blank"
+        default: ""
+    sequence:
+      # Normalised first so a caller that omits a field behaves the same as one
+      # passing a blank, whichever way the script was invoked.
+      - variables:
+          v_caption: "{{ caption | default('', true) }}"
+          v_input: "{{ input_type | default('', true) }}"
+          v_preset: "{{ preset | default('', true) }}"
+          v_uri: "{{ uri | default('', true) }}"
+      - variables:
+          resolved_uri: "{{ v_uri if v_uri else (v_input ~ '://' ~ v_caption if v_caption and v_input else '') }}"
+
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_active_source_preset
+        data:
+          value: "{{ v_preset }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_active_source_uri
+        data:
+          value: "{{ resolved_uri }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_active_source_caption
+        data:
+          value: "{{ v_caption }}"
+
+  # Take a playing group apart: unlink the members, stop the master, power everything
+  # down, and do not return until the devices confirm they are off.
+  #
+  # Both branches of musiccast_scenario_toggle need this — one to end a scenario, one to
+  # clear the way for the next — and each had its own copy. The copies had drifted: one
+  # powered the members off, waited, then powered the master off and slept a second; the
+  # other powered both off and waited for all of them. Nothing depended on the
+  # difference, so this is the second form, which is shorter and already the one proven
+  # in production.
+  #
+  # mode: restart, unlike its siblings. The caller is a restart script: tap a scenario
+  # twice and the second run must be able to tear down again. Under `single` that second
+  # teardown would be skipped and the new scenario would be built on top of a live group.
+  musiccast_teardown_group:
+    alias: "MusicCast: Tear down group"
+    mode: restart
+    fields:
+      players:
+        description: "Members to unlink and power off — the live group, not the saved scenario"
+        example: "['media_player.hall', 'media_player.kok_lilla']"
+      master:
+        description: "Master as a list, empty when it is unreachable, so the call is a no-op rather than an error"
+        example: "['media_player.kok']"
+    sequence:
+      # A `fields:` default only fills the UI service-call form; it is absent from scope
+      # when a script calls this one. Both default to empty: tearing down nothing is a
+      # no-op, whereas guessing at a wider set would power off rooms nobody asked about.
+      - variables:
+          players: "{{ players | default([], true) }}"
+          master: "{{ master | default([], true) }}"
+          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
+
+      - action: media_player.unjoin
+        target:
+          entity_id: "{{ players }}"
+      # Wait for players to unlink (1x the settle unit)
+      - delay:
+          seconds: "{{ settle * 1 }}"
+
+      - action: media_player.media_stop
+        continue_on_error: true
+        target:
+          entity_id: "{{ master }}"
+      # Wait for playback to stop (0.5x — a stop settles faster than a group change)
+      - delay:
+          seconds: "{{ settle * 0.5 }}"
+
+      - action: media_player.turn_off
+        target:
+          entity_id: "{{ players }}"
+      - action: media_player.turn_off
+        target:
+          entity_id: "{{ master }}"
+
+      # Confirmed rather than assumed: the caller may clear the scenario or build the
+      # next one the moment this returns, and both need the group actually down.
+      - wait_template: >-
+          {{ (players + master) | reject('is_state', 'off') | list | length == 0 }}
+        timeout: >-
+          {{ states('input_number.musiccast_player_settle_timeout') | float(5) }}
+        continue_on_timeout: true
+
+  # Drop the active scenario together with everything describing what it played.
+  # Callers that set a *different* scenario call musiccast_set_source directly.
+  musiccast_clear_scenario:
+    alias: "MusicCast: Clear scenario"
+    mode: queued
+    max: 10
+    sequence:
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_active_scenario
+        data:
+          value: ""
+      - action: script.musiccast_set_source
+
+  # ================================================================
+  # SCENARIO EDITOR — CONTROLLER + ROUTER
   # ================================================================
 
   musiccast_scenario_editor_open:
@@ -721,24 +1118,24 @@ script:
     sequence:
       - action: input_text.set_value
         target:
-          entity_id: input_text.scenario_editor_id
+          entity_id: input_text.musiccast_scenario_editor_id
         data:
           value: "{{ scenario_id }}"
       - action: input_text.set_value
         target:
-          entity_id: input_text.scenario_editor_name
+          entity_id: input_text.musiccast_scenario_editor_name
         data:
           value: "{{ current_name }}"
       - action: input_text.set_value
         target:
-          entity_id: input_text.scenario_editor_icon
+          entity_id: input_text.musiccast_scenario_editor_icon
         data:
           value: "{{ current_icon }}"
       - action: input_select.select_option
         target:
-          entity_id: input_select.scenario_editor_master
+          entity_id: input_select.musiccast_scenario_editor_master
         data:
-          option: "{{ current_master if current_master != '' else states('input_select.scenario_editor_master') }}"
+          option: "{{ current_master if current_master != '' else states('input_select.musiccast_scenario_editor_master') }}"
       - action: browser_mod.popup
         data:
           browser_id: "{{ browser_id }}"
@@ -746,11 +1143,11 @@ script:
           content:
             type: entities
             entities:
-              - entity: input_text.scenario_editor_name
+              - entity: input_text.musiccast_scenario_editor_name
                 name: Name
-              - entity: input_text.scenario_editor_icon
+              - entity: input_text.musiccast_scenario_editor_icon
                 name: Icon (mdi:...)
-              - entity: input_select.scenario_editor_master
+              - entity: input_select.musiccast_scenario_editor_master
                 name: Master
               - type: custom:button-card
                 name: Save
@@ -775,11 +1172,11 @@ script:
         default: ""
     sequence:
       - variables:
-          scenario_id: "{{ states('input_text.scenario_editor_id') }}"
-          new_name: "{{ states('input_text.scenario_editor_name') }}"
-          new_icon: "{{ states('input_text.scenario_editor_icon') }}"
+          scenario_id: "{{ states('input_text.musiccast_scenario_editor_id') }}"
+          new_name: "{{ states('input_text.musiccast_scenario_editor_name') }}"
+          new_icon: "{{ states('input_text.musiccast_scenario_editor_icon') }}"
           master_entity: >
-            {% set name = states('input_select.scenario_editor_master') %}
+            {% set name = states('input_select.musiccast_scenario_editor_master') %}
             {{ expand('group.musiccast_players')
                | selectattr('attributes.friendly_name', 'eq', name)
                | map(attribute='entity_id') | first | default('') }}
@@ -810,10 +1207,28 @@ script:
           browser_id: "{{ browser_id }}"
 
   # ================================================================
-  # SCENARIO ADMIN (create / rename / set_icon / delete)
-  # Each script calls the shell_command, waits for OS flush, then
-  # refreshes sensor.musiccast_scenario_config + sensor.musiccast_scenarios.
+  # SCENARIO ADMIN (create / rename / set_icon / set_master / delete)
+  # Each script calls its shell_command, then musiccast_refresh_scenario_sensors.
   # ================================================================
+
+  # Pick up a scenario file the persistor has just written.
+  # The delay covers the OS flush: the shell_command returns when the script
+  # exits, which can be before the data is readable, and the two sensors read
+  # those files. Both are refreshed together because scenarios.json feeds one
+  # and the CSVs feed the other, and every admin operation can touch either.
+  musiccast_refresh_scenario_sensors:
+    alias: "MusicCast Admin: Refresh scenario sensors"
+    # queued, not single: the scenario editor saves a rename, an icon and a master
+    # back to back, and each call must get its own flush wait rather than be dropped
+    # as an overlapping run.
+    mode: queued
+    sequence:
+      - delay: "00:00:00.500"
+      - action: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.musiccast_scenarios_labels
+            - sensor.musiccast_scenarios
 
   musiccast_scenario_create:
     alias: "MusicCast Admin: Create scenario"
@@ -824,12 +1239,7 @@ script:
           name: "{{ name }}"
           icon: "{{ icon }}"
           master: "{{ master }}"
-      - delay: "00:00:00.500"
-      - action: homeassistant.update_entity
-        target:
-          entity_id:
-            - sensor.musiccast_scenario_config
-            - sensor.musiccast_scenarios
+      - action: script.musiccast_refresh_scenario_sensors
 
   musiccast_scenario_rename:
     alias: "MusicCast Admin: Rename scenario"
@@ -839,12 +1249,7 @@ script:
         data:
           scenario: "{{ scenario }}"
           new_name: "{{ new_name }}"
-      - delay: "00:00:00.500"
-      - action: homeassistant.update_entity
-        target:
-          entity_id:
-            - sensor.musiccast_scenario_config
-            - sensor.musiccast_scenarios
+      - action: script.musiccast_refresh_scenario_sensors
 
   musiccast_scenario_set_icon:
     alias: "MusicCast Admin: Change scenario icon"
@@ -854,12 +1259,7 @@ script:
         data:
           scenario: "{{ scenario }}"
           icon: "{{ icon }}"
-      - delay: "00:00:00.500"
-      - action: homeassistant.update_entity
-        target:
-          entity_id:
-            - sensor.musiccast_scenario_config
-            - sensor.musiccast_scenarios
+      - action: script.musiccast_refresh_scenario_sensors
 
   musiccast_scenario_set_master:
     alias: "MusicCast Admin: Change scenario master"
@@ -869,12 +1269,7 @@ script:
         data:
           scenario: "{{ scenario }}"
           master: "{{ master }}"
-      - delay: "00:00:00.500"
-      - action: homeassistant.update_entity
-        target:
-          entity_id:
-            - sensor.musiccast_scenario_config
-            - sensor.musiccast_scenarios
+      - action: script.musiccast_refresh_scenario_sensors
 
   musiccast_scenario_delete:
     alias: "MusicCast Admin: Delete scenario"
@@ -883,21 +1278,17 @@ script:
       - action: shell_command.musiccast_scenario_delete
         data:
           scenario: "{{ scenario }}"
+      # Deleting the scenario that is currently active drops it, together with the
+      # caption, uri and preset describing what it was playing — those name a scenario
+      # that no longer exists. The players are left alone: deleting a definition is not
+      # a request to stop the music, and detect_manual_scenario re-derives a marker from
+      # the live group if one still matches another scenario.
       - if:
           - condition: template
-            value_template: "{{ states('input_text.active_scenario') == scenario }}"
+            value_template: "{{ states('input_text.musiccast_active_scenario') == scenario }}"
         then:
-          - action: input_text.set_value
-            target:
-              entity_id: input_text.active_scenario
-            data:
-              value: ""
-      - delay: "00:00:00.500"
-      - action: homeassistant.update_entity
-        target:
-          entity_id:
-            - sensor.musiccast_scenario_config
-            - sensor.musiccast_scenarios
+          - action: script.musiccast_clear_scenario
+      - action: script.musiccast_refresh_scenario_sensors
 
   # Unlink all players
   # ----------------
@@ -905,28 +1296,95 @@ script:
     alias: "MusicCast: Unlink all"
     mode: single
     sequence:
-      - action: media_player.media_stop
-        continue_on_error: true
-        target:
-          entity_id: media_player.skivspelare
-      - action: media_player.unjoin
-        target:
-          entity_id: "{{ expand('group.musiccast_players') | map(attribute='entity_id') | list }}"
+      - variables:
+          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
+      # Unjoin one player at a time, skipping any HA cannot reach. A device that refuses
+      # to close its group raises MusicCastGroupException, which HA classes as an
+      # *unexpected* error that continue_on_error cannot suppress — it aborts this
+      # script and any caller. The per-player loop limits the blast radius; skipping
+      # unreachable devices avoids the common case entirely.
+      - repeat:
+          for_each: >-
+            {{ expand('group.musiccast_players')
+               | rejectattr('state', 'in', ['unavailable', 'unknown'])
+               | map(attribute='entity_id') | list }}
+          sequence:
+            - action: media_player.unjoin
+              continue_on_error: true
+              target:
+                entity_id: "{{ repeat.item }}"
+
+      # Name the players the devices left grouped, after a settle for the state to
+      # propagate — a silent skip is otherwise invisible.
+      - delay:
+          seconds: "{{ settle * 2 }}"
+      - variables:
+          still_grouped: >-
+            {%- set ns = namespace(left=[]) -%}
+            {%- for p in (state_attr('group.musiccast_players', 'entity_id') or []) -%}
+              {%- if (state_attr(p, 'group_members') or []) | length > 1 -%}
+                {%- set ns.left = ns.left + [p] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.left }}
+      - if: "{{ still_grouped | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Unlink all — device refused to leave the group: {{ still_grouped }}"
+              level: warning
+              logger: musiccast
 
   # Power off all players
   # -------------------
   musiccast_power_off_all:
     alias: "MusicCast: Power Off All"
+    fields:
+      players:
+        description: "Players to power off; omit for every MusicCast player"
+        example: "['media_player.kok', 'media_player.hall']"
     sequence:
+      # A `fields:` default only fills the UI service-call form; it is absent from
+      # scope when a script or automation calls this one. `default(..., true)` also
+      # catches a caller passing an empty list, which would otherwise power off nothing.
+      - variables:
+          players: >-
+            {{ players | default(expand('group.musiccast_players')
+                                 | map(attribute='entity_id') | list, true) }}
+      # Skip unreachable players: a connection timeout raises an unexpected error that
+      # continue_on_error cannot suppress, which would abort this script and its caller.
+      - variables:
+          reachable: >-
+            {{ expand(players) | rejectattr('state', 'in', ['unavailable', 'unknown'])
+               | map(attribute='entity_id') | list }}
       - action: media_player.turn_off
         target:
-          entity_id: "{{ expand('group.musiccast_players') | map(attribute='entity_id') | list }}"
+          entity_id: "{{ reachable }}"
 
-  # Adjust master player volume (safe wrapper for screensaver)
+      # Wait for the devices to confirm, rather than guessing how long they take: this
+      # returns as soon as they are off and only spends the ceiling when something is
+      # genuinely slow or gone. Unreachable players were filtered out above, so they
+      # cannot hold this open. Callers need no settle delay of their own.
+      - wait_template: >-
+          {{ reachable | reject('is_state', 'off') | list | length == 0 }}
+        timeout: >-
+          {{ states('input_number.musiccast_player_settle_timeout') | float(5) }}
+        continue_on_timeout: true
+
+  # Step the volume up or down for the screensaver's - / + buttons.
   # -------------------------------------------------------
+  # Deliberately NOT clamped to input_number.musiccast_max_volume. That ceiling
+  # covers volumes the package chooses on the user's behalf — scenario volumes and
+  # members following a master. Pressing these buttons is the user setting a volume,
+  # exactly like dragging the slider on the player tile, and a manual change is never
+  # capped. The safety story is unchanged: a member following a master raised this way
+  # still stops at the ceiling.
+  #
+  # The bounds here are the valid range of volume_level, not a ceiling; ±0.1 is the
+  # button's granularity.
   musiccast_adjust_volume:
     alias: "MusicCast: Adjust Volume"
-    description: "Safely adjust player volume by ±10% (0% to 70% range)"
+    description: "Adjust player volume by ±10%, as a manual change (uncapped)"
     mode: single
     fields:
       entity_id:
@@ -940,7 +1398,7 @@ script:
           current_vol: "{{ state_attr(entity_id, 'volume_level') | float(0.5) }}"
           new_vol: >
             {% if direction == 'up' %}
-              {{ [current_vol + 0.1, 0.7] | min }}
+              {{ [current_vol + 0.1, 1.0] | min }}
             {% else %}
               {{ [current_vol - 0.1, 0.0] | max }}
             {% endif %}
@@ -950,26 +1408,41 @@ script:
         data:
           volume_level: "{{ new_vol }}"
 
-  # Unlink and power off all players
-  # ------------------------------
-  musiccast_unlink_and_power_off_all:
-    alias: "MusicCast: Unlink and Power Off All"
+  # Power off every player and clear the active scenario
+  # ----------------------------------------------------
+  musiccast_all_off:
+    alias: "MusicCast: All Off"
     mode: restart
     sequence:
       - action: input_boolean.turn_on
         target:
-          entity_id: input_boolean.scenario_updating
-      - action: script.musiccast_unlink_all
-      - delay: 00:00:02
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      # Invalidate the scenario before touching a single device. Teardown talks to
+      # hardware and can abort part-way; these writes cannot fail, so doing them first
+      # means a half-finished teardown never leaves a scenario claiming to be active
+      # over a group that is coming apart. Safe against re-detection: this runs under
+      # musiccast_scenario_updating, and detect_manual_scenario is gated on that flag
+      # being off — and if the teardown really does abort, releasing the flag lets
+      # detect_manual_scenario re-derive the truth from live group_members.
+      # Via clear_scenario rather than a direct write: the caption, uri and preset
+      # describe what the scenario was playing and are meaningless once it is gone,
+      # and they must be blanked preset-first — an order only musiccast_set_source
+      # keeps. The snapshot helpers are untouched, so tap-to-restore still works.
+      - action: script.musiccast_clear_scenario
+
+      # Power off only — no unjoin. The devices keep their group when powered off (the
+      # MusicCast app behaves the same way), and the next scenario activation rebuilds
+      # the group from scratch, so unjoining here buys nothing. Leaving it out removes
+      # the one call in this script that can raise MusicCastGroupException — an
+      # *unexpected* error that continue_on_error cannot suppress, which would abort the
+      # rest of the script and strand the guard.
       - action: script.musiccast_power_off_all
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario
-        data:
-          value: ""
+        continue_on_error: true
+
       - action: input_boolean.turn_off
         target:
-          entity_id: input_boolean.scenario_updating
+          entity_id: input_boolean.musiccast_scenario_updating
 
   # Toggle link for single player (Dynamic Master)
   # --------------------------------------------
@@ -982,18 +1455,25 @@ script:
     sequence:
       - action: input_boolean.turn_on
         target:
-          entity_id: input_boolean.scenario_updating
+          entity_id: input_boolean.musiccast_scenario_updating
       - variables:
           # 1. Determine which scenario is active
-          active_scenario: "{{ states('input_text.active_scenario') }}"
+          active_scenario: "{{ states('input_text.musiccast_active_scenario') }}"
           
-          # 2. Fetch the master for the scenario (empty if no scenario)
+          # 2. Fetch the master for the scenario. When no scenario is active, fall
+          # back to musiccast_last_scenario so a tap on a player that dropped out of
+          # a still-playing scenario relinks it to that master (complements the
+          # scenario-tap restore). desired_master below only accepts a master that is
+          # on, so an off/stopped master leaves it empty and the tap falls through to
+          # Case C (power toggle).
           potential_master: >
-            {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '')
-               if active_scenario not in ['', 'unknown', 'unavailable', 'None']
+            {%- set s = active_scenario if active_scenario not in ['', 'unknown', 'unavailable', 'None']
+                        else states('input_text.musiccast_last_scenario') -%}
+            {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(s, {}).get('master', '')
+               if s not in ['', 'unknown', 'unavailable', 'None']
                else '' }}
           
-          # 2. Fetch the master for the scenario ONLY if it is actually ON
+          # 3. Fetch the master for the scenario ONLY if it is actually ON
           # If master is off, we treat it as missing (returning '') to fall through to Case C (Toggle Power)
           desired_master: >
             {% if potential_master != '' and states(potential_master) not in ['off', 'unavailable', 'unknown'] %}
@@ -1002,7 +1482,7 @@ script:
               {{ '' }}
             {% endif %}
           
-          # 3. Check the current status of the tapped player
+          # 4. Check the current status of the tapped player
           current_members: "{{ state_attr(target_player, 'group_members') or [] }}"
           
           # A player is considered linked if group_members contains more than itself.
@@ -1039,19 +1519,63 @@ script:
                   entity_id: "{{ target_player }}"
       - action: input_boolean.turn_off
         target:
-          entity_id: input_boolean.scenario_updating
+          entity_id: input_boolean.musiccast_scenario_updating
 
   # Unlink and power off distinct entity
   # ------------------------------------
+  # Long-press on a player tile: take that room out of the group by hand.
+  #
+  # The guard is what separates this from a device dropping out. Without it the unjoin
+  # and the power-off look identical to a fault, and with Auto-Recovery on the player is
+  # rejoined a few seconds later — the deliberate action undone, and no Undo popup when
+  # "Close popup after" is 0.
+  #
+  # The scenario is cleared as well, not only guarded. detect_manual_scenario compares the
+  # scenario's expected players against the live group on every group event, so a player
+  # that quietly left would be rejoined by the next unrelated one; clearing removes the
+  # comparison. This is also what the package already documents long-press as doing. The
+  # rest of the group plays on — nothing here stops playback — and musiccast_last_scenario
+  # keeps tap-to-restore available.
+  #
+  # Accepted limitation: this lowers the guard unconditionally, so a long-press during a
+  # scenario activation releases that activation's settle early. The window is a few
+  # seconds and musiccast_release_stuck_guard covers the opposite failure, a guard left up.
   musiccast_unlink_and_power_off_player:
     alias: "MusicCast: Unlink and Power Off Player"
+    # queued, not single: holding two tiles in quick succession should take both rooms
+    # out, and single would silently drop the second press.
+    mode: queued
     sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      - variables:
+          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
+
       - action: media_player.unjoin
         target:
           entity_id: "{{ target_player }}"
+      # Wait for the unlink (1x the settle unit), the same shape as the group teardown
+      - delay:
+          seconds: "{{ settle * 1 }}"
+
       - action: media_player.turn_off
         target:
           entity_id: "{{ target_player }}"
+
+      # Confirmed rather than assumed: the guard has to outlast the device's own events,
+      # which is the whole reason it went up.
+      - wait_template: "{{ is_state(target_player, 'off') }}"
+        timeout: >-
+          {{ states('input_number.musiccast_player_settle_timeout') | float(5) }}
+        continue_on_timeout: true
+
+      - action: script.musiccast_clear_scenario
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
 
   # Capture current volume levels for all actively linked players
   # ---------------------------------------------------------------
@@ -1063,15 +1587,18 @@ script:
     mode: queued
     sequence:
       - variables:
-          # 1. Get the master player for this scenario from the scenarios sensor
+          # These four are the same computation in musiccast_apply_volumes, worded the
+          # same way there: any change here belongs in both.
+          # 1. The master of the named scenario, from the scenarios sensor.
           master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}"
-          # 2. Get ACTUAL group_members currently linked to master (includes master + members + stereo slaves)
+          # 2. Who is linked to that master right now — master, members, and any stereo-pair
+          #    slaves the device reports. Normally this matches the scenario's player list.
           group_members: "{{ state_attr(master, 'group_members') or [] }}"
-          # 3. Get all independent musiccast players (authoritative list, excludes stereo slaves)
+          # 3. The independently addressable players: the authoritative list, which excludes
+          #    stereo-pair slaves.
           musiccast_players: "{{ state_attr('group.musiccast_players', 'entity_id') or [] }}"
-          # 4. Filter to save only members that are in musiccast_players (removes stereo slaves)
-          #    In typical case, group_members and scenario players should match.
-          #    This filter ensures we only save truly independent players, excluding passive stereo pair slaves.
+          # 4. Intersect the two, leaving only players that can hold a volume of their own —
+          #    a stereo slave follows its partner and cannot be set individually.
           filtered_members: "{{ group_members | select('in', musiccast_players) | list }}"
 
           # 5. Build the CSV content — master FIRST, then remaining members
@@ -1125,21 +1652,21 @@ script:
         entity_id: input_boolean.musiccast_apply_volumes_active
 
       - variables:
-          # 1. Get the master player for this scenario from the scenarios sensor
+          # These four are the same computation in musiccast_capture_volumes, worded the
+          # same way there: any change here belongs in both.
+          # 1. The master of the named scenario, from the scenarios sensor.
           master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}"
-          # 2. Get ACTUAL group_members currently linked to master
-          #    At scenario start: these are exactly the scenario members (just linked)
-          #    Safety: filter through musiccast_players to exclude any stereo slaves that might be linked
+          # 2. Who is linked to that master right now — master, members, and any stereo-pair
+          #    slaves the device reports. Normally this matches the scenario's player list.
           group_members: "{{ state_attr(master, 'group_members') or [] }}"
-          # 3. Get all independent musiccast players (authoritative list, excludes stereo slaves)
+          # 3. The independently addressable players: the authoritative list, which excludes
+          #    stereo-pair slaves.
           musiccast_players: "{{ state_attr('group.musiccast_players', 'entity_id') or [] }}"
-          # 4. Filter to restore only members that are in musiccast_players (removes stereo slaves as safety check)
-          #    Loop through this filtered list. For each member: look up volume in stored file.
-          #    If volume found: set it. If not found: skip (missing entries are ignored).
-          #    Stored volumes for non-linked members are also ignored automatically.
+          # 4. Intersect the two, leaving only players that can hold a volume of their own —
+          #    a stereo slave follows its partner and cannot be set individually.
           filtered_members: "{{ group_members | select('in', musiccast_players) | list }}"
 
-      # 4. Read volumes from file for this scenario
+      # 5. Read volumes from file for this scenario
       - action: shell_command.musiccast_volumes_read
         data:
           scenario: "{{ scenario }}"
@@ -1150,6 +1677,8 @@ script:
           # Shell command returns JSON like: {"media_player.peer_stereo": 0.35, "media_player.ovre_badrum": 0.3}
           scenario_volumes: "{{ ((volumes_response.stdout | default('{}')) | from_json) if (volumes_response.stdout | default('{}')) != '' else {} }}"
 
+      # Each linked member takes its stored volume. A member with no stored entry is
+      # skipped, and stored entries for players that are not currently linked are ignored.
       - repeat:
           for_each: "{{ filtered_members }}"
           sequence:
@@ -1164,7 +1693,8 @@ script:
                   target:
                     entity_id: "{{ player }}"
                   data:
-                    volume_level: "{{ target_volume }}"
+                    # Clamp to the safety ceiling
+                    volume_level: "{{ [target_volume, states('sensor.musiccast_volume_ceiling') | float(1.0)] | min }}"
 
       # PROTECTION: Start settle timer to let volume changes propagate
       # Timer will restart on each volume change. Flag turns OFF when timer expires (no changes for 200ms).

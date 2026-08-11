@@ -27,7 +27,7 @@ input_text:
     initial: ""
     # Temporary storage for range editor popup. Format: "location_index|mac|tolerance|current_min|current_max|p10|p90|n"
 
-  device_charger_locations:
+  bt_device_charger_locations:
     name: "Device Charger Locations"
     max: 255
     initial: "{}"
@@ -38,7 +38,7 @@ input_text:
     # 3. Edge case (HA restart with phone on charger) is rare and self-corrects on next BT scan
 
 input_button:
-  capture_bt_fingerprint:
+  bt_capture_fingerprint:
     name: "Capture BT Fingerprint"
     # Manual trigger to capture current RSSI values to fingerprint database
 
@@ -354,29 +354,39 @@ template:
           timestamp: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
 
       # Webhook-triggered sensor for BT device names mapping
-      # Accumulates MAC→name pairs from each scan in memory (no persistence across HA restart, acceptable for lookup data)
+      # Accumulates MAC→name pairs from each scan, and survives a restart via HA's
+      # restore-state store, so the map is cumulative across sessions
       # Triggered by same webhook as BT Latest Scan Full - data flows: webhook → template sensor attributes → dashboard
       - name: "BT Device Names"
         unique_id: bt_device_names
         state: "ready"
         attributes:
           devices_by_mac: |
-            {%- set current_map_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') -%}
+            {%- set placeholders = ['', 'unknown', 'undefined'] -%}
+            {# `or {}` rather than `| default({})`: an absent attribute reads as
+               None, which default() does not replace (patterns.md Pattern 9). #}
+            {%- set current_map_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') or {} -%}
             {%- set current_map = current_map_raw | from_json if current_map_raw is string else current_map_raw -%}
-            {%- set ns = namespace(new_map=current_map | default({}) | combine({}) ) -%}
-            {%- for device in trigger.json.devices | default([]) -%}
+            {# Carry forward only real names. A placeholder held in the map is
+               re-selected as the cached fallback below and rewritten on every
+               scan, so it would otherwise never leave. #}
+            {%- set ns = namespace(new_map={}) -%}
+            {%- for cached_mac, cached_name in current_map.items() if cached_name not in placeholders -%}
+              {%- set ns.new_map = ns.new_map | combine({cached_mac: cached_name}) -%}
+            {%- endfor -%}
+            {%- for device in trigger.json.devices or [] -%}
               {%- set mac = device.mac | upper -%}
-              {%- set incoming = device.name | default('') -%}
-              {%- set cached = current_map.get(mac, '') -%}
-              {%- set name = incoming if incoming not in ['', 'unknown', 'undefined'] else cached -%}
-              {%- if name -%}
+              {%- set incoming = device.get('name') or '' -%}
+              {%- set cached = ns.new_map.get(mac, '') -%}
+              {%- set name = incoming if incoming not in placeholders else cached -%}
+              {%- if name not in placeholders -%}
                 {%- set ns.new_map = ns.new_map | combine({mac: name}) -%}
               {%- endif -%}
             {%- endfor -%}
             {{ ns.new_map | to_json }}
 
   # Event-triggered sensor for BT location detection scores (transient, in-memory only)
-  # Triggered by bt_location_scores_updated event fired from detect_location_from_signals script
+  # Triggered by bt_location_scores_updated event fired from bt_detect_location_from_signals script
   # No file I/O - scores kept in memory only (real-time detection data via event bus)
   - triggers:
       - trigger: event
@@ -392,7 +402,7 @@ template:
           unknown_beacons_in_scan: "{{ trigger.event.data.unknown_beacons_in_scan | int(0) }}"
 
   # BT Location Confusion Matrix - Stores pre-calculated similarity scores
-  # Updated by script.generate_confusion_matrix when fingerprints/locations/tolerance change
+  # Updated by script.bt_generate_confusion_matrix when fingerprints/locations/tolerance change
   - triggers:
       - trigger: event
         event_type: bt_matrix_calculation_complete
@@ -408,7 +418,7 @@ template:
 # SCRIPTS
 # ------------------------------------------------------------------
 script:
-  generate_confusion_matrix:
+  bt_generate_confusion_matrix:
     alias: "Generate BT Confusion Matrix"
     description: "Calculate location confusion scores using worst-case range overlap (no midpoint approximation)"
     mode: restart
@@ -510,7 +520,7 @@ script:
           message: "BT Confusion Matrix calculated: {{ matrix_rows | length }} locations"
           level: info
 
-  detect_charger_location:
+  bt_detect_charger_location:
     alias: "BT: Detect charger location"
     description: "Analyze BT signals from Tasker scan and detect phone charger location"
     mode: queued
@@ -523,7 +533,7 @@ script:
         example: "[{'mac': 'AA:BB:CC:DD:EE:FF', 'name': 'Device Name', 'rssi': -65}]"
     sequence:
       # Call location-specific detection logic (user-customizable in screensaver_local.yaml)
-      - action: script.detect_location_from_signals
+      - action: script.bt_detect_location_from_signals
         data:
           devices: "{{ devices }}"
         response_variable: detection_result
@@ -531,7 +541,7 @@ script:
       # Transform browser_id to device_id by stripping FKB suffix
       - variables:
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
-          current_mapping: "{{ states('input_text.device_charger_locations') | default('{}') | from_json({}) }}"
+          current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
 
       - variables:
           regex_matches: "{{ browser_id | regex_findall(transform_pattern) }}"
@@ -549,7 +559,7 @@ script:
       # Update generic device-to-location JSON mapping
       - action: input_text.set_value
         target:
-          entity_id: input_text.device_charger_locations
+          entity_id: input_text.bt_device_charger_locations
         data:
           value: "{{ updated_mapping_json }}"
 
@@ -611,7 +621,7 @@ script:
                 {{ {'fingerprints': ns.fp_list} }}
 
           # Write updated fingerprints
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -669,7 +679,7 @@ script:
             {%- endfor -%}
             {{ {'fingerprints': ns.fp_list} }}
 
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -719,7 +729,7 @@ script:
                 {{ {'fingerprints': ns.fp_list} }}
 
           # Write updated fingerprints
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -760,7 +770,7 @@ script:
             {%- endfor -%}
             {{ {'fingerprints': ns.fp_list} }}
 
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -829,11 +839,11 @@ script:
                   {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
                 {%- endfor -%}
                 {{ {'fingerprints': ns.fp_list} }}
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ cleaned_fingerprints }}"
 
-  calculate_location_scores:
+  bt_calculate_location_scores:
     alias: "BT: Calculate location scores"
     description: "Calculate location scores against latest BT scan and update location metrics"
     sequence:
@@ -842,11 +852,11 @@ script:
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
       # Call location detection with loaded scan data
-      - action: script.detect_location_from_signals
+      - action: script.bt_detect_location_from_signals
         data:
           devices: "{{ scan_devices }}"
 
-  detect_location_from_signals:
+  bt_detect_location_from_signals:
     alias: "BT: Detect location from signals"
     description: "Apply location detection rules to BT signal data (user-customizable)"
     fields:
@@ -915,7 +925,7 @@ script:
       - stop: "Location detected"
         response_variable: result
 
-  capture_bt_fingerprint:
+  bt_capture_fingerprint:
     alias: "BT: Capture fingerprint"
     description: "Capture current RSSI values as fingerprint for location"
     fields:
@@ -1005,7 +1015,7 @@ script:
                 {{ {'fingerprints': ns.fp_list} }}
 
           # Write updated fingerprints
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1045,7 +1055,7 @@ script:
               message: "No BT devices detected. Place phone on charger and wait for Tasker scan, then try again."
               level: warning
 
-  merge_bt_fingerprint:
+  bt_merge_fingerprint:
     alias: "BT: Merge fingerprint"
     description: "Merge or update the fingerprint for a location from the latest BT scan"
     fields:
@@ -1173,7 +1183,7 @@ script:
                 {%- set ns.fp_list = ns.fp_list + [{'loc': location_index | int, 'beacons': merged_beacons}] -%}
                 {{ {'fingerprints': ns.fp_list} }}
 
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1310,7 +1320,7 @@ script:
             {%- endfor -%}
             {{ {'fingerprints': ns.fp_list} }}
 
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1599,7 +1609,7 @@ script:
             {%- endfor -%}
             {{ {'fingerprints': ns.fp_list} }}
 
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1687,7 +1697,7 @@ script:
                 {%- endfor -%}
                 {{ {'fingerprints': ns.fp_list} }}
 
-          - action: script.write_bt_fingerprints
+          - action: script.bt_write_fingerprints
             data:
               fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1787,7 +1797,7 @@ script:
             {%- endfor -%}
             {{ {'fingerprints': ns.fp_list} }}
 
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json: "{{ updated_fingerprints }}"
 
@@ -1901,7 +1911,7 @@ script:
           message: "Recorded merge statistics for location {{ location_index }}: {{ scan_map | length }} beacons from scan"
           level: debug
 
-  report_beacon_status:
+  bt_report_beacon_status:
     alias: "BT: Report beacon status"
     description: "Generate and log beacon status report with per-beacon statistics and warnings"
     sequence:
@@ -2072,7 +2082,7 @@ script:
           message: "{{ validation_report }}"
           level: info
 
-  load_bt_fingerprints_from_file:
+  bt_load_fingerprints_from_file:
     alias: "BT: Load fingerprints from file"
     description: "Refresh BT fingerprints sensor from file backup"
     sequence:
@@ -2081,7 +2091,7 @@ script:
         target:
           entity_id: sensor.bt_fingerprint_database_file
 
-  write_bt_fingerprints:
+  bt_write_fingerprints:
     alias: "BT: Write fingerprints to file"
     description: "Write fingerprints JSON string to file and refresh sensor. Single write path for all fingerprint writers."
     fields:
@@ -2095,16 +2105,16 @@ script:
         target:
           entity_id: sensor.bt_fingerprint_database_file
 
-  clear_bt_fingerprints:
+  bt_clear_fingerprints:
     alias: "BT: Clear fingerprints"
     description: "Clear BT fingerprints database and refresh sensor"
     sequence:
-      - action: script.write_bt_fingerprints
+      - action: script.bt_write_fingerprints
         data:
           fingerprints_json:
             fingerprints: []
 
-  clear_bt_statistics:
+  bt_clear_statistics:
     alias: "BT: Clear statistics"
     description: "Clear all scan history statistics and refresh sensor"
     sequence:
@@ -2128,7 +2138,7 @@ automation:
           - input_number.bt_location_detection_weak_signal_threshold
     action:
       - delay: "00:00:05"
-      - action: script.generate_confusion_matrix
+      - action: script.bt_generate_confusion_matrix
     mode: restart
 
   - alias: 'BT Calibration - Capture Fingerprint Button'
@@ -2136,9 +2146,9 @@ automation:
     description: "Capture BT fingerprint when button pressed in calibration UI"
     trigger:
       - trigger: state
-        entity_id: input_button.capture_bt_fingerprint
+        entity_id: input_button.bt_capture_fingerprint
     action:
-      - action: script.capture_bt_fingerprint
+      - action: script.bt_capture_fingerprint
 
   - alias: 'BT Fingerprints - Load from File on Startup'
     id: bt_fingerprints_load_on_startup
@@ -2166,10 +2176,10 @@ automation:
       - condition: template
         value_template: "{{ states('sensor.bt_fingerprint_database_file') is not none and states('sensor.bt_ignored_beacons') is not none and state_attr('sensor.bt_latest_scan_full', 'devices') is not none }}"
     action:
-      - action: script.calculate_location_scores
+      - action: script.bt_calculate_location_scores
 
-  - alias: 'Phone Charger - BT Location Detection'
-    id: phone_charger_bt_location
+  - alias: 'BT Phone Charger - Detect Location'
+    id: bt_phone_charger_detect_location
     description: "Trigger on updated BT scan sensor, analyze filtered signals, detect and store charger location"
     trigger:
       # Trigger on sensor state change (timestamp updates on every webhook post)
@@ -2192,13 +2202,13 @@ automation:
           level: info
 
       # Call location detection script with pre-filtered sensor data
-      - action: script.detect_charger_location
+      - action: script.bt_detect_charger_location
         data:
           browser_id: "{{ state_attr('sensor.bt_latest_scan_full', 'browser_id') }}"
           devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') }}"
 
-  - alias: 'Phone Charger - Power Disconnect Detection'
-    id: phone_charger_power_disconnect
+  - alias: 'BT Phone Charger - Clear Location'
+    id: bt_phone_charger_clear_location
     description: "Receive power-disconnect event from Tasker, clear charger location for specific device"
     trigger:
       - trigger: webhook
@@ -2209,7 +2219,7 @@ automation:
     action:
       # Remove only the disconnected device's entry from the location mapping
       - variables:
-          current_mapping: "{{ states('input_text.device_charger_locations') | default('{}') | from_json({}) }}"
+          current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
           regex_matches: "{{ trigger.json.browser_id | regex_findall(transform_pattern) }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else trigger.json.browser_id }}"
@@ -2224,15 +2234,15 @@ automation:
 
           - action: input_text.set_value
             target:
-              entity_id: input_text.device_charger_locations
+              entity_id: input_text.bt_device_charger_locations
             data:
               value: "{{ updated_mapping_json }}"
 
-          # Log location clearing with normalized device_id (debug only, see persistent notifications for details)
+          # Log location clearing with normalized device_id (see persistent notifications for details)
           - action: system_log.write
             data:
               message: "Phone charger location cleared for {{ device_id }} (power disconnected)"
-              level: debug
+              level: info
         else:
           # Warn if browser_id not found in mapping
           - action: system_log.write

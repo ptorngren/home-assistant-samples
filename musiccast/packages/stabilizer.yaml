@@ -1,0 +1,1111 @@
+# ================================================================
+# MUSICCAST: Stabilizer — keeping a playing scenario playing
+# ================================================================
+# Everything that reacts to a scenario breaking: the detectors, the recovery scripts
+# they call, their Undo counterparts, the settings that tune them, and the two
+# diagnostics used to work out what happened.
+#
+# Separate from the rest of the package because it answers to faults rather than to the
+# user: nothing here is triggered by pressing anything. The other files do what they are
+# asked; this one runs on its own, when something has already gone wrong, and each piece
+# exists because of a specific failure a MusicCast device can produce.
+#
+# Home Assistant merges every file under packages/, so the split is organisational only:
+# entity ids, service names and cross-file calls are unaffected by which file they sit in.
+#
+# ----------------------------------------------------------------
+# The file boundary is not a dependency boundary — deliberately
+# ----------------------------------------------------------------
+# Three things this file needs live in orchestrator.yaml, and belong there:
+#   - musiccast_detect_manual_scenario starts the rejoin, but it is core scenario
+#     detection rather than recovery, and it is what decides a scenario is active
+#     in the first place.
+#   - input_boolean.musiccast_scenario_updating is shared with activation. Recovery
+#     raises a guard it does not own; activation lowers it again.
+#   - musiccast_set_source and musiccast_clear_scenario are called from the recovery
+#     paths but are the single writers of the playing-source state.
+#
+# What is here: the two detectors (playback stopped, silent members), the five
+# recovery scripts, the Stability settings, and the diagnostics
+# (musiccast_log_transport_state, musiccast_release_stuck_guard).
+# ================================================================
+
+input_text:
+  # Per-player recovery failure counts, JSON {entity_id: count}; only failing entities
+  # appear. Shared by both recovery kinds — a player that will neither rejoin nor resume
+  # is one problem with one budget.
+  musiccast_recovery_attempts:
+    name: MusicCast Recovery Attempts
+    max: 255
+
+input_number:
+  # Max recovery attempts per player before giving up, within one scenario session.
+  # Counts rejoins and resumes alike.
+  musiccast_recovery_max_attempts:
+    name: "MusicCast Recovery Max Attempts"
+    min: 1
+    max: 5
+    step: 1
+  # Seconds to wait after a recovery before checking it landed (and before a retry) —
+  # settle time for slow devices. Raise if genuine recoveries get false "failed" reports.
+  # Doubles as how long playback must stay stopped before a stop counts as real rather
+  # than a blip between tracks.
+  musiccast_recovery_settle:
+    name: "MusicCast Recovery Settle"
+    min: 1
+    max: 30
+    step: 1
+    unit_of_measurement: s
+  # How long a scenario member must sit silent — reporting idle while its master still
+  # reports playing, and while it is still enrolled in the master's group — before that
+  # counts as a real fault rather than a glitch that will heal itself.
+  #
+  # Distinct from the recovery settle above, which is how long to wait *after acting*
+  # before checking the action landed. Measured floor for this one is 10-15 s: members
+  # have been seen recovering on their own after 7 s, and flapping back for 4 s before
+  # dying for good. A longer value also keeps the rejoin path — which has its own
+  # debounce, "Trust dropout after" — ahead of this one when a member both drops out of
+  # the group and goes quiet.
+  #
+  # The minimum is 5 rather than 0 because 0 would mean "act instantly", the one setting
+  # guaranteed to fire on glitches; switching the behaviour off is what
+  # input_boolean.musiccast_auto_recovery is for.
+  # Id names the mechanism, friendly name matches the dashboard label so dev tools and
+  # the Stability card do not disagree.
+  musiccast_silence_debounce:
+    name: "MusicCast Fix Silence After"
+    min: 5
+    max: 60
+    step: 5
+    unit_of_measurement: s
+  # How long an expected member must be absent from the master's group before that counts
+  # as a real dropout rather than a glitch. MusicCast devices blip out of a group and
+  # return by themselves: two members were gone for 1.3 s and another for 7 s in observed
+  # incidents, all self-healing. mode: restart on the automation means a member that comes
+  # back cancels the wait, so this only elapses for absences that persist.
+  #
+  # Distinct from "Fix silence after", which watches a member that is still *enrolled* but
+  # has gone quiet. This one watches membership; that one watches sound.
+  #
+  # Minimum is 2 rather than 0 for the same reason as that helper: 0 would mean "act
+  # instantly", which is the one setting guaranteed to fire on glitches, and
+  # input_boolean.musiccast_auto_recovery is the way to switch the behaviour off.
+  musiccast_dropout_debounce:
+    name: "MusicCast Trust Dropout After"
+    min: 2
+    max: 30
+    step: 1
+    unit_of_measurement: s
+  # Rebuilding a distribution is unjoin, pause, join. This is the pause. The unjoin has
+  # to land on every device before the join is issued, or a player misses the rebuild
+  # and is left enrolled but silent — observed on `kok_lilla` at 4 s, while 10 s
+  # rebuilt six members cleanly twice. Raise this first if rebuilds strand a player.
+  musiccast_relink_gap:
+    name: "MusicCast Re-link After"
+    min: 2
+    max: 30
+    step: 1
+    unit_of_measurement: s
+  # How long to let a rebuilt link settle before judging whether it worked. Members do
+  # not return together: in a six-member rebuild three were back at 17 s and two more
+  # at 37 s. Judge too early and healthy players are read as dead, which escalates to
+  # re-asserting the station and restarts a playlist for nothing. Much longer than
+  # "Recheck after", which covers a rejoin or a resume — a full rebuild is slower.
+  musiccast_relink_verify:
+    name: "MusicCast Check Re-link After"
+    min: 10
+    max: 120
+    step: 5
+    unit_of_measurement: s
+  # How long the auto-recovery popup — the one offering Undo, after a rejoin or a
+  # resume — stays on screen before dismissing itself. 0 means show no popup at all:
+  # recoveries are simply accepted, silently, which is the right setting once you
+  # trust them. The scripts test for 0 and skip the popup rather than passing it to
+  # browser_mod, where a timeout of 0 would mean "never dismiss" instead. A recovery
+  # that *fails* raises a persistent notification regardless of this setting.
+  musiccast_recovery_popup_timeout:
+    name: "MusicCast Recovery Popup Timeout"
+    min: 0
+    max: 60
+    step: 5
+    unit_of_measurement: s
+
+input_boolean:
+  # Master enable for dropout auto-recovery. Off = the "expected member missing"
+  # branch clears active_scenario without attempting a rejoin.
+  musiccast_auto_recovery:
+    name: "MusicCast Auto-Recovery"
+    icon: mdi:autorenew
+
+  # Diagnostic logging, off in normal use. Gates the transport-state log and the
+  # MC attribute-diff probe. Worth turning on when investigating why a scenario
+  # misbehaved: auto-recovery heals some faults within seconds, so the only trace
+  # of an incident can otherwise be the one line saying it was fixed.
+  musiccast_debug:
+    name: "MusicCast Debug Logging"
+    icon: mdi:bug-outline
+template:
+  - sensor:
+      # The recovery popup timeout in milliseconds, which is what browser_mod takes,
+      # while the helper it comes from is in seconds. 0 carries through unchanged and
+      # the recovery scripts read it as "show no popup" — they skip the popup entirely
+      # rather than passing 0 to browser_mod, where it would mean "never dismiss".
+      # An unreadable helper yields 0, so a popup is suppressed rather than forced.
+      - name: "MusicCast Popup Timeout ms"
+        unique_id: musiccast_popup_timeout_ms
+        unit_of_measurement: ms
+        state: >-
+          {{ (states('input_number.musiccast_recovery_popup_timeout') | float(0) * 1000) | round(0) }}
+
+# ================================================================
+# AUTOMATIONS — detectors and diagnostics
+# ================================================================
+automation:
+  # Safety net for a stranded guard. Every scenario script raises scenario_updating and
+  # lowers it at the end, but a MusicCast device can raise an *unexpected* exception
+  # (connection timeout, refused group close) that continue_on_error cannot suppress and
+  # that aborts the script mid-run. The flags then stay raised forever, silently muting
+  # drop detection, volume sync and stale-caption detection, and hiding the mini-player.
+  # Nothing legitimate holds them this long: the slowest activation is teardown + link +
+  # mixer + the settle (max 30 s), comfortably under two minutes.
+  - id: musiccast_release_stuck_guard
+    alias: "MusicCast: Release stuck guard"
+    description: "Clear scenario flags left raised by a script that died mid-run."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_boolean.musiccast_scenario_updating
+          - input_boolean.musiccast_activation_in_progress
+        to: 'on'
+        for: "00:02:00"
+    actions:
+      - action: system_log.write
+        data:
+          message: >-
+            MusicCast: {{ trigger.entity_id }} was still on 2 minutes after it was raised —
+            a scenario script most likely aborted. Releasing it so recovery and volume sync
+            resume; check the log above for the failing device.
+          level: warning
+          logger: musiccast
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ trigger.entity_id }}"
+
+  # Resume playback that something outside HA stopped
+  # -------------------------------------------------
+  # The transport-state counterpart of the auto-rejoin branch in
+  # detect_manual_scenario. That one handles a player leaving the group; this one
+  # handles the group staying intact while the music stops — the master drops to
+  # paused or idle and nothing brings it back. An internet radio stream ending does
+  # this: the group is untouched, and the scenario goes on reporting itself active
+  # while the house is silent.
+  #
+  # Scope is the active scenario's MASTER only: members follow the master's
+  # distribution, so a member pausing on its own is a different fault.
+  - id: musiccast_detect_playback_stopped
+    alias: "MusicCast: Detect playback stopped"
+    description: "Resume playback that something outside HA paused or stopped."
+    mode: single
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      # The pause has to persist: a momentary blip between tracks or during a
+      # buffer refill is not a stopped stream. Reuses the recovery settle so the
+      # patience is tunable rather than baked in.
+      # NOTE: input_number states are float strings ("4.0") — float before int, or
+      # the int filter silently falls back to the default.
+      - trigger: state
+        entity_id: !include data/media_players.include
+        to:
+          - 'paused'
+          - 'idle'
+        for: "{{ states('input_number.musiccast_recovery_settle') | float(1) | int }}"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.musiccast_auto_recovery
+        state: 'on'
+      # Our own teardown calls media_stop; the guard is what tells the two apart.
+      - condition: state
+        entity_id: input_boolean.musiccast_scenario_updating
+        state: 'off'
+      # "Something other than HA" — the whole point of the feature. A pause from
+      # the dashboard carries the pressing user's user_id; one from a script or
+      # automation carries a parent_id. A device-side change carries neither, so
+      # this is what stops the feature fighting a deliberate pause.
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.context.user_id is none
+             and trigger.to_state.context.parent_id is none }}
+      # Only the master of a currently-active scenario.
+      - condition: template
+        value_template: >-
+          {%- set scenario = states('input_text.musiccast_active_scenario') -%}
+          {%- if scenario in blank_states -%}
+            false
+          {%- else -%}
+            {{ trigger.entity_id == (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}
+          {%- endif -%}
+    actions:
+      # Called inline, not detached: mode: single then keeps this automation busy
+      # for the duration, so the resume's own state changes cannot re-enter it.
+      - action: script.musiccast_resume_playback
+        data:
+          player: "{{ trigger.entity_id }}"
+
+  - id: musiccast_detect_silent_members
+    alias: "MusicCast: Detect silent members"
+    description: "Restart the master's stream when its members go quiet while it still reports playing."
+    mode: single
+    # Six members go quiet within a second, so all but the first are dropped here on
+    # purpose. Silently: the skip is the design, not something to warn about.
+    max_exceeded: silent
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      # The silence has to persist. Members have been seen recovering on their own
+      # after 7 s, and flapping back for 4 s before dying for good, so this waits out
+      # a distribution glitch before treating one as a fault.
+      # NOTE: input_number states are float strings ("15.0") — float before int, or
+      # the int filter silently falls back to the default.
+      - trigger: state
+        entity_id: !include data/media_players.include
+        to:
+          - 'idle'
+          - 'paused'
+        for: "{{ states('input_number.musiccast_silence_debounce') | float(15) | int }}"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.musiccast_auto_recovery
+        state: 'on'
+      # Our own activations and teardowns move players through idle; the guard is what
+      # tells those apart from a member falling quiet by itself.
+      - condition: state
+        entity_id: input_boolean.musiccast_scenario_updating
+        state: 'off'
+      # "Something other than HA", exactly as the resume path defines it: a change from
+      # the dashboard carries a user_id, one from a script or automation a parent_id,
+      # and a device-side change carries neither.
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.context.user_id is none
+             and trigger.to_state.context.parent_id is none }}
+      # The shape of this fault, in one test. The player must be a *member* of the
+      # active scenario — the master's own stop belongs to detect_playback_stopped —
+      # and must still be enrolled in the master's group, because a member that has
+      # left is a membership drop that the rejoin path owns. And the master must still
+      # report playing: that is what makes this "the members went quiet underneath a
+      # master that thinks it is fine" rather than "the scenario stopped".
+      - condition: template
+        value_template: >-
+          {%- set scenario = states('input_text.musiccast_active_scenario') -%}
+          {%- if scenario in blank_states -%}
+            false
+          {%- else -%}
+            {%- set sc = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}) -%}
+            {%- set master = sc.get('master', '') -%}
+            {{ master
+               and trigger.entity_id != master
+               and trigger.entity_id in sc.get('players', [])
+               and trigger.entity_id in (state_attr(master, 'group_members') or [])
+               and states(master) == 'playing' }}
+          {%- endif -%}
+    actions:
+      # Called inline, not detached: mode: single then keeps this automation busy for
+      # the duration, so the restart's own state changes — every member returning to
+      # playing — cannot re-enter it. The attempt cap lives in the script, so a master
+      # that will not come back is given up on there rather than here.
+      - action: script.musiccast_restart_master_stream
+
+  # Diagnostic: log every transport-state change on a MusicCast player
+  # -------------------------------------------------------------------
+  # musiccast_resume_playback logs the stops it acts on. This logs the ones it
+  # *declines*: a stop carrying an HA context, one shorter than the debounce, a
+  # member rather than the master, or a player dropping to `off` rather than
+  # `paused` — none of which auto-recovery touches.
+  #
+  # It also keeps a healed fault visible. A successful resume takes seconds and
+  # leaves a single success line, which is not enough to see a pattern in.
+  #
+  # Gated on musiccast_debug — off in normal use. One line per transition, and
+  # `to:` is enumerated so attribute churn (media_position and friends) never
+  # reaches it.
+  - id: musiccast_log_transport_state
+    alias: "MusicCast: Log transport state"
+    description: "Diagnostic: one line per player state transition, with who caused it."
+    mode: parallel
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      - trigger: state
+        entity_id: !include data/media_players.include
+        to:
+          - 'playing'
+          - 'paused'
+          - 'idle'
+          - 'off'
+          - 'standby'
+          - 'buffering'
+          - 'unavailable'
+    conditions:
+      - condition: state
+        entity_id: input_boolean.musiccast_debug
+        state: 'on'
+    actions:
+      - variables:
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          sc: "{{ state_attr('sensor.musiccast_scenarios', 'scenarios') or {} }}"
+      - variables:
+          master: "{{ sc.get(scenario, {}).get('master', '') if scenario not in blank_states else '' }}"
+          players: "{{ sc.get(scenario, {}).get('players', []) if scenario not in blank_states else [] }}"
+      - action: system_log.write
+        data:
+          # Deliberately one dense line: greppable with `MusicCast transport:` and
+          # readable in sequence, which is how these get read.
+          message: >-
+            MusicCast transport: {{ state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id }}
+            {{ trigger.from_state.state }} → {{ trigger.to_state.state }}
+            | {% if trigger.to_state.context.user_id is not none %}HA (user)
+              {%- elif trigger.to_state.context.parent_id is not none %}HA (script/automation)
+              {%- else %}external{% endif %}
+            | {% if scenario in blank_states %}no active scenario
+              {%- elif trigger.entity_id == master %}master of {{ scenario }}
+              {%- elif trigger.entity_id in players %}member of {{ scenario }}
+              {%- else %}outside {{ scenario }}{% endif %}
+            | guard {{ 'on' if is_state('input_boolean.musiccast_scenario_updating', 'on') else 'off' }}
+            | group {{ (state_attr(trigger.entity_id, 'group_members') or []) | length }}
+          level: info
+          logger: musiccast
+
+# ================================================================
+# SCRIPTS — the recoveries and their Undo counterparts
+# ================================================================
+script:
+  # Rejoin the active/last scenario's members that have dropped out of the group,
+  # without disturbing the playing source (no mixer, no re-randomize). Additive join
+  # + one retry with a settle wait between, and a per-player attempt cap so a
+  # persistently-failing device can't cause a rejoin/drop storm. manual: true
+  # (tap-to-restore) bypasses the cap. Master/members resolve from active_scenario,
+  # falling back to musiccast_last_scenario so it works after active_scenario cleared.
+  # Missing-member computation mirrors detect_manual_scenario's clear branch.
+  musiccast_rejoin_missing_members:
+    alias: "MusicCast: Rejoin missing members"
+    mode: single
+    fields:
+      manual:
+        description: "Explicit user action — bypass the per-player attempt cap"
+        default: false
+      clear_on_fail:
+        description: "Auto path: clear active_scenario if members are still missing after the retry"
+        default: false
+    sequence:
+      # A `fields:` default only fills the UI service-call form; it is absent from
+      # scope when an automation calls the script, so normalize it before use.
+      - variables:
+          manual: "{{ manual | default(false) }}"
+          blank_states: ['', 'None', 'unknown', 'unavailable']
+      - variables:
+          scenario: "{{ states('input_text.musiccast_active_scenario') if states('input_text.musiccast_active_scenario') not in blank_states else states('input_text.musiccast_last_scenario') }}"
+      - variables:
+          sc: "{{ state_attr('sensor.musiccast_scenarios', 'scenarios') or {} }}"
+      - variables:
+          master: "{{ sc.get(scenario, {}).get('master', '') }}"
+          expected: "{{ sc.get(scenario, {}).get('players', []) }}"
+      # Nothing to rejoin onto, and nothing that waiting would fix: no scenario, a
+      # configuration that no longer resolves to a master and members, or a master that has
+      # been powered off deliberately. The marker describes something that cannot be
+      # restored, so the auto path clears it.
+      - if:
+          - condition: template
+            value_template: "{{ scenario in blank_states or not master or expected | length == 0 or states(master) == 'off' }}"
+        then:
+          - if:
+              - "{{ clear_on_fail | default(false) }}"
+            then:
+              - action: script.musiccast_clear_scenario
+          - stop: "No resolvable scenario/master to rejoin"
+
+      # The master is out of contact rather than off — Home Assistant cannot see it, which
+      # a coordinator dropout produces regularly and which passes on its own. Stop, but
+      # leave the scenario set: clearing it removes the expected-player list that drop
+      # detection compares the live group against, so a momentary loss of contact would
+      # switch recovery off entirely and leave a dropped player silent until somebody
+      # noticed. Nothing needs to poll for the master's return — coming back is itself a
+      # state change on a player the detection watches, so the comparison runs again then
+      # and rejoins whatever is still missing.
+      - if:
+          - condition: template
+            value_template: "{{ states(master) in ['unavailable', 'unknown'] }}"
+        then:
+          - action: system_log.write
+            data:
+              message: >-
+                MusicCast: cannot rejoin {{ scenario }} yet — {{ master }} is
+                {{ states(master) }}, so there is nothing to join onto. The scenario is left
+                set on purpose: clearing it would stop drop detection noticing the missing
+                players at all. This retries by itself when the master answers again.
+              level: warning
+              logger: musiccast
+          - stop: "Master out of contact — scenario left set for the retry"
+      - variables:
+          musiccast_players: "{{ state_attr('group.musiccast_players', 'entity_id') or [] }}"
+      - variables:
+          gm: "{{ (state_attr(master, 'group_members') or []) | select('in', musiccast_players) | list }}"
+      - variables:
+          missing: "{{ expected | reject('in', (gm + [master]) | unique | sort) | list }}"
+      - if:
+          - "{{ missing | length == 0 }}"
+        then:
+          - stop: "Nothing missing"
+      - variables:
+          attempts: "{{ (states('input_text.musiccast_recovery_attempts') | from_json) if states('input_text.musiccast_recovery_attempts') not in blank_states else {} }}"
+          max_attempts: "{{ states('input_number.musiccast_recovery_max_attempts') | int(1) }}"
+      - variables:
+          # A manual call caps nobody: the user asked for this player explicitly, so the
+          # list stays empty and every missing member is allowed through.
+          capped_ids: >-
+            {%- if manual -%}
+              []
+            {%- else -%}
+              {%- set ns = namespace(l=[]) -%}
+              {%- for k, v in attempts.items() if (v | int) >= max_attempts -%}{%- set ns.l = ns.l + [k] -%}{%- endfor -%}
+              {{ ns.l }}
+            {%- endif -%}
+      - variables:
+          # Unreachable players are excluded outright: joining one raises an unexpected
+          # error that continue_on_error cannot suppress, which would abort this script
+          # and strand the guard it raises below.
+          allowed: >-
+            {{ expand(missing | reject('in', capped_ids) | list)
+               | rejectattr('state', 'in', ['unavailable', 'unknown'])
+               | map(attribute='entity_id') | list }}
+          capped: "{{ missing | select('in', capped_ids) | list }}"
+      - if:
+          - "{{ allowed | length == 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Rejoin skipped for {{ scenario }} — all missing {{ capped }} hit the {{ max_attempts }}-attempt cap"
+              level: warning
+              logger: musiccast
+          # Auto path: cap exhausted means the members are genuinely still missing.
+          - if:
+              - "{{ clear_on_fail | default(false) }}"
+            then:
+              - action: script.musiccast_clear_scenario
+          - stop: "All missing capped"
+      - action: system_log.write
+        data:
+          message: "MusicCast: Rejoin {{ scenario }} — missing {{ missing }}, joining {{ allowed }}{{ ' (capped ' ~ capped ~ ')' if capped | length else '' }}"
+          level: info
+          logger: musiccast
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - action: media_player.join
+        continue_on_error: true
+        target:
+          entity_id: "{{ master }}"
+        data:
+          group_members: "{{ allowed }}"
+      - delay:
+          seconds: "{{ states('input_number.musiccast_recovery_settle') | int(1) }}"
+      - variables:
+          still_missing: "{{ allowed | reject('in', (state_attr(master, 'group_members') or []) | select('in', musiccast_players) | list) | list }}"
+      - if:
+          - "{{ still_missing | length > 0 }}"
+        then:
+          - action: media_player.join
+            continue_on_error: true
+            target:
+              entity_id: "{{ master }}"
+            data:
+              group_members: "{{ still_missing }}"
+          - delay:
+              seconds: "{{ states('input_number.musiccast_recovery_settle') | int(1) }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - variables:
+          gm_final: "{{ (state_attr(master, 'group_members') or []) | select('in', musiccast_players) | list }}"
+      - variables:
+          succeeded: "{{ allowed | select('in', gm_final) | list }}"
+          retry_failed: "{{ allowed | reject('in', gm_final) | list }}"
+      - variables:
+          new_attempts: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, v in attempts.items() if k not in succeeded -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endfor -%}
+            {%- for f in retry_failed -%}{%- set ns.d = ns.d | combine({f: (ns.d.get(f, 0) | int) + 1}) -%}{%- endfor -%}
+            {{ ns.d }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_recovery_attempts
+        data:
+          value: "{{ new_attempts | to_json }}"
+      - if:
+          - "{{ succeeded | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Rejoined {{ succeeded }} to {{ scenario }}"
+              level: info
+              logger: musiccast
+          # Undo popup — automatic rejoin only (a tap-restore is user-initiated, so
+          # no popup). Broadcast to every open dashboard (no browser_id); auto-
+          # dismisses after the timeout; Undo unjoins exactly the players that were
+          # rejoined (baked in here — no handler automation or context helper).
+          - if:
+              - "{{ not manual and states('sensor.musiccast_popup_timeout_ms') | int(0) > 0 }}"
+            then:
+              - action: browser_mod.popup
+                data:
+                  title: MusicCast auto-recovery
+                  content: "Rejoined {{ succeeded | map('state_attr', 'friendly_name') | list | join(', ') }} to {{ scenario }}."
+                  timeout: "{{ states('sensor.musiccast_popup_timeout_ms') | int(0) }}"
+                  dismissable: true
+                  right_button: Undo
+                  # browser_mod's popup button dispatches the classic "call-service"
+                  # action (service + data); it does not understand HA's newer
+                  # "perform-action" naming, so this must stay call-service. Undo goes
+                  # through musiccast_undo_rejoin (not a bare unjoin) so the removal is
+                  # masked from detection and doesn't trigger an endless re-heal loop.
+                  right_button_action:
+                    action: call-service
+                    service: script.musiccast_undo_rejoin
+                    data:
+                      players: "{{ succeeded }}"
+          # A successful recovery otherwise leaves only a log line and a popup that
+          # needs a dashboard open in the foreground, so nobody away from the house
+          # learns it happened. The id is unique per event so these stack rather than
+          # replace each other: how many there are is the finding.
+          - if:
+              - "{{ not manual }}"
+              - condition: state
+                entity_id: input_boolean.musiccast_debug
+                state: 'on'
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: "musiccast_recovered_rejoin_{{ as_timestamp(now()) | int }}"
+                  title: "MusicCast: rejoined a player"
+                  message: >-
+                    **{{ succeeded | map('state_attr', 'friendly_name') | list | join(', ') }}**
+                    dropped out of **{{ scenario }}** and {{ 'was' if succeeded | length == 1 else 'were' }}
+                    rejoined automatically.
+      - if:
+          - "{{ retry_failed | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Rejoin FAILED after retry for {{ retry_failed }} (scenario {{ scenario }})"
+              level: warning
+              logger: musiccast
+          # A failure is reported as a persistent notification, not a popup. A popup only
+          # reaches a dashboard that is open in the foreground, which is exactly when you
+          # are least likely to be looking — and it disappears on its own, so a missed one
+          # is gone. A notification waits until acknowledged. It also stays outside the
+          # popup-timeout setting: 0 there means "don't interrupt me about routine
+          # rejoins", which should not silence a room that never came back. Fixed
+          # notification_id so a repeat replaces the notice instead of stacking up.
+          - if:
+              - "{{ not manual }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: musiccast_rejoin_failed
+                  title: "MusicCast: couldn't rejoin"
+                  message: >-
+                    **{{ retry_failed | map('state_attr', 'friendly_name') | list | join(', ') }}**
+                    could not be rejoined to **{{ scenario }}** and {{ 'is' if retry_failed | length == 1 else 'are' }}
+                    no longer playing. Tap the scenario to try again.
+      # Auto path: re-run the missing test against the final group; clear the
+      # scenario (as the detect branch always did) only if members remain missing.
+      - variables:
+          final_missing: "{{ expected | reject('in', (gm_final + [master]) | unique | sort) | list }}"
+      - if:
+          - "{{ (clear_on_fail | default(false)) and final_missing | length > 0 }}"
+        then:
+          - action: script.musiccast_clear_scenario
+  # Undo an automatic rejoin (called by the auto-recovery popup's Undo button):
+  # remove the players that were just rejoined and drop the scenario back to its
+  # degraded state. The unjoin runs under scenario_updating so detect_manual_scenario
+  # doesn't treat it as a fresh drop and immediately re-heal it, and active_scenario
+  # is cleared so a later trigger can't re-heal either. musiccast_last_scenario is
+  # left intact, so tap-to-restore still works if the user changes their mind.
+  musiccast_undo_rejoin:
+    alias: "MusicCast: Undo rejoin"
+    mode: single
+    fields:
+      players:
+        description: "Players to unjoin (the ones that were auto-rejoined)"
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - action: media_player.unjoin
+        continue_on_error: true
+        target:
+          entity_id: "{{ players }}"
+      - action: script.musiccast_clear_scenario
+      - delay:
+          seconds: "{{ states('input_number.musiccast_recovery_settle') | int(1) }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+  # Resume playback on a player that stopped without HA asking it to. Called by
+  # musiccast_detect_playback_stopped, and callable by hand. Shares the recovery
+  # toggle, the attempt cap and the popup timeout with the rejoin path, and keeps
+  # its failure counts in the same per-player map — a player that will neither
+  # rejoin nor resume is one problem with one budget, not two.
+  musiccast_resume_playback:
+    alias: "MusicCast: Resume playback"
+    mode: single
+    fields:
+      player:
+        description: "Player to resume (the active scenario's master)"
+      manual:
+        description: "Explicit user action — bypass the per-player attempt cap"
+        default: false
+    sequence:
+      # A `fields:` default only fills the UI service-call form; it is absent from
+      # scope when an automation calls the script, so normalize it before use.
+      - variables:
+          manual: "{{ manual | default(false) }}"
+          blank_states: ['', 'None', 'unknown', 'unavailable']
+      - variables:
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          attempts: "{{ (states('input_text.musiccast_recovery_attempts') | from_json) if states('input_text.musiccast_recovery_attempts') not in blank_states else {} }}"
+      - variables:
+          count: "{{ attempts.get(player, 0) | int }}"
+          max_attempts: "{{ states('input_number.musiccast_recovery_max_attempts') | int(1) }}"
+      # A stream that is genuinely dead pauses again the moment we resume it, so
+      # the cap is what stops this turning into a play/pause loop. A manual call is
+      # the user asking for this player, so it is never capped.
+      - if:
+          - "{{ not manual and count >= max_attempts }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Resume skipped for {{ player }} — hit the {{ max_attempts }}-attempt cap for {{ scenario }}"
+              level: warning
+              logger: musiccast
+          - stop: "Resume attempt cap reached"
+      - action: system_log.write
+        data:
+          message: "MusicCast: {{ player }} stopped without HA asking ({{ states(player) }}) — resuming {{ scenario }}"
+          level: info
+          logger: musiccast
+      # Guard raised across the resume so our own play, and the metadata the device
+      # reports on the way back, are not read as another external change.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - action: media_player.media_play
+        continue_on_error: true
+        target:
+          entity_id: "{{ player }}"
+      - delay:
+          seconds: "{{ states('input_number.musiccast_recovery_settle') | int(1) }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - variables:
+          resumed: "{{ states(player) == 'playing' }}"
+      - variables:
+          new_attempts: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, v in attempts.items() if k != player -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endfor -%}
+            {%- if not resumed -%}{%- set ns.d = ns.d | combine({player: count + 1}) -%}{%- endif -%}
+            {{ ns.d }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_recovery_attempts
+        data:
+          value: "{{ new_attempts | to_json }}"
+      - if:
+          - "{{ resumed }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Resumed playback on {{ player }} ({{ scenario }})"
+              level: info
+              logger: musiccast
+          # Same Undo affordance as an automatic rejoin, on the same timeout, and
+          # skipped entirely at 0. Undo pauses again rather than unjoining — the
+          # group is intact and only the playing was in question.
+          - if:
+              - "{{ not manual and states('sensor.musiccast_popup_timeout_ms') | int(0) > 0 }}"
+            then:
+              - action: browser_mod.popup
+                data:
+                  title: MusicCast auto-recovery
+                  content: "Resumed playback on {{ state_attr(player, 'friendly_name') or player }} — it stopped on its own."
+                  timeout: "{{ states('sensor.musiccast_popup_timeout_ms') | int(0) }}"
+                  dismissable: true
+                  right_button: Undo
+                  # browser_mod's popup button dispatches the classic "call-service"
+                  # action; it does not understand HA's newer "perform-action"
+                  # naming, so this must stay call-service.
+                  right_button_action:
+                    action: call-service
+                    service: script.musiccast_undo_resume
+                    data:
+                      player: "{{ player }}"
+          # A successful recovery otherwise leaves only a log line and a popup that
+          # needs a dashboard open in the foreground, so nobody away from the house
+          # learns it happened. The id is unique per event so these stack rather than
+          # replace each other: how many there are is the finding.
+          - if:
+              - "{{ not manual }}"
+              - condition: state
+                entity_id: input_boolean.musiccast_debug
+                state: 'on'
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: "musiccast_recovered_{{ player | replace('media_player.', '') }}_{{ as_timestamp(now()) | int }}"
+                  title: "MusicCast: resumed playback"
+                  message: >-
+                    **{{ state_attr(player, 'friendly_name') or player }}** stopped playing
+                    **{{ scenario }}** on its own and was resumed automatically.
+        else:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Resume FAILED on {{ player }} — still {{ states(player) }} (scenario {{ scenario }})"
+              level: warning
+              logger: musiccast
+          # A notification rather than a popup, for the same reason a failed rejoin
+          # gets one: a room that never came back should not depend on a dashboard
+          # being open, and should wait until acknowledged.
+          - if:
+              - "{{ not manual }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: musiccast_resume_failed
+                  title: "MusicCast: couldn't resume"
+                  message: >-
+                    **{{ state_attr(player, 'friendly_name') or player }}** stopped playing
+                    **{{ scenario }}** and could not be restarted. The stream may have ended —
+                    tap the scenario to start it again with a fresh favorite.
+
+  # Undo an automatic resume (the popup's Undo button): pause again. The group is
+  # untouched and the scenario stays active — only the playing was undone, so
+  # unlike undo_rejoin there is nothing to unjoin and no scenario to clear. Runs
+  # under the guard so the pause is not read as a fresh external stop and
+  # immediately resumed again.
+  musiccast_undo_resume:
+    alias: "MusicCast: Undo resume"
+    mode: single
+    fields:
+      player:
+        description: "Player to pause again (the one that was auto-resumed)"
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - action: media_player.media_pause
+        continue_on_error: true
+        target:
+          entity_id: "{{ player }}"
+      - delay:
+          seconds: "{{ states('input_number.musiccast_recovery_settle') | int(1) }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+  # Bring a scenario back when its members have gone quiet while the master still
+  # reports playing. Called by musiccast_detect_silent_members.
+  #
+  # Two faults produce that symptom and they need different cures, but nothing
+  # observable tells them apart — the master reports `playing` either way. So this
+  # escalates rather than guessing:
+  #
+  #   1. Rebuild the distribution: unjoin the members, then join them back. Fixes a
+  #      dropped link, leaves the master alone, and costs a playlist nothing. A plain
+  #      join is useless here — the master still lists the members, so it is a no-op;
+  #      the link has to be torn down before it can be rebuilt.
+  #   2. Only if that leaves them silent, re-assert the station on the master. Fixes a
+  #      master whose own stream died, and is the destructive one: a playlist restarts
+  #      from the beginning, verified on Spotify. Needs a stored preset slot.
+  #
+  # Putting the re-link first also means a scenario with no stored slot is still
+  # recoverable, which it was not when re-asserting was the only move.
+  #
+  # media_player.media_play is deliberately never used: the device already believes it
+  # is playing, so a play command is likely a no-op.
+  musiccast_restart_master_stream:
+    alias: "MusicCast: Restart master stream"
+    mode: single
+    fields:
+      manual:
+        description: "Explicit user action — bypass the per-player attempt cap"
+        default: false
+    sequence:
+      # A `fields:` default only fills the UI service-call form; it is absent from
+      # scope when an automation calls the script, so normalize it before use.
+      - variables:
+          manual: "{{ manual | default(false) }}"
+          blank_states: ['', 'None', 'unknown', 'unavailable']
+      - variables:
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          # The slot the master is playing; the snapshot covers the window where a
+          # scenario has been cleared but the players are still up.
+          slot: >-
+            {{ states('input_text.musiccast_active_source_preset')
+               if states('input_text.musiccast_active_source_preset') not in blank_states
+               else states('input_text.musiccast_last_preset') }}
+          attempts: "{{ (states('input_text.musiccast_recovery_attempts') | from_json) if states('input_text.musiccast_recovery_attempts') not in blank_states else {} }}"
+      - variables:
+          sc: "{{ state_attr('sensor.musiccast_scenarios', 'scenarios') or {} }}"
+      - variables:
+          master: "{{ sc.get(scenario, {}).get('master', '') }}"
+          members: "{{ sc.get(scenario, {}).get('players', []) | reject('eq', sc.get(scenario, {}).get('master', '')) | list }}"
+      - variables:
+          count: "{{ attempts.get(master, 0) | int }}"
+          max_attempts: "{{ states('input_number.musiccast_recovery_max_attempts') | int(1) }}"
+
+      - if:
+          - "{{ not master or members | length == 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Cannot restart {{ scenario or 'no scenario' }} — no master or no members"
+              level: warning
+              logger: musiccast
+          - stop: "Nothing to act on"
+
+      # A manual call is the user asking for this master, so it is never capped.
+      - if:
+          - "{{ not manual and count >= max_attempts }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Restart skipped for {{ master }} — hit the {{ max_attempts }}-attempt cap for {{ scenario }}"
+              level: warning
+              logger: musiccast
+          - stop: "Restart attempt cap reached"
+
+      - action: system_log.write
+        data:
+          message: "MusicCast: members silent while {{ master }} reports playing — re-linking {{ members }} for {{ scenario }}"
+          level: info
+          logger: musiccast
+
+      # ---- Stage 1: rebuild the distribution, master untouched ----
+      #
+      # A plain join is a no-op on members the master still lists, so the link has to
+      # be torn down before it can be rebuilt. This leaves the master playing, so a
+      # playlist keeps its position — which is the whole reason this is tried first.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+      - action: media_player.unjoin
+        continue_on_error: true
+        target:
+          entity_id: "{{ members }}"
+      - delay:
+          seconds: "{{ states('input_number.musiccast_relink_gap') | float(10) | int }}"
+      - action: media_player.join
+        continue_on_error: true
+        target:
+          entity_id: "{{ master }}"
+        data:
+          group_members: "{{ members }}"
+      # Members do not come back together, so judging early reads a slow player as a
+      # dead one and escalates to stage 2 for nothing.
+      - delay:
+          seconds: "{{ states('input_number.musiccast_relink_verify') | float(45) | int }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      - variables:
+          silent_after_relink: "{{ expand(members) | selectattr('state', 'in', ['idle', 'paused']) | map(attribute='entity_id') | list }}"
+      - variables:
+          relinked: "{{ states(master) == 'playing' and silent_after_relink | length == 0 }}"
+
+      # ---- Stage 2: re-assert the station, only if the re-link did not take ----
+      #
+      # This restarts a playlist from the beginning, so it is deliberately the fallback
+      # rather than the first move. Needs a stored slot; without one there is nothing
+      # further to try.
+      - if:
+          - "{{ not relinked }}"
+        then:
+          - if:
+              - "{{ slot not in blank_states }}"
+            then:
+              - action: system_log.write
+                data:
+                  message: "MusicCast: re-link left {{ silent_after_relink }} silent — re-asserting preset {{ slot }} for {{ scenario }}"
+                  level: info
+                  logger: musiccast
+              - action: script.musiccast_play_preset_by_index
+                data:
+                  preset_index: "{{ slot | int }}"
+            else:
+              - action: system_log.write
+                data:
+                  message: "MusicCast: re-link left {{ silent_after_relink }} silent and no preset slot is stored for {{ scenario }} — nothing further to try"
+                  level: warning
+                  logger: musiccast
+
+      # Only stage 2 needs this: it returns once play_preset_by_index has run its own
+      # settle, and this is the shorter recovery settle on top for the members to
+      # follow the master. Harmless when stage 1 already succeeded.
+      - delay:
+          seconds: "{{ 0 if relinked else (states('input_number.musiccast_recovery_settle') | int(1)) }}"
+
+      # Both halves matter: the master has to be playing, and the members — the only
+      # thing that showed the fault — have to have stopped being quiet.
+      #
+      # Wider than the escalation test above, and deliberately so. That one asks
+      # "is there silence stage 2 could fix?", which only idle and paused can be.
+      # This one asks "is every member actually playing?", so a member that is off
+      # or off the network counts as a failure: reporting success while a speaker
+      # is powered down is the one wrong answer this check must never give.
+      - variables:
+          still_silent: >-
+            {{ expand(members) | selectattr('state', 'in', ['idle', 'paused', 'off', 'unavailable', 'unknown'])
+               | map(attribute='entity_id') | list }}
+      - variables:
+          restarted: "{{ states(master) == 'playing' and still_silent | length == 0 }}"
+
+      - variables:
+          new_attempts: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, v in attempts.items() if k != master -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endfor -%}
+            {%- if not restarted -%}{%- set ns.d = ns.d | combine({master: count + 1}) -%}{%- endif -%}
+            {{ ns.d }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_recovery_attempts
+        data:
+          value: "{{ new_attempts | to_json }}"
+
+      - if:
+          - "{{ restarted }}"
+        then:
+          # Which stage worked is the useful part of the record: a re-link means the
+          # distribution had dropped, a re-assert means the master's own stream had.
+          - action: system_log.write
+            data:
+              message: >-
+                MusicCast: Restarted {{ scenario }} on {{ master }} by
+                {{ 're-linking its members' if relinked else 're-asserting preset ' ~ slot }} — all members playing
+              level: info
+              logger: musiccast
+          # No Undo popup for this path. The other two recoveries offer one because the
+          # change they reverse might have been deliberate; silence in every room with
+          # the master insisting it plays is not something anyone can have intended.
+          - if:
+              - "{{ not manual }}"
+              - condition: state
+                entity_id: input_boolean.musiccast_debug
+                state: 'on'
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: "musiccast_restarted_{{ master | replace('media_player.', '') }}_{{ as_timestamp(now()) | int }}"
+                  title: "MusicCast: restarted a silent scenario"
+                  message: >-
+                    **{{ scenario }}** went silent while
+                    **{{ state_attr(master, 'friendly_name') or master }}** still reported playing.
+                    {{ 'Re-linking the players brought it back, and playback kept its place.'
+                       if relinked else
+                       'Re-linking did not help, so the station was re-asserted — a playlist will have restarted from the beginning.' }}
+        else:
+          - action: system_log.write
+            data:
+              message: >-
+                MusicCast: Restart FAILED for {{ scenario }} — {{ master }} is {{ states(master) }},
+                still silent: {{ still_silent }} (re-link {{ 'and re-assert both' if slot not in blank_states else 'tried; no preset slot to re-assert' }})
+              level: warning
+              logger: musiccast
+          - if:
+              - "{{ not manual }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: musiccast_restart_failed
+                  title: "MusicCast: couldn't restart"
+                  message: >-
+                    **{{ scenario }}** is silent and neither re-linking the players nor
+                    {{ 're-asserting its station' if slot not in blank_states else 'anything further (no preset slot is stored)' }}
+                    brought it back. {{ state_attr(master, 'friendly_name') or master }} reports
+                    *{{ states(master) }}*{{ ', still quiet: ' ~ (still_silent | map('replace', 'media_player.', '') | join(', ')) if still_silent else '' }}.
+                    Tap the scenario to start it again with a fresh favorite.
+
+  # Restore every Stability setting to the value the package ships with.
+  #
+  # These numbers are the package's defaults and this script is the only place they are
+  # written down. Three other candidates were rejected: `initial:` on the helpers re-applies
+  # on every restart and would silently discard tuning; each helper's `min:` is a validation
+  # bound, not a recommendation; and the `| float(...)` fallbacks in the templates only
+  # execute when an entity is unreadable, so they document intent without ever running.
+  #
+  # A fresh install starts at each helper's `min:`, which for several settings is well below
+  # the working value — so running this once is part of setting the package up, not only a
+  # way back from experimenting.
+  #
+  # Reaches across both package files deliberately: the Stability card mixes the recovery
+  # settings that live here with the activation timing and volume ceiling in
+  # orchestrator.yaml, and a reset the card offers should restore everything the card shows.
+  musiccast_reset_stability_defaults:
+    alias: "MusicCast: Reset stability settings to defaults"
+    mode: single
+    sequence:
+      - variables:
+          # Every setting on the Stability card belongs in this table. The card offers to
+          # "reset every setting below to its default", so a helper missing here is skipped
+          # silently — nothing errors, the slider simply keeps its value. Kept as one table
+          # so the shipped values can be read at a glance; the Guide view's defaults table
+          # quotes these same numbers, and the two must agree.
+          defaults:
+            input_number.musiccast_recovery_max_attempts: 2
+            # Generous, because members do not come back together: most return at once and
+            # a straggler can take another ten seconds or more, and judging before it
+            # arrives reports a recovery that is still completing as failed. The same helper
+            # sets how long the master must stay stopped before a stop counts as real, where
+            # the same margin keeps a brief stream dropout from being treated as one.
+            input_number.musiccast_recovery_settle: 15
+            input_number.musiccast_silence_debounce: 15
+            input_number.musiccast_dropout_debounce: 5
+            input_number.musiccast_relink_gap: 10
+            input_number.musiccast_relink_verify: 45
+            input_number.musiccast_recovery_popup_timeout: 0
+            input_number.musiccast_device_settle: 1
+            input_number.musiccast_activation_settle: 10
+            input_number.musiccast_player_settle_timeout: 5
+            # Must outlast the longest scenario rebuild, so it is sized from measurement
+            # rather than taste: a nine-player activation holds the lock for about 24 s.
+            input_number.musiccast_scenario_guard_timeout: 180
+            # 0 = no cap. A ceiling is a property of one house's speakers and neighbours,
+            # so the package ships without one rather than guessing a percentage.
+            input_number.musiccast_max_volume: 0
+
+      - repeat:
+          for_each: "{{ defaults | dictsort }}"
+          sequence:
+            - action: input_number.set_value
+              target:
+                entity_id: "{{ repeat.item[0] }}"
+              data:
+                value: "{{ repeat.item[1] }}"
+
+      # The card's two switches are settings like the rest: recovery on, diagnostics off.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_auto_recovery
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_debug
+
+      - action: system_log.write
+        data:
+          message: "MusicCast: stability settings restored to package defaults"
+          level: info
+          logger: musiccast
+

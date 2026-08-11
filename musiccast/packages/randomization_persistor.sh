@@ -22,7 +22,7 @@ case "$ACTION" in
         # TODO: Security hardening - pass data via stdin instead of command-line argument
         #       to safely handle special characters (quotes, etc.) in data
         #       Current printf '%s' is safer than echo, but stdin is ideal
-        #       See: packages/screensaver/bt_fingerprints_persistor.sh for safer pattern
+        #       See: packages/triangulation/bt_fingerprints_persistor.sh for safer pattern
         printf '%s\n' "$CONTENT" > "$FILE_PATH"
         ;;
 

@@ -55,7 +55,7 @@ input_number:
   # Loudness calibration: multiplier applied to the master's volume when altan joins
   # (altan = master volume x factor, clamped to 1.0). Compensates for different
   # amplifier/speaker sensitivity (kök ISX-80 vs altan R-N602 + passive speakers;
-  # measured 2026-07-19: kök 0.5 ~ altan 0.65 -> factor 1.3). The ratio-based volume
+  # measured: kök 0.5 ~ altan 0.65 -> factor 1.3). The ratio-based volume
   # sync preserves the factor while linked. NOTE: no 0 = disabled semantics here;
   # 1.0 = neutral (no adjustment).
   altanmusik_volume_factor:
@@ -86,16 +86,71 @@ input_number:
     icon: mdi:timer-edit-outline
 
 automation:
+  # Debug: log MC attribute changes, excluding media_position noise.
+  # Lives here rather than in orchestrator.yaml because it names one household's
+  # speaker: a published package should not ship a probe pinned to peer_stereo.
+  # Gated on input_boolean.musiccast_debug, so one switch covers this and the
+  # transport logging; logs at info to match that, rather than warning.
+  - id: musiccast_detect_stale_caption_debug
+    alias: Debug MC events
+    description: 'Debug MC events by logging attribute state changes excluding media_position noise'
+    triggers:
+      - trigger: state
+        entity_id:
+          - media_player.peer_stereo
+    conditions:
+      # Gated with the transport log so one switch controls all diagnostic noise.
+      - condition: state
+        entity_id: input_boolean.musiccast_debug
+        state: 'on'
+      - condition: template
+        value_template: "{{ trigger.to_state.attributes.items() | rejectattr('0', 'in',
+      ['media_position', 'media_position_updated_at']) | list != \n         trigger.from_state.attributes.items()
+      | rejectattr('0', 'in', ['media_position', 'media_position_updated_at']) | list
+      }}"
+    actions:
+      - action: system_log.write
+        data:
+          level: info
+          logger: custom_debug.mc
+          message: |
+            {% set to = trigger.to_state.attributes %}
+            {% set fr = trigger.from_state.attributes %}
+            {# 1. Create diff (skip media_position noise) #}
+            {%- set ns = namespace(diff=[]) -%}
+            {%- for key, value in to.items() -%}
+              {#- fr.get(), not fr[key]: a key present in `to` but absent from `fr` raises,
+                  which happens on every off -> idle/playing transition. -#}
+              {%- if key not in ['media_position', 'media_position_updated_at'] and value != fr.get(key) -%}
+                {%- set ns.diff = ns.diff + [key ~ ': ' ~ (fr.get(key, '(absent)')) ~ ' -> ' ~ value] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            ENTITY: {{ trigger.to_state.entity_id }}
+            STATE: {{ trigger.to_state.state }}
+            FULL_ATTRIBUTES: {{ trigger.to_state.attributes | string }}
+
+            --- DIFF (Excl. position) ---
+            {{ ns.diff | join('\n') if ns.diff | count > 0 else 'No changes except position' }}
+
   # Alarm-triggered automation
   - id: belysning_huset_larmat_musik_off
     alias: Huset larmat -> Musik OFF
-    description: Slå av alla MusicCast enheter när huset larmas
+    description: Slå av alla mediaspelare (MusicCast, TV) när huset larmas
     triggers:
       - trigger: state
         entity_id: alarm_control_panel.verisure_alarm
         to: armed_away
     conditions: []
     actions:
+      # `all` is house-wide on purpose: nothing should be playing anywhere once the
+      # house is armed. It reaches fewer things than it looks like, and no computer
+      # is powered off by it:
+      #  - media_player.turn_off requires the TURN_OFF feature, so players that do not
+      #    advertise it are skipped silently (the doorbell speaker, for one).
+      #  - The browser_mod and Fully Kiosk players do advertise it, but there turn_off
+      #    ends a browser media session or blanks a tablet screen — it does not shut a
+      #    machine down. They are also absent unless that browser is connected, in which
+      #    case HA logs "missing or not currently available" and carries on.
       - action: media_player.turn_off
         target:
           entity_id: all
@@ -123,28 +178,51 @@ automation:
         entity_id: input_number.altanmusik_stop_delay
         above: 0
     actions:
-      # Unjoin before power-off: turn_off alone leaves a linked client muted but still
-      # in the master's group (observed 2026-07-19 with the altan overlay). Harmless
-      # no-op when altan is ungrouped or is itself the master (grilla).
-      - action: media_player.unjoin
-        continue_on_error: true
-        target:
-          entity_id: media_player.altan
+      # Power-off runs first because it is what this automation exists to do, and a
+      # failing group call must not be able to skip it. aiomusiccast raises
+      # MusicCastGroupException, which is not a HomeAssistantError, so continue_on_error
+      # cannot suppress it and every later step is abandoned — including this one.
+      #
+      # The unjoin still matters, since a client that is only powered off stays listed in
+      # its master's group, so it runs last where a raise costs nothing. Its membership
+      # test is taken before the power-off, which changes what group_members reports.
+      # Altan standalone (altanhäng) and altan as its own master (grilla) have no master
+      # to leave, and the orchestrator tolerates a stale extra member until the next
+      # scenario change.
+      - variables:
+          leaving_master: >
+            {% set g = state_attr('media_player.altan', 'group_members') or [] %}
+            {{ g | length > 1 and g[0] != 'media_player.altan' }}
       - action: media_player.turn_off
         metadata: {}
         data: {}
         target:
           entity_id: media_player.altan
+      - if:
+          - condition: template
+            value_template: "{{ leaving_master }}"
+        then:
+          - action: media_player.unjoin
+            continue_on_error: true
+            target:
+              entity_id: media_player.altan
     mode: restart
 
-  # Kitchen door open + warm outside -> link altan to the playing kitchen master (overlay).
+  # Kitchen door open + (warm outside OR patio lights on) -> link altan to the playing
+  # kitchen master (overlay). The patio lights only turn on by deliberate action (all
+  # altan light automations are OFF-only), so lights on = someone is out there — e.g.
+  # grilling despite low temperature.
+  # Patio light lifecycle is owned by belysning.yaml: off on door-close only when the
+  # kitchen light is already off, otherwise when the kitchen light goes off (backstops:
+  # morning lux, alarm armed). Lingering lights never keep music alive (stop is door-only),
+  # but while they are on, reopening the door re-links altan even in the cold — intended.
   # Altan is never a scenario member; it joins as an extra group member, tolerated by the
   # scenario watchdog (subset comparison in orchestrator.yaml). active_scenario is untouched
   # and the playing favorite continues uninterrupted. Turn-off is handled by the existing
-  # door-closed automation above.
+  # door-closed automation above (deliberately door-only — lights do not gate the stop).
   - id: musik_kokdorr_oppen_altan_overlay
     alias: 'Köksdörr öppen -> Altan overlay ON'
-    description: Länka altanhögtalaren till köksmastern när köksdörren är öppen och det är varmt ute
+    description: Länka altanhögtalaren till köksmastern när köksdörren är öppen och det är varmt ute eller altanbelysningen är tänd
     triggers:
       # T1: door opens (and stays open) during kitchen-mastered playback.
       # Delay is user-configurable via input_number.altanmusik_start_delay.
@@ -156,7 +234,12 @@ automation:
         for: "{{ states('input_number.altanmusik_start_delay') | float(60) | int }}"
       # T2: kitchen-mastered scenario starts while the door is already open
       - trigger: state
-        entity_id: input_text.active_scenario
+        entity_id: input_text.musiccast_active_scenario
+      # T3: patio lights turned on while the door is open and music is playing.
+      # No delay — turning the lights on is a deliberate act, not a door swing.
+      - trigger: state
+        entity_id: light.pp_u1_altan
+        to: 'on'
     conditions:
       # 0 = overlay DISABLED entirely (blocks T2 as well, not just the door delay)
       - condition: numeric_state
@@ -171,23 +254,27 @@ automation:
       # the wait-for-playing step in the actions handles master readiness instead.
       - condition: template
         value_template: >
-          {% set active = states('input_text.active_scenario') %}
+          {% set active = states('input_text.musiccast_active_scenario') %}
           {% set sc = state_attr('sensor.musiccast_scenarios', 'scenarios') or {} %}
           {{ sc.get(active, {}).get('master', '') == 'media_player.kok' }}
       # Skip if altan is already linked
       - condition: template
         value_template: "{{ 'media_player.altan' not in (state_attr('media_player.kok', 'group_members') or []) }}"
-      # Temperature gate: 0 = disabled -> always allow. Unavailable sensor blocks the
-      # overlay (defaults to -99) unless the gate is disabled.
+      # Intent gate: warm enough outside OR patio lights on (deliberate signal that
+      # someone is on the patio). Temperature threshold 0 = gate disabled -> always
+      # allow. Unavailable temp sensor blocks the temperature leg (defaults to -99)
+      # but the lights leg still works.
       - condition: template
         value_template: >
           {% set threshold = states('input_number.altanmusik_temp_threshold') | float(0) %}
-          {{ threshold == 0 or states('sensor.relax_baksidan_temperature') | float(-99) >= threshold }}
+          {{ threshold == 0
+             or states('sensor.relax_baksidan_temperature') | float(-99) >= threshold
+             or is_state('light.pp_u1_altan', 'on') }}
     actions:
       # Block feedback loops while restructuring the group (same guard as musiccast_toggle_link)
       - action: input_boolean.turn_on
         target:
-          entity_id: input_boolean.scenario_updating
+          entity_id: input_boolean.musiccast_scenario_updating
       - if:
           - condition: state
             entity_id: media_player.altan
@@ -207,9 +294,10 @@ automation:
             data:
               message: "MusicCast: Altan overlay aborted - altan did not power on within 15 s"
               level: warning
+              logger: musiccast
           - action: input_boolean.turn_off
             target:
-              entity_id: input_boolean.scenario_updating
+              entity_id: input_boolean.musiccast_scenario_updating
           - stop: "Altan did not power on"
       # When triggered by scenario activation (T2), the master may still be starting
       # up (link + preset playback in flight) — wait until the integration reports it
@@ -221,7 +309,7 @@ automation:
 
       # Door-recheck guard: the door may have closed while we waited for the master.
       # Without this, the join can land AFTER the stop automation already turned
-      # altan off, leaving altan playing behind a closed door (see roadmap issue)
+      # altan off, leaving altan playing behind a closed door
       - if:
           - condition: state
             entity_id: binary_sensor.dorr_kok
@@ -229,18 +317,19 @@ automation:
         then:
           - action: input_boolean.turn_off
             target:
-              entity_id: input_boolean.scenario_updating
+              entity_id: input_boolean.musiccast_scenario_updating
           - action: system_log.write
             data:
               message: "MusicCast: Altan overlay aborted - kitchen door closed while waiting for master"
               level: info
+              logger: musiccast
           - stop: "Door closed during overlay startup"
 
       # Join at the master's current volume scaled by the calibration factor
       # (compensates amplifier/speaker sensitivity difference; the ratio-based
       # volume sync keeps altan following the master afterwards).
       # continue_on_error throughout: a failed step must not abort the script and
-      # leave scenario_updating stuck ON (observed 2026-07-19)
+      # leave scenario_updating stuck ON
       - variables:
           master_volume: "{{ state_attr('media_player.kok', 'volume_level') | float(0.3) }}"
           altan_volume: "{{ [master_volume * (states('input_number.altanmusik_volume_factor') | float(1.0)), 1.0] | min }}"
@@ -278,23 +367,42 @@ automation:
           - delay: "00:00:02"
       - action: input_boolean.turn_off
         target:
-          entity_id: input_boolean.scenario_updating
+          entity_id: input_boolean.musiccast_scenario_updating
       - if:
           - condition: template
             value_template: "{{ 'media_player.altan' in (state_attr('media_player.kok', 'group_members') or []) }}"
         then:
           - action: system_log.write
             data:
-              message: "MusicCast: Altan overlay linked to media_player.kok at volume {{ altan_volume }} (master {{ master_volume }} x factor {{ states('input_number.altanmusik_volume_factor') }}, scenario: {{ states('input_text.active_scenario') }})"
+              message: "MusicCast: Altan overlay linked to media_player.kok at volume {{ altan_volume }} (master {{ master_volume }} x factor {{ states('input_number.altanmusik_volume_factor') }}, scenario: {{ states('input_text.musiccast_active_scenario') }})"
               level: info
+              logger: musiccast
         else:
           - action: system_log.write
             data:
-              message: "MusicCast: Altan overlay join FAILED after retry (master state: {{ states('media_player.kok') }}, scenario: {{ states('input_text.active_scenario') }})"
+              message: "MusicCast: Altan overlay join FAILED after retry (master state: {{ states('media_player.kok') }}, scenario: {{ states('input_text.musiccast_active_scenario') }})"
               level: warning
+              logger: musiccast
     mode: single
 
-  # Garage LUX-triggered automation
+  # GARAGE LUX — a lights-on/off sensor, not a brightness threshold
+  # ---------------------------------------------------------------
+  # sensor.lux_garage_illuminance answers one question here: are the garage lights
+  # switched on? Someone turning them on is the signal that someone is in the garage,
+  # and that is what starts and stops the music. This is a different use from the
+  # window lighting in belysning.yaml, where a LUX level decides whether it is dark
+  # enough to *need* light — there the threshold is the point of the reading, here it
+  # is only a way to read a switch.
+  #
+  # So the numbers below are two states of that switch, with a wide gap between them
+  # rather than one threshold with a margin:
+  #   above 100 — the lights are on
+  #   below  10 — the lights are off
+  #   10 to 100 — ambiguous (daylight through the door, a lamp elsewhere, a dying
+  #               tube), so neither state is asserted and nothing changes
+  #
+  # The one exception is the stop-timer safety check, which uses below 100 instead of
+  # below 10; the comment there explains why.
   - id: musiccast_lux_garage_low_musik_off
     alias: Garage LUX låg -> Musik OFF
     description: Slå av media players garage och skidverkstad när ljuset släcks i garaget
@@ -358,7 +466,7 @@ automation:
           - condition: template
             value_template: "{{ states('input_number.garagemusik_timer_start') | int(0) > 0 }}"
           - condition: template
-            value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+            value_template: "{{ states('input_text.musiccast_active_scenario') != 'garage' }}"
         then:
           - action: timer.start
             target:
@@ -382,7 +490,7 @@ automation:
         entity_id: sensor.lux_garage_illuminance
         above: 100
       - condition: template
-        value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+        value_template: "{{ states('input_text.musiccast_active_scenario') != 'garage' }}"
     actions:
       - action: script.musiccast_scenario_toggle
         data:
@@ -400,6 +508,10 @@ automation:
           entity_id: timer.garagemusik_stop_timer
     conditions:
       # Safety: only turn off if the lights are still off (returning would have cancelled the timer)
+      # below 100, not below 10: this asks "are the lights NOT on", which is the whole
+      # range beneath the lights-on level. Using 10 would leave the ambiguous middle
+      # counting as lights-on and keep the music playing after a real switch-off that
+      # settled at, say, 40 lux.
       - condition: numeric_state
         entity_id: sensor.lux_garage_illuminance
         below: 100
@@ -408,8 +520,7 @@ automation:
       # group, which detect_manual_scenario (orchestrator.yaml) detects → clears
       # active_scenario. KNOWN ISSUE: if a doorbell ring mutes these players during the
       # stop delay, the doorbell's delayed unmute can re-wake them after this turn_off
-      # and the group may not dissolve, leaving a stale active_scenario. See
-      # progress-musiccast.md (doorbell race). Not fixed yet — accepted for now.
+      # and the group may not dissolve, leaving a stale active_scenario.
       - action: media_player.turn_off
         target:
           entity_id:
@@ -435,16 +546,17 @@ automation:
           - conditions:
               - condition: template
                 value_template: >
-                  {%- set scenario = states('input_text.active_scenario') -%}
+                  {%- set scenario = states('input_text.musiccast_active_scenario') -%}
                   {%- set players = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('players', []) -%}
                   {{ 'media_player.kok' in players or 'media_player.kok_lilla' in players }}
             sequence:
               - action: system_log.write
                 data:
                   message: >
-                    MusicCast: Kitchen TV powered on while {{ states('input_text.active_scenario') }} scenario is playing.
+                    MusicCast: Kitchen TV powered on while {{ states('input_text.musiccast_active_scenario') }} scenario is playing.
                     Stopping music.
                   level: info
+                  logger: musiccast
 
               # Stop music on all kitchen players
               - action: media_player.media_stop
@@ -455,30 +567,14 @@ automation:
                     - media_player.kok_lilla
 
               # Clear active scenario
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario
-                data:
-                  value: ""
-
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_caption
-                data:
-                  value: ""
-
-              - action: input_text.set_value
-                target:
-                  entity_id: input_text.active_scenario_source_uri
-                data:
-                  value: ""
-
+              - action: script.musiccast_clear_scenario
         # Fallback: No kitchen scenario active - turn off kitchen speakers individually
         default:
           - action: system_log.write
             data:
               message: "MusicCast: Kitchen TV powered on. No kitchen scenario active - turning off kitchen speakers."
               level: info
+              logger: musiccast
 
           - action: media_player.turn_off
             target:

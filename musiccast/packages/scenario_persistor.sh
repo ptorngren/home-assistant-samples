@@ -24,7 +24,7 @@ case "$ACTION" in
         # We use quotes around "$CONTENT" to preserve the newlines sent from HA.
         # TODO: Security hardening - pass data via stdin instead of command-line argument
         #       to safely handle special characters (quotes, etc.) in data
-        #       See: packages/screensaver/bt_fingerprints_persistor.sh for safer pattern
+        #       See: packages/triangulation/bt_fingerprints_persistor.sh for safer pattern
         echo "$CONTENT" > "$FILE_PATH"
         ;;
         
@@ -68,14 +68,15 @@ case "$ACTION" in
         ;;
         
     create)
-        # create <name> <icon> <master_entity>
+        # create <name-b64> <icon-b64> <master_entity>
         # Derives scenario_id from display name, creates CSV + updates scenarios.json
-        NAME="$2"
-        ICON="$3"
+        NAME=$(echo "$2" | base64 -d)
+        ICON=$(echo "$3" | base64 -d)
         MASTER="$4"
         META_FILE="${BASE_DIR}/scenarios.json"
 
-        # Generate scenario_id: strip diacritics, lowercase, spaces→underscores, keep only a-z0-9_
+        # Generate scenario_id: strip diacritics, lowercase, spaces and hyphens to
+        # underscores, keep only a-z0-9_, trim leading/trailing underscores
         SCENARIO_ID=$(python3 -c "
 import unicodedata, re, sys
 name = sys.argv[1]
@@ -85,7 +86,7 @@ with_underscores = re.sub(r'[\s\-]+', '_', ascii_name.lower())
 print(re.sub(r'[^a-z0-9_]', '', with_underscores).strip('_'))
 " "$NAME")
 
-        # Create CSV with master at volume 50 if it does not already exist
+        # Create CSV with the master at DEFAULT_VOLUME if it does not already exist
         CSV_PATH="${BASE_DIR}/scenario_${SCENARIO_ID}.csv"
         if [ ! -f "$CSV_PATH" ]; then
             echo "${MASTER}:${DEFAULT_VOLUME}" > "$CSV_PATH"
@@ -149,10 +150,10 @@ except Exception as e:
         ;;
 
     rename)
-        # rename <scenario_id> <new_name>
+        # rename <scenario_id> <new_name-b64>
         # Updates display name in scenarios.json; ID and CSV file are unchanged
         SCENARIO_ID="$2"
-        NEW_NAME="$3"
+        NEW_NAME=$(echo "$3" | base64 -d)
         META_FILE="${BASE_DIR}/scenarios.json"
 
         python3 -c "
@@ -170,10 +171,10 @@ except Exception as e:
         ;;
 
     set_icon)
-        # set_icon <scenario_id> <new_icon>
+        # set_icon <scenario_id> <new_icon-b64>
         # Updates icon field in scenarios.json; ID and CSV file are unchanged
         SCENARIO_ID="$2"
-        NEW_ICON="$3"
+        NEW_ICON=$(echo "$3" | base64 -d)
         META_FILE="${BASE_DIR}/scenarios.json"
 
         python3 -c "

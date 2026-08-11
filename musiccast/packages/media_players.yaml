@@ -3,6 +3,25 @@
 # ================================================================
 # Network scanning, entity-to-IP mapping, preset fetching, admin selection state
 # Companion to orchestrator.yaml (scenario logic)
+#
+# ----------------------------------------------------------------
+# POLLING — why every command_line sensor here says scan_interval: 86400
+# ----------------------------------------------------------------
+# Each of these sensors reads a file this package writes, and every writer refreshes the
+# sensor it affects with homeassistant.update_entity, which works whatever the interval
+# is. Polling therefore only ever re-runs a command against an unchanged file. For the
+# preset sensor it is worse than pointless: one run queries getPresetInfo on every player.
+#
+# A day is as close to "never" as this integration allows. command_line has no way to
+# switch polling off — the toggle under an integration's System options exists only for
+# UI/config-flow integrations, not YAML platform entities — and omitting scan_interval
+# selects the 60-second default instead, which is why every sensor here sets it.
+#
+# The number is repeated rather than shared. A YAML anchor would have to be defined on
+# whichever sensor happens to come first, leaving the definition somewhere arbitrary and
+# invisible from the sites that use it, and breaking every alias if the file is
+# reorganised. scan_interval is platform config, so a variable cannot reach it either.
+# Each site therefore carries the literal and points back here.
 
 # ================================================================
 # PLAYER GROUP
@@ -101,6 +120,7 @@ command_line:
       json_attributes:
         - excluded
       value_template: "{{ value_json.excluded | length }}"
+      scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads media_players.exclude and exposes the list for dashboard styling
       # Access via: state_attr('sensor.musiccast_excluded_players', 'excluded')
 
@@ -122,13 +142,13 @@ command_line:
       json_attributes:
         - scenarios
       value_template: "{{ value_json.scenarios | length }}"
-      scan_interval: 86400
+      scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads all scenario_*.csv files — first line = master, rest = members+master (all players)
       # Access: state_attr('sensor.musiccast_scenarios', 'scenarios').get(scenario, {})
 
   - sensor:
-      name: "MusicCast Scenario Config"
-      unique_id: musiccast_scenario_config
+      name: "MusicCast Scenarios Labels"
+      unique_id: musiccast_scenarios_labels
       command: |
         python3 -c "
         import json
@@ -138,9 +158,9 @@ command_line:
       json_attributes:
         - scenarios
       value_template: "{{ value_json.scenarios | length }}"
-      scan_interval: 86400
+      scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads scenarios.json — display names + icons keyed by scenario_id
-      # Access: state_attr('sensor.musiccast_scenario_config', 'scenarios').get(scenario_id, {})
+      # Access: state_attr('sensor.musiccast_scenarios_labels', 'scenarios').get(scenario_id, {})
 
   - sensor:
       name: "MusicCast Media Players"
@@ -150,6 +170,7 @@ command_line:
         - matched
         - unmatched
       value_template: "{% set m = value_json.matched | default([]) %}{% set u = value_json.unmatched | default([]) %}{{ m | length }} / {{ (m | length) + (u | length) }}"
+      scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads entity-to-IP mappings from CSV file and exposes as JSON attributes
       # Format: IP=entity_id (matched) or 0.0.0.0=entity_id (unmatched)
       # Provides matched array and unmatched array for dashboard display
@@ -162,7 +183,7 @@ command_line:
       json_attributes:
         - presets
       value_template: "{{ value_json.presets | length }}"
-      scan_interval: 86400
+      scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Pre-fetches getPresetInfo for ALL players from media_players.csv in parallel
       # Survives HA restarts — HA persists command_line sensor state
       # Refresh via: homeassistant.update_entity on sensor.musiccast_media_player_presets
@@ -171,6 +192,15 @@ command_line:
 # ================================================================
 # HELPERS
 # ================================================================
+
+input_text:
+  # Network prefix the scan walks, without a trailing dot: "192.168.1", "10.0.0".
+  # Blank on a fresh install, so every read falls back to 192.168.1 — the commonest
+  # home range — and discovery works before anyone sets it.
+  musiccast_scan_subnet:
+    name: "MusicCast Scan Subnet"
+    max: 15
+    mode: text
 
 input_number:
   musiccast_scan_start_ip:
@@ -219,10 +249,10 @@ template:
 
       # Player IP mapping from network scan results
       # -------------------------------------------------------
-      # Maps player short names (kok, altan, etc.) to their IP addresses
+      # Maps player short names (kitchen, patio, etc.) to their IP addresses
       # Built from sensor.musiccast_media_players matched entries
       # Access via: state_attr('sensor.musiccast_player_ips', 'by_entity') | default({})
-      # Example: player_ips.get('kok', 'unknown')
+      # Example: player_ips.get('kitchen', 'unknown')
       - name: musiccast_player_ips
         unique_id: musiccast_player_ips
         state: >
@@ -335,6 +365,11 @@ script:
           output_include: "/config/packages/musiccast/data/media_players.include"
           start_ip: "{{ states('input_number.musiccast_scan_start_ip') | int(1) }}"
           end_ip: "{{ states('input_number.musiccast_scan_end_ip') | int(254) }}"
+          # states() yields 'unknown', never None, so `| default()` would not catch a
+          # helper that has never been set — test the value instead.
+          subnet: >-
+            {% set s = states('input_text.musiccast_scan_subnet') %}
+            {{ s | trim | trim('.') if s not in ['', 'None', 'unknown', 'unavailable'] else '192.168.1' }}
 
       # Notify user that discovery is starting
       - action: persistent_notification.create
@@ -343,14 +378,14 @@ script:
           message: |
             🔍 Starting network scan and entity matching...
 
-            Scanning IP range: 192.168.1.{{ start_ip }} to 192.168.1.{{ end_ip }}
+            Scanning IP range: {{ subnet }}.{{ start_ip }} to {{ subnet }}.{{ end_ip }}
             This process may take some time.
 
       # Run network scan script
       - action: shell_command.musiccast_network_scan
         data:
-          start_ip: "192.168.1.{{ start_ip }}"
-          end_ip: "192.168.1.{{ end_ip }}"
+          start_ip: "{{ subnet }}.{{ start_ip }}"
+          end_ip: "{{ subnet }}.{{ end_ip }}"
           entities: "{{ entities }}"
           output_csv: "{{ output_csv }}"
           output_include: "{{ output_include }}"
@@ -373,6 +408,7 @@ script:
             Entities scanned: {{ entity_count }}
             Output: {{ output_csv }}
           level: info
+          logger: musiccast
 
       # Notify user that discovery is complete
       - action: persistent_notification.create

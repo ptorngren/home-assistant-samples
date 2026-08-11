@@ -4,11 +4,11 @@
 # MusicCast Entity Mappings Reader
 # ================================================================
 # Reads CSV file with entity-to-IP mappings and outputs JSON
-# CSV format: IP=entity_id (e.g., 192.168.1.11=media_player.kok)
+# CSV format: IP=entity_id (e.g., 192.168.1.11=media_player.kitchen)
 # Unmatched: 0.0.0.0=entity_id
 #
 # Output: JSON with matched and unmatched arrays
-# Used by: sensor.musiccast_entity_mappings (command_line sensor)
+# Used by: sensor.musiccast_media_players (command_line sensor)
 
 CSV_FILE="/config/packages/musiccast/data/media_players.csv"
 

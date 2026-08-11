@@ -133,7 +133,7 @@ decluttering_templates:
                     "name": location_name ~ " " ~ matched ~ "/" ~ total ~ " [" ~ known_in_scan ~ "]" ~ (' • ' ~ confidence_pct ~ '%' if confidence_pct >= 0 else ''),
                     "tap_action": {
                       "action": "perform-action",
-                      "perform_action": "script.merge_bt_fingerprint",
+                      "perform_action": "script.bt_merge_fingerprint",
                       "data": {
                         "location_index": location_index,
                         "rssi_only": true,
@@ -142,7 +142,7 @@ decluttering_templates:
                     },
                     "double_tap_action": {
                       "action": "perform-action",
-                      "perform_action": "script.merge_bt_fingerprint",
+                      "perform_action": "script.bt_merge_fingerprint",
                       "data": {
                         "location_index": location_index,
                         "rssi_only": false,
@@ -151,7 +151,7 @@ decluttering_templates:
                     },
                     "hold_action": {
                       "action": "perform-action",
-                      "perform_action": "script.capture_bt_fingerprint",
+                      "perform_action": "script.bt_capture_fingerprint",
                       "data": {
                         "location_index": location_index,
                         "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"
@@ -882,7 +882,7 @@ decluttering_templates:
 
           {%- for loc in sorted_locs[:top_n] -%}
             {%- set loc_header_idx = name_to_idx.get(loc.name, -1) -%}
-            {%- set header_tap = {"action": "perform-action", "perform_action": "script.merge_bt_fingerprint", "data": {"location_index": loc_header_idx, "rssi_only": true, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
+            {%- set header_tap = {"action": "perform-action", "perform_action": "script.bt_merge_fingerprint", "data": {"location_index": loc_header_idx, "rssi_only": true, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
             {%- set header_hold = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_all", "data": {"location_index": loc_header_idx, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
             {# Add location header card #}
             {%- set ns.cards = ns.cards + [{
@@ -1082,7 +1082,7 @@ views:
                 name: "Load Fingerprints"
                 tap_action:
                   action: perform-action
-                  perform_action: script.load_bt_fingerprints_from_file
+                  perform_action: script.bt_load_fingerprints_from_file
                 styles:
                   card:
                     - background-color: *color_info
@@ -1094,7 +1094,7 @@ views:
                 name: "Clear Fingerprints"
                 tap_action:
                   action: perform-action
-                  perform_action: script.clear_bt_fingerprints
+                  perform_action: script.bt_clear_fingerprints
                 styles:
                   card:
                     - background-color: *color_severe
@@ -1106,7 +1106,7 @@ views:
                 name: "Clear Statistics"
                 tap_action:
                   action: perform-action
-                  perform_action: script.clear_bt_statistics
+                  perform_action: script.bt_clear_statistics
                 styles:
                   card:
                     - background-color: *color_warning
@@ -1134,7 +1134,7 @@ views:
             layout: horizontal
             tap_action:
               action: perform-action
-              perform_action: script.calculate_location_scores
+              perform_action: script.bt_calculate_location_scores
             card_mod:
               style: |
                 ha-card {
@@ -1235,7 +1235,7 @@ views:
             layout: horizontal
             tap_action:
               action: perform-action
-              perform_action: script.generate_confusion_matrix
+              perform_action: script.bt_generate_confusion_matrix
             card_mod:
               style: |
                 ha-card {
@@ -1257,7 +1257,7 @@ views:
             name: "▶️ Log Beacon Status"
             tap_action:
               action: perform-action
-              perform_action: script.report_beacon_status
+              perform_action: script.bt_report_beacon_status
             styles:
               name:
                 - font-size: 12px

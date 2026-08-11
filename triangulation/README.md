@@ -2,7 +2,7 @@
 
 Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room you're in. The system works by capturing a unique "fingerprint" of Bluetooth devices at each location, then matching live scans against those fingerprints to determine your position. It integrates seamlessly with Home Assistant automations and the screensaver system.
 
-**What you get:** A single `input_text` entity (`input_text.device_charger_locations`) that reports the detected location, updated whenever your phone docks on a charger or manual trigger occurs. Use this in automations for location-aware actions.
+**What you get:** A single `input_text` entity (`input_text.bt_device_charger_locations`) that reports the detected location, updated whenever your phone docks on a charger or manual trigger occurs. Use this in automations for location-aware actions.
 
 ---
 
@@ -20,7 +20,7 @@ Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room 
    - **For other sources:** Post JSON to the webhook endpoint (see Scan Sources section)
 7. Visit each location with your phone and capture fingerprints
 8. Review the "Scores for Latest Scan" table to validate detection accuracy
-9. Use `input_text.device_charger_locations` in your automations for location-aware logic
+9. Use `input_text.bt_device_charger_locations` in your automations for location-aware logic
 
 ---
 
@@ -28,7 +28,7 @@ Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room 
 
 After setup, you'll have:
 
-- **Location entity:** `input_text.device_charger_locations` — reports the detected location (e.g., "kitchen", "garage")
+- **Location entity:** `input_text.bt_device_charger_locations` — reports the detected location (e.g., "kitchen", "garage")
 - **Dashboard:** View the latest BT signals reported via webhook, manage beacon fingerprints, and tune the algorithm
 - **Persistent fingerprints:** Automatically saved after each capture; survives Home Assistant restarts
 - **Beacon management:** Ignore unreliable beacons globally or per-location with a tap/hold gesture
@@ -41,11 +41,11 @@ automation:
   - alias: "Different Scenarios by Location"
     trigger:
       platform: state
-      entity_id: input_text.device_charger_locations
+      entity_id: input_text.bt_device_charger_locations
     action:
       service: script.set_screensaver_scenario
       data:
-        scenario: "{{ states('input_text.device_charger_locations') }}"
+        scenario: "{{ states('input_text.bt_device_charger_locations') }}"
 ```
 
 ---
@@ -151,11 +151,11 @@ The triangulation system consists of several YAML files that work together:
 
 ### `bt_triangulation.yaml` (Core Package)
 Main orchestrator that sets up the webhook endpoint and coordinate detection logic:
-- **`automation:phone_charger_bt_location`** — Receives Tasker webhook with BT scan results, triggers location detection
-- **`automation:phone_charger_power_disconnect`** — Clears location when phone unplugged from charger
-- **`input_text.device_charger_locations`** — Stores detected location (e.g., "kitchen", "garage")
+- **`automation:bt_phone_charger_detect_location`** — Receives Tasker webhook with BT scan results, triggers location detection
+- **`automation:bt_phone_charger_clear_location`** — Clears location when phone unplugged from charger
+- **`input_text.bt_device_charger_locations`** — Stores detected location (e.g., "kitchen", "garage")
 - **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip `_FKB` suffix)
-- **`script.detect_charger_location`** — Coordinates location detection by calling matching algorithms
+- **`script.bt_detect_charger_location`** — Coordinates location detection by calling matching algorithms
 
 **You should NOT need to edit this file.**
 
@@ -936,7 +936,7 @@ Use the **"Clear Statistics"** button (next to "Clear Fingerprints") to reset al
 
 ## Using Location in Automations
 
-The detected location is stored in `input_text.device_charger_locations`. Use this entity in your automations to trigger location-aware actions.
+The detected location is stored in `input_text.bt_device_charger_locations`. Use this entity in your automations to trigger location-aware actions.
 
 ### Example: Switch Screensaver Scenario by Location
 
@@ -945,13 +945,13 @@ automation:
   - alias: "Set Screensaver Scenario by Location"
     trigger:
       platform: state
-      entity_id: input_text.device_charger_locations
+      entity_id: input_text.bt_device_charger_locations
     action:
       service: input_select.select_option
       target:
         entity_id: input_select.screensaver_scenario
       data:
-        option: "{{ states('input_text.device_charger_locations') }}"
+        option: "{{ states('input_text.bt_device_charger_locations') }}"
 ```
 
 ### Example: Adjust Media or Smart Home Actions
@@ -961,7 +961,7 @@ automation:
   - alias: "Play Location-Specific Music"
     trigger:
       platform: state
-      entity_id: input_text.device_charger_locations
+      entity_id: input_text.bt_device_charger_locations
       to: "kitchen"
     action:
       service: script.play_kitchen_radio
@@ -969,7 +969,7 @@ automation:
   - alias: "Bedroom Night Mode"
     trigger:
       platform: state
-      entity_id: input_text.device_charger_locations
+      entity_id: input_text.bt_device_charger_locations
       to: "bedroom"
     action:
       - service: light.turn_off
@@ -1322,7 +1322,7 @@ Algorithm automatically uses updated list
 
 ### Filtering During Detection
 ```
-BT scan → script.detect_charger_location
+BT scan → script.bt_detect_charger_location
   ↓ (loads fingerprints + global ignored)
   ↓ (filters out ignored beacons)
 script.bt_location_symmetric_ratio
@@ -1367,7 +1367,7 @@ for mac, beacon in fingerprint.beacons.items():
 | `script.bt_beacon_toggle_location_ignored` | Toggle beacon ignored status at specific location (single-tap) | location_index, mac |
 | `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
 | `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
-| `script.report_beacon_status` | Per-location beacon report with signal statistics and warnings | (none) |
+| `script.bt_report_beacon_status` | Per-location beacon report with signal statistics and warnings | (none) |
 
 ### Service Call Examples
 
@@ -1396,7 +1396,7 @@ data:
 
 **Report ignored beacons:**
 ```yaml
-service: script.report_beacon_status
+service: script.bt_report_beacon_status
 ```
 
 </details>

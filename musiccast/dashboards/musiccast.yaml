@@ -51,7 +51,7 @@ decluttering_templates:
       entity: '[[entity]]'
       triggers_update:
         - '[[entity]]'
-        - input_text.active_scenario
+        - input_text.musiccast_active_scenario
         - sensor.musiccast_scenarios
       variables:
         active_fg: *active_fg
@@ -60,25 +60,42 @@ decluttering_templates:
         idle_bg: *idle_bg
         disabled_fg: *disabled_fg
         disabled_bg: *disabled_bg
-        # Active scenario master player entity_id (from sensor.musiccast_scenarios)
-        player_scenarioMaster: |
+        # Members of this player's group that are real rooms. group.musiccast_players
+        # excludes stereo-pair slaves, which a master keeps enrolled after its last real
+        # member leaves — counting those would render a master of nothing.
+        player_realMembers: |
           [[[
-            const scenario = states['input_text.active_scenario']?.state;
-            if (!scenario || scenario === 'None' || scenario === '') return null;
-            const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
-            return sc[scenario]?.master || null;
+            const pool = states['group.musiccast_players']?.attributes?.entity_id || [];
+            const gm = entity.attributes.group_members || [];
+            return gm.filter(m => m !== entity.entity_id && pool.includes(m));
           ]]]
-        # True when this player is the master in the current scenario
+        # Master of the group this player belongs to. The active scenario's master takes
+        # precedence; with no scenario active it falls back to the live group, whose
+        # first member is the master by design. Without the fallback a group that is
+        # still playing renders as though nothing were linked — after a drop clears the
+        # scenario, or when players were linked ad hoc.
+        player_master: |
+          [[[
+            const scenario = states['input_text.musiccast_active_scenario']?.state;
+            if (scenario && scenario !== 'None' && scenario !== '') {
+              const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
+              const scenarioMaster = sc[scenario]?.master;
+              if (scenarioMaster) return scenarioMaster;
+            }
+            const gm = entity.attributes.group_members || [];
+            return variables.player_realMembers.length > 0 ? gm[0] : null;
+          ]]]
+        # True when this player is the master of a group that actually has members
         player_isMaster: |
           [[[
-            const gm = entity.attributes.group_members || [];
-            return entity.entity_id === variables.player_scenarioMaster && gm.length > 1;
+            return entity.entity_id === variables.player_master
+                   && variables.player_realMembers.length > 0;
           ]]]
         # True when joined to master (non-master that contains master in group_members)
         player_isLinked: |
           [[[
             const gm = entity.attributes.group_members || [];
-            return entity.entity_id !== variables.player_scenarioMaster && gm.includes(variables.player_scenarioMaster);
+            return entity.entity_id !== variables.player_master && gm.includes(variables.player_master);
           ]]]
         # Convenience flag: master or linked
         player_isActive: |
@@ -276,11 +293,6 @@ decluttering_templates:
         data:
           entity_id: '[[[ return entity.entity_id ]]]'
         haptic: heavy
-      double_tap_action:
-        action: perform-action
-        perform_action: homeassistant.update_entity
-        target:
-          entity_id: sensor.musiccast_media_player_presets
       card_mod:
         style: |
           ha-card {
@@ -317,7 +329,7 @@ button_card_templates:
     #          Button/Card typography (12px/500 weight)
     #          Shows master player name as small subtitle
     triggers_update:
-      - input_text.active_scenario
+      - input_text.musiccast_active_scenario
       - sensor.musiccast_randomization_locks
 
     variables:
@@ -370,12 +382,12 @@ button_card_templates:
         - border-radius: 6px
         - background-color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_bg : variables.idle_bg;
             ]]]
         - border: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
             ]]]
       grid:
@@ -388,19 +400,19 @@ button_card_templates:
         - width: *icon_medium
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
       name:
         - font-size: 12px
         - font-weight: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? 600 : 500;
             ]]]
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
         - text-align: center
@@ -410,7 +422,7 @@ button_card_templates:
         - font-weight: 400
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
         - text-align: center
@@ -449,8 +461,8 @@ button_card_templates:
   # -------------------------------------------------------
   admin_scenario_button:
     triggers_update:
-      - input_text.active_scenario
-      - sensor.musiccast_scenario_config
+      - input_text.musiccast_active_scenario
+      - sensor.musiccast_scenarios_labels
 
     variables:
       active_fg: *active_fg
@@ -489,12 +501,12 @@ button_card_templates:
         - border-radius: 6px
         - background-color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_bg : variables.idle_bg;
             ]]]
         - border: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? '2px solid ' + variables.active_fg : '1px solid ' + variables.idle_border;
             ]]]
       grid:
@@ -507,7 +519,7 @@ button_card_templates:
         - width: *icon_medium
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
       name:
@@ -515,7 +527,7 @@ button_card_templates:
         - font-weight: 500
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
         - text-align: center
@@ -525,7 +537,7 @@ button_card_templates:
         - font-weight: 400
         - color: |
             [[[
-              return states['input_text.active_scenario']?.state === variables.scenario_id
+              return states['input_text.musiccast_active_scenario']?.state === variables.scenario_id
                 ? variables.active_fg : variables.idle_fg;
             ]]]
         - text-align: center
@@ -560,10 +572,10 @@ button_card_templates:
   # ------------------------------------------------------
   preset_button_template:
     triggers_update:
-      - input_text.active_scenario_source_caption
+      - input_text.musiccast_active_source_caption
       - input_text.musiccast_presets_state
       - sensor.musiccast_media_player_presets
-      - input_text.active_scenario
+      - input_text.musiccast_active_scenario
     variables:
       index: 0 # Overridden by each button
       # Color constants from style anchors (used in JavaScript)
@@ -583,7 +595,7 @@ button_card_templates:
       duplicate_icon: *duplicate_icon
       # Computed once per render, referenced in all blocks below
       active_scenario: |
-        [[[ return states['input_text.active_scenario']?.state || ''; ]]]
+        [[[ return states['input_text.musiccast_active_scenario']?.state || ''; ]]]
       preset_text: |
         [[[
           const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[variables.active_scenario]?.master || '';
@@ -603,7 +615,7 @@ button_card_templates:
         ]]]
       preset_is_duplicate: |
         [[[
-          const scenario = states['input_text.active_scenario']?.state || '';
+          const scenario = states['input_text.musiccast_active_scenario']?.state || '';
           const masterEntity = (states['sensor.musiccast_scenarios']?.attributes?.scenarios || {})[scenario]?.master || '';
           const presets = (states['sensor.musiccast_media_player_presets']?.attributes?.presets || {})[masterEntity] || [];
           const thisText = presets.find(p => p.num === variables.index)?.text || '';
@@ -621,7 +633,7 @@ button_card_templates:
         - background: |
             [[[
               if (variables.preset_state === variables.preset_excluded) return variables.disabled_bg;
-              const caption = states['input_text.active_scenario_source_caption']?.state || '';
+              const caption = states['input_text.musiccast_active_source_caption']?.state || '';
               return (variables.preset_text && caption && variables.preset_text === caption) ? variables.active_bg : variables.idle_bg;
             ]]]
         - border: |
@@ -640,7 +652,7 @@ button_card_templates:
         - color: |
             [[[
               if (variables.preset_state === variables.preset_excluded) return variables.disabled_fg;
-              const caption = states['input_text.active_scenario_source_caption']?.state || '';
+              const caption = states['input_text.musiccast_active_source_caption']?.state || '';
               return (variables.preset_text && caption && variables.preset_text === caption) ? variables.active_fg : variables.idle_fg;
             ]]]
         - padding-left: 4px
@@ -690,9 +702,9 @@ views:
         cards:
           - type: custom:button-card
             triggers_update:
-              - input_text.active_scenario
-              - input_text.active_scenario_source_caption
-              - input_text.active_scenario_source_uri
+              - input_text.musiccast_active_scenario
+              - input_text.musiccast_active_source_caption
+              - input_text.musiccast_active_source_uri
               - group.musiccast_players
 
             variables:
@@ -721,15 +733,15 @@ views:
 
             label: |
               [[[
-                const activeScenario = states['input_text.active_scenario']?.state;
+                const activeScenario = states['input_text.musiccast_active_scenario']?.state;
                 if (!activeScenario || activeScenario === 'None' || activeScenario === '') {
                   return variables.any_player_on 
                     ? `<ha-icon icon="mdi:power" style="width: 18px; height: 18px; vertical-align: 10%; margin-bottom: 2px;"></ha-icon>${variables.players_on_count}` 
                     : 'Select scenario';
                 }
 
-                const caption = states['input_text.active_scenario_source_caption']?.state || '';
-                const uri = states['input_text.active_scenario_source_uri']?.state || '';
+                const caption = states['input_text.musiccast_active_source_caption']?.state || '';
+                const uri = states['input_text.musiccast_active_source_uri']?.state || '';
                 const sc = states['sensor.musiccast_scenarios']?.attributes?.scenarios || {};
                 const masterEntityId = sc[activeScenario]?.master;
 
@@ -777,12 +789,12 @@ views:
                 - border-radius: 6px
                 - background-color: |
                     [[[
-                      const activeScenario = states['input_text.active_scenario']?.state;
+                      const activeScenario = states['input_text.musiccast_active_scenario']?.state;
                       return variables.any_player_on ? variables.color_bg_active : variables.color_bg_inactive;
                     ]]]
                 - border: |
                     [[[
-                      const activeScenario = states['input_text.active_scenario']?.state;
+                      const activeScenario = states['input_text.musiccast_active_scenario']?.state;
 
                       if (!activeScenario || activeScenario === 'None' || activeScenario === '') {
                         return variables.any_player_on ? `2px solid ${variables.color_primary_blue}` : `1px solid ${variables.color_border_grey}`;
@@ -797,10 +809,10 @@ views:
                 - margin-top: 4px
                 - color: var(--secondary-text-color)
 
-            # Single tap: Unlink and power off all
+            # Single tap: power off every player (the group is left as-is)
             tap_action:
               action: perform-action
-              perform_action: script.musiccast_unlink_and_power_off_all
+              perform_action: script.musiccast_all_off
               haptic: light
 
       - type: custom:auto-entities
@@ -811,11 +823,11 @@ views:
         card_param: cards
         filter:
           template: >
-            {% set meta = state_attr('sensor.musiccast_scenario_config', 'scenarios') or {} %}
+            {% set meta = state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {} %}
             {% set ns = namespace(cards=[]) %}
             {% for sc_id, data in meta.items() %}
               {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'scenario_button',
-                  'entity': 'input_text.active_scenario', 'icon': data.icon,
+                  'entity': 'input_text.musiccast_active_scenario', 'icon': data.icon,
                   'variables': {'scenario': data.name, 'scenario_id': sc_id}}] %}
             {% endfor %}
             {{ ns.cards | tojson }}
@@ -833,11 +845,13 @@ views:
             source: true
             sound_mode: true
           card_mod:
-            # Hide if updating OR if the master attribute is missing/empty
+            # Hide while the group is being rebuilt (NOT for the whole of
+            # scenario_updating — that stays up through the device settle, by which
+            # time the music is correct), or if the master attribute is missing/empty
             style: |
               :host {
               {% set master = state_attr('sensor.musiccast_scenario_now_playing', 'master') %}
-              {% set updating = is_state('input_boolean.scenario_updating', 'on') %}
+              {% set updating = is_state('input_boolean.musiccast_activation_in_progress', 'on') %}
                 {% if updating or master is none or master == "" %}
                   display: none !important;
                 {% endif %}
@@ -846,7 +860,7 @@ views:
       # --- PRESET LIST ---
       - type: conditional
         conditions:
-          - entity: input_text.active_scenario
+          - entity: input_text.musiccast_active_scenario
             state_not: ""
         card:
           type: vertical-stack
@@ -1039,11 +1053,18 @@ views:
                 - group: group.musiccast_players
                   options:
                     type: custom:config-template-card
+                    # Deliberately NOT watching the player itself. Every entity listed here
+                    # rebuilds the card, and a rebuild destroys the element under your
+                    # finger: a master reports position and title once a second while it
+                    # plays, so its tile was recreated every second and a long-press —
+                    # which needs ~500 ms on one element — never survived. Members on MC
+                    # Link report nothing, which is why holding them always worked.
+                    # The tile's live appearance does not need this: button-card's
+                    # triggers_update re-renders the card's contents in place.
                     entities:
-                      - input_text.active_scenario
+                      - input_text.musiccast_active_scenario
                       - sensor.musiccast_scenarios
-                      - this.entity_id
-                      - input_boolean.scenario_updating
+                      - input_boolean.musiccast_scenario_updating
                     card:
                       type: custom:decluttering-card
                       template: musiccast_player_tile
@@ -1062,6 +1083,179 @@ views:
   - title: Settings
     icon: mdi:tune
     cards:
+
+      # --- STABILITY ---
+      # Kept first + wrapped in a vertical-stack so the header, controls and status
+      # stay together as one block (masonry would otherwise scatter the short status
+      # card) and sit above the player list, which grows a preset list when tapped.
+      - type: vertical-stack
+        cards:
+          - type: custom:button-card
+            name: Stability
+            icon: mdi:autorenew
+            show_label: true
+            label: |
+              [[[
+                return 'Keep a scenario intact and predictable: rejoin dropped<br>players, cap volumes, give players time to catch up.<br><b>Hold to reset every setting below to its default.</b>';
+              ]]]
+            tap_action:
+              action: none
+            # The header owns the reset because it is the only element spanning the whole
+            # block: the settings sit in two groups, and the reset restores both. Hold
+            # rather than tap, with the same confirmation as deleting a scenario — it
+            # discards tuning that can represent a lot of listening.
+            hold_action:
+              action: perform-action
+              perform_action: script.musiccast_reset_stability_defaults
+              confirmation:
+                text: Reset every stability setting to the package defaults?
+              haptic: heavy
+            styles:
+              card:
+                - height: 90px
+                - padding: 12px
+                - border-radius: 6px
+                - background-color: *idle_bg
+                - border: 1px solid *idle_border
+                - box-shadow: none
+              grid:
+                - grid-template-areas: '"i n" "i l"'
+                - grid-template-columns: 50px 1fr
+                - grid-template-rows: auto 1fr
+                - align-items: start
+                - row-gap: 4px
+              icon:
+                - width: *icon_large
+                - color: *primary_text_fg
+              name:
+                - font-size: 12px
+                - font-weight: 500
+                - color: *primary_text_fg
+                - justify-self: start
+              label:
+                - font-size: 11px
+                - font-weight: 400
+                - color: *secondary_text
+                - justify-self: start
+                - text-align: left
+                - line-height: 1.3
+          # Settings that always apply come first, and the optional layer follows: what a
+          # scenario does every time you start one is more use at a glance than what
+          # happens only when something breaks. The two titles are also what let their rows
+          # drop qualifying words — "Recheck after" is unambiguous under Recovery, and
+          # "Settle between steps" under Timings & Limits.
+          #
+          # Unaffected by Auto-recover: these govern how scenarios are built and how loud
+          # they get, so none of them dims.
+          - type: entities
+            title: Timings & Limits
+            show_header_toggle: false
+            # Same group-label styling as the Recovery card below.
+            card_mod:
+              style: |
+                .card-header {
+                  font-size: 13px;
+                  font-weight: 600;
+                  color: var(--secondary-text-color);
+                  padding: 12px 16px 0px;
+                }
+            entities:
+              - entity: input_number.musiccast_device_settle
+                name: Settle between steps
+              - entity: input_number.musiccast_activation_settle
+                name: Trust players after
+              - entity: input_number.musiccast_dropout_debounce
+                name: Trust dropout after
+              - entity: input_number.musiccast_player_settle_timeout
+                name: Wait at most
+              - entity: input_number.musiccast_scenario_guard_timeout
+                name: Drop scenario lock after
+              - entity: input_number.musiccast_max_volume
+                name: Max volume
+              - entity: input_boolean.musiccast_debug
+                name: Debug logging
+
+          # Two cards rather than one with a divider: an entities card draws its section
+          # rule above the label, so a section used as the first row leaves a stray line
+          # across the top of the card. Two titles also render at the same weight, which a
+          # title plus a section does not — the section reads as subordinate to it.
+          - type: entities
+            title: Recovery
+            # A titled entities card shows a header toggle by default, which here would
+            # flip Auto-recover on and off from the header.
+            show_header_toggle: false
+            # With Auto-recover off, everything under the switch is dimmed and made
+            # unclickable: none of it does anything while recovery is off, so the card
+            # shows at a glance what is in effect. Only the switch stays lit, or it could
+            # not be turned back on.
+            # ⚠️ Positional: it dims from the second row down, so it tracks the order below.
+            card_mod:
+              style: |
+                /* A group label inside the Stability block, not a heading over it — the
+                   block's own header card carries the title, and a default card header
+                   renders larger than that and inverts the hierarchy. Repeated on the
+                   Timings & Limits card: card-mod styles are strings, so there is nothing
+                   to share them through. */
+                .card-header {
+                  font-size: 13px;
+                  font-weight: 600;
+                  color: var(--secondary-text-color);
+                  padding: 12px 16px 0px;
+                }
+                {% if is_state('input_boolean.musiccast_auto_recovery', 'off') %}
+                  #states > *:nth-child(n+2) {
+                    opacity: 0.4;
+                    pointer-events: none;
+                  }
+                {% endif %}
+            entities:
+              - entity: input_boolean.musiccast_auto_recovery
+                name: Auto-recover
+              - entity: input_number.musiccast_silence_debounce
+                name: Fix silence after
+              - entity: input_number.musiccast_recovery_max_attempts
+                name: Max attempts
+              - entity: input_number.musiccast_recovery_settle
+                name: Recheck after
+              - entity: input_number.musiccast_relink_gap
+                name: Re-link after
+              - entity: input_number.musiccast_relink_verify
+                name: Check re-link after
+              - entity: input_number.musiccast_recovery_popup_timeout
+                name: Close popup after
+
+          # Reports on recovery, so it sits with it and dims with it: the failure counts
+          # belong to a mechanism that is not running when Auto-recover is off, and are
+          # frozen rather than current. Dimmed rather than hidden — the last scenario and
+          # favorite stay true, and a count frozen mid-climb is worth seeing.
+          - type: markdown
+            content: |
+              {%- set last = states('input_text.musiccast_last_scenario') %}
+              {%- set raw = states('input_text.musiccast_recovery_attempts') %}
+              {%- set d = raw | from_json if raw not in ['', 'unknown', 'unavailable'] else {} %}
+              {%- set cap = states('input_text.musiccast_last_caption') %}
+              {%- set uri = states('input_text.musiccast_last_uri') %}
+              {%- set kind = (uri.split('://')[0] | replace('_', ' ') | title) if '://' in uri else '' %}
+              {%- set suffix = ' — ' ~ kind if kind else '' %}
+              - Last scenario: {{ last if last not in ['', 'unknown', 'unavailable'] else '—' }}
+              - Last favorite: {{ (cap ~ suffix) if cap not in ['', 'unknown', 'unavailable'] else '—' }}
+              - Failed recoveries: {{ d.values() | sum }}
+            card_mod:
+              style: |
+                ha-card {
+                  border: none;
+                  box-shadow: none;
+                  background: none;
+                  margin-top: -6px;
+                  padding-top: 0px !important;
+                  {% if is_state('input_boolean.musiccast_auto_recovery', 'off') %}opacity: 0.4;{% endif %}
+                }
+                ha-markdown {
+                  padding: 0px 16px 8px 0px !important;
+                  color: var(--secondary-text-color);
+                  font-size: 0.9em;
+                }
+
 
       # --- SCENARIO MANAGEMENT ---
       - type: custom:button-card
@@ -1120,157 +1314,163 @@ views:
         card_param: cards
         filter:
           template: >
-            {% set meta = state_attr('sensor.musiccast_scenario_config', 'scenarios') or {} %}
+            {% set meta = state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {} %}
             {% set ns = namespace(cards=[]) %}
             {% for sc_id, data in meta.items() %}
               {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'admin_scenario_button',
-                  'entity': 'input_text.active_scenario', 'icon': data.icon,
+                  'entity': 'input_text.musiccast_active_scenario', 'icon': data.icon,
                   'variables': {'scenario_id': sc_id, 'scenario_name': data.name, 'scenario_icon': data.icon}}] %}
             {% endfor %}
             {{ ns.cards | tojson }}
 
-      # Header card
-      - type: custom:button-card
-        name: Media Players
-        icon: mdi:tune
-        show_label: true
-        label: |
-          [[[
-            return 'Tap a player to show presets<br>Double-tap (player) or tap/double-tap (this card) to refresh all presets<br>Hold a player to exclude/include';
-          ]]]
-        tap_action:
-          action: perform-action
-          perform_action: homeassistant.update_entity
-          target:
-            entity_id: sensor.musiccast_media_player_presets
-        double_tap_action:
-          action: perform-action
-          perform_action: homeassistant.update_entity
-          target:
-            entity_id: sensor.musiccast_media_player_presets
-        styles:
-          card:
-            - height: 90px
-            - padding: 12px
-            - border-radius: 6px
-            - border: 1px solid *idle_border
-            - box-shadow: none
-          grid:
-            - grid-template-areas: '"i n" "i l"'
-            - grid-template-columns: 50px 1fr
-            - grid-template-rows: auto 1fr
-            - align-items: start
-            - row-gap: 4px
-          icon:
-            - width: *icon_large
-            - color: *primary_text_fg
-          name:
-            - font-size: 12px
-            - font-weight: 500
-            - color: *primary_text_fg
-            - justify-self: start
-          label:
-            - font-size: 11px
-            - font-weight: 400
-            - color: *secondary_text
-            - justify-self: start
-            - text-align: left
-            - line-height: 1.3
+      # --- MEDIA PLAYERS (stacked so the header, player grid and preset list
+      # stay together; masonry would otherwise scatter the short cards) ---
+      - type: vertical-stack
+        cards:
+          # Header card
+          - type: custom:button-card
+            name: Media Players
+            icon: mdi:tune
+            show_label: true
+            label: |
+              [[[
+                return 'Tap a player to show its presets<br>Tap this card to refresh all presets<br>Hold a player to exclude/include';
+              ]]]
+            tap_action:
+              action: perform-action
+              perform_action: homeassistant.update_entity
+              target:
+                entity_id: sensor.musiccast_media_player_presets
+            double_tap_action:
+              action: perform-action
+              perform_action: homeassistant.update_entity
+              target:
+                entity_id: sensor.musiccast_media_player_presets
+            styles:
+              card:
+                - height: 90px
+                - padding: 12px
+                - border-radius: 6px
+                - border: 1px solid *idle_border
+                - box-shadow: none
+              grid:
+                - grid-template-areas: '"i n" "i l"'
+                - grid-template-columns: 50px 1fr
+                - grid-template-rows: auto 1fr
+                - align-items: start
+                - row-gap: 4px
+              icon:
+                - width: *icon_large
+                - color: *primary_text_fg
+              name:
+                - font-size: 12px
+                - font-weight: 500
+                - color: *primary_text_fg
+                - justify-self: start
+              label:
+                - font-size: 11px
+                - font-weight: 400
+                - color: *secondary_text
+                - justify-self: start
+                - text-align: left
+                - line-height: 1.3
 
-      # Player selector buttons (dynamic grid)
-      - type: custom:auto-entities
-        filter:
-          include:
-            - integration: yamaha_musiccast
-              domain: media_player
-              options:
-                type: custom:decluttering-card
-                template: admin_preset_button
-                variables:
-                  - entity: this.entity_id
-        sort:
-          method: friendly_name
-        card:
-          type: grid
-          columns: 3
-          square: false
-        card_param: cards
+          # Player selector buttons (dynamic grid)
+          - type: custom:auto-entities
+            filter:
+              include:
+                - integration: yamaha_musiccast
+                  domain: media_player
+                  options:
+                    type: custom:decluttering-card
+                    template: admin_preset_button
+                    variables:
+                      - entity: this.entity_id
+            sort:
+              method: friendly_name
+            card:
+              type: grid
+              columns: 3
+              square: false
+            card_param: cards
 
-      # Dynamic preset display - single card for all active players
-      - type: custom:button-card
-        entity: sensor.musiccast_media_player_presets
-        show_name: false
-        show_icon: false
-        show_state: false
-        tap_action:
-          action: none
-        triggers_update:
-          - sensor.musiccast_media_player_presets
-          - sensor.musiccast_preset_players
-          - sensor.musiccast_entities
-        variables:
-          duplicate_border: *duplicate_border
-          duplicate_icon: *duplicate_icon
-        custom_fields:
-          preset_list: |
-            [[[
-              const allPresets = states['sensor.musiccast_media_player_presets']?.attributes?.presets || {};
-              const selectedPlayers = states['sensor.musiccast_preset_players']?.attributes?.players || [];
-              const mcEntities = states['sensor.musiccast_entities']?.attributes?.entities || [];
+          # Dynamic preset display - single card for all active players
+          - type: custom:button-card
+            entity: sensor.musiccast_media_player_presets
+            show_name: false
+            show_icon: false
+            show_state: false
+            tap_action:
+              action: none
+            triggers_update:
+              - sensor.musiccast_media_player_presets
+              - sensor.musiccast_preset_players
+              - sensor.musiccast_entities
+            variables:
+              duplicate_border: *duplicate_border
+              duplicate_icon: *duplicate_icon
+            custom_fields:
+              preset_list: |
+                [[[
+                  const allPresets = states['sensor.musiccast_media_player_presets']?.attributes?.presets || {};
+                  const selectedPlayers = states['sensor.musiccast_preset_players']?.attributes?.players || [];
+                  const mcEntities = states['sensor.musiccast_entities']?.attributes?.entities || [];
 
-              if (selectedPlayers.length === 0) {
-                return "<p><em>Select one or more players to show presets</em></p>";
-              }
-
-              let out = "<p><em>📻 Net Radio  •  👤 Artist  •  🎵 Playlist</em></p>";
-
-              for (const entityId of selectedPlayers) {
-                const presets = allPresets[entityId] || [];
-                const entityInfo = mcEntities.find(e => e.entity_id === entityId);
-                const friendlyName = entityInfo?.friendly_name || entityId;
-
-                out += `<h3>${friendlyName}</h3>`;
-
-                if (presets.length === 0) {
-                  out += "<p><em>No presets configured</em></p>";
-                  continue;
-                }
-
-                const maxNum = Math.max(...presets.map(p => p.num));
-
-                for (let n = 1; n <= maxNum; n++) {
-                  const preset = presets.find(p => p.num === n);
-                  if (preset) {
-                    const isDup = presets.filter(p => p.text === preset.text).length > 1;
-                    const inputIcon = preset.input === 'net_radio' ? '📻' : (preset.input || '').includes('spotify') ? '🎵' : '🗄️';
-                    const dupPrefix = isDup ? `${variables.duplicate_icon} ` : '';
-                    const style = isDup
-                      ? `border-left:3px solid ${variables.duplicate_border};padding-left:6px;margin:2px 0`
-                      : 'padding-left:9px;margin:2px 0';
-                    out += `<div style="${style}"><strong>${n}.</strong> ${dupPrefix}${preset.text} ${inputIcon}</div>`;
-                  } else {
-                    out += `<div style="padding-left:9px;margin:2px 0"><strong>${n}.</strong> —</div>`;
+                  if (selectedPlayers.length === 0) {
+                return "";
                   }
-                }
-              }
 
-              return out;
-            ]]]
-        styles:
-          card:
-            - background: none
-            - box-shadow: none
-            - border: none
-            - padding: 0 16px 16px
-          grid:
-            - grid-template-areas: '"preset_list"'
-            - grid-template-columns: 1fr
-          custom_fields:
-            preset_list:
-              - text-align: left
-              - font-size: 14px
-              - justify-self: start
-              - width: 100%
+                  // Must match the three icons emitted below: net_radio, anything
+                  // containing "spotify", everything else.
+                  let out = "<p><em>📻 Net Radio  •  🎵 Cloud Service  •  🗄️ Other (Local / DLNA)</em></p>";
+
+                  for (const entityId of selectedPlayers) {
+                    const presets = allPresets[entityId] || [];
+                    const entityInfo = mcEntities.find(e => e.entity_id === entityId);
+                    const friendlyName = entityInfo?.friendly_name || entityId;
+
+                    out += `<h3>${friendlyName}</h3>`;
+
+                    if (presets.length === 0) {
+                      out += "<p><em>No presets configured</em></p>";
+                      continue;
+                    }
+
+                    const maxNum = Math.max(...presets.map(p => p.num));
+
+                    for (let n = 1; n <= maxNum; n++) {
+                      const preset = presets.find(p => p.num === n);
+                      if (preset) {
+                        const isDup = presets.filter(p => p.text === preset.text).length > 1;
+                        const inputIcon = preset.input === 'net_radio' ? '📻' : (preset.input || '').includes('spotify') ? '🎵' : '🗄️';
+                        const dupPrefix = isDup ? `${variables.duplicate_icon} ` : '';
+                        const style = isDup
+                          ? `border-left:3px solid ${variables.duplicate_border};padding-left:6px;margin:2px 0`
+                          : 'padding-left:9px;margin:2px 0';
+                        out += `<div style="${style}"><strong>${n}.</strong> ${dupPrefix}${preset.text} ${inputIcon}</div>`;
+                      } else {
+                        out += `<div style="padding-left:9px;margin:2px 0"><strong>${n}.</strong> —</div>`;
+                      }
+                    }
+                  }
+
+                  return out;
+                ]]]
+            styles:
+              card:
+                - background: none
+                - box-shadow: none
+                - border: none
+                - padding: 0 16px 16px
+              grid:
+                - grid-template-areas: '"preset_list"'
+                - grid-template-columns: 1fr
+              custom_fields:
+                preset_list:
+                  - text-align: left
+                  - font-size: 14px
+                  - justify-self: start
+                  - width: 100%
 
   # ------------------------------------------------------
   # VIEW 4: DISCOVERY
@@ -1285,7 +1485,7 @@ views:
         show_label: true
         label: |
           [[[
-            return 'Tap to scan the local network for players<br><br>⚠️ <b>Reload YAML after scanning</b> ⚠️';
+            return 'Tap to scan the local network for players<br><br>⚠️ <b>Reload Groups + Automations after scanning</b> ⚠️';
           ]]]
         tap_action:
           action: perform-action
@@ -1322,9 +1522,11 @@ views:
 
       # IP Range Configuration
       - type: entities
-        title: IP scan range (192.168.1.x)
+        title: IP scan range
         show_header: true
         entities:
+          - entity: input_text.musiccast_scan_subnet
+            name: Subnet
           - entity: input_number.musiccast_scan_start_ip
             name: First
           - entity: input_number.musiccast_scan_end_ip
@@ -1398,11 +1600,11 @@ views:
           ## <ha-icon icon="mdi:play-circle"></ha-icon> Now Playing
 
           **Top card (Scenarios header):**
-          - **Tap:** Unlink all zones and power off.
-          - **Status:** Shows active scenario source and master speaker; otherwise number of powered-on zones; "Select scenario" when idle.
+          - **Tap:** Power off all players. They stay grouped — activating any scenario regroups them.
+          - **Status:** Shows active scenario source and master player; otherwise number of powered-on players; "Select scenario" when idle.
 
           **Scenario buttons:**
-          - **Tap:** Activate/deactivate scenario with a random preset.
+          - **Tap:** Activate/deactivate scenario with a random preset. If the scenario is still playing but a player dropped out and it shows no active scenario, tapping it restores the scenario instead — the dropped players rejoin and the current source keeps playing (no new preset).
           - **Double-tap:** Pick a new random preset.
           - **Hold:** Save current volume configuration.
           - **Blue background:** Active scenario (playing now).
@@ -1423,15 +1625,15 @@ views:
         content: |
           ## <ha-icon icon="mdi:speaker-multiple"></ha-icon> Players
 
-          Shows all MusicCast zones. Tap a zone to link or unlink it to the active scenario's master player for multi-room audio.
+          Shows all MusicCast players. Tap a player to link or unlink it to the active scenario's master player for multi-room audio.
 
-          - **Tap:** Link or unlink zone to/from master player.
+          - **Tap:** Link or unlink the player to/from the master player. If no scenario is active but the last one is still playing, tapping a dropped player rejoins it to that master.
           - **Double-tap:** Toggle power.
-          - **Hold:** Unlink and power off.
+          - **Hold:** Unlink and power off — that player only, and the scenario ends. The other rooms are left as they are: hold a member and the rest play on, hold the **master** and they stay powered on but fall silent, having lost the source they were following. To switch everything off, tap the Scenarios header in Now Playing, or toggle the scenario off.
           - **White background:** Powered off (standby).
           - **Blue background:** Powered on (active).
           - **Grey background:** Unavailable (not connected).
-          - **Blue border:** Master zone.
+          - **Blue border:** Master player.
           - **Blue icon/text:** Linked to master.
           - **Grey icon/text:** Unlinked.
 
@@ -1440,15 +1642,53 @@ views:
         content: |
           ## <ha-icon icon="mdi:tune"></ha-icon> Settings
 
+          **Stability — why so many timings?** The right values depend on your network, your devices and your group sizes. Every default here was measured in one house, not derived — expect to tune them.
+
+          **Timings & Limits.** How scenarios are built and how loud they get. These always apply.
+          - **Settle between steps:** how long the package pauses between the steps of building or taking apart a group — unjoin, stop, join. Unlike everything else here it is a *unit* rather than a wall-clock figure: the individual pauses are 0.5x, 1x and 2x of it, because a stop settles faster than a group change. Raise it if a scenario sometimes comes up with a room missing, or a player left behind in the previous group. These are deliberately blind waits: Home Assistant reports a player as ungrouped the instant it is asked, before the device has acted, so there is nothing truthful to wait for. Distinct from **Trust players after** below, which covers what a player says about itself *after* playback starts; this one covers the group being built *before* it.
+          - **Trust players after:** set this too short and two things go wrong without any drop having happened — the favorite indicator goes dark a few seconds after you tap a scenario, and member volumes drift away from the scenario's. Both because a player reports its new source and volume up to ~10 seconds *after* it starts playing, and until then what it says about itself describes the previous scenario. This is how long the package waits, from the moment playback starts, before believing players again (0 = believe them immediately). It gates the volume sync and the caption check as well as drop detection, so it keeps working with **Auto-recover** off.
+          - **Trust dropout after:** the companion to **Trust players after** — that one is about what a player says of itself, this one about it being gone. How long a player must be missing from the group before the package treats the absence as real rather than a glitch. MusicCast devices drop out and rejoin by themselves — two rooms have been seen gone for a second and a third for seven, all returning unaided — and a player that comes back inside this window cancels the wait, so nothing happens at all. What happens when the window elapses depends on **Auto-recover**: on, the player is rejoined; off, the scenario is cleared. Raise it if something fires on drops that were healing on their own; lower it if a player that has genuinely left sits unlinked for too long.
+          - **Wait at most:** a ceiling, not a wait. When the package takes a scenario down it asks the players to power off and then waits for them to confirm, instead of guessing how long they need; this is how long it waits before giving up on a player and carrying on. The teardown ends as soon as the last player answers — typically well under a second — so this number is only ever spent when a player is slow or unreachable. That makes it the opposite of **Trust players after**, which is always spent in full: raising this one costs nothing in normal use, and is the right response if a teardown ever seems to finish before a player has really stopped.
+          - **Drop scenario lock after:** a safety net, not a timing. While the package rebuilds a group it raises a lock that stands down drop detection, the volume sync and the caption check, and lowers it when it finishes. If the script holding it dies part-way — a device refusing a group call is the usual way — the lock would stay up silently and the package would simply stop noticing faults, with nothing to show for it. This releases it and logs a warning. It has to outlast the longest rebuild your house performs, so raise it if it ever fires during a real activation; a full nine-player scenario here holds the lock for about 24 s.
+          - **Max volume:** a ceiling on the volumes the package sets itself — scenario volumes and members following the master (0% = off, no cap). Manual changes are never capped: any player, master or member, can be turned above it by hand — but members following a master above the cap stop at the cap.
+          - **Debug logging:** off in normal use. On, every player state change is logged (`MusicCast transport:`) with who caused it — Home Assistant or the device itself. Worth turning on while investigating why a scenario misbehaved: auto-recover fixes some faults within seconds, so the only trace of an incident can otherwise be the one line saying it was fixed.
+          **Hold the Stability header** to put every setting on the card back to the values below, after a confirmation. Use it when tuning has wandered and you want a known starting point — quicker than remembering which slider you moved.
+
+          **Recovery.** Turn **Auto-recover** off and everything below the switch greys out — none of it does anything while recovery is off. Note that **Trust dropout after**, above, still applies: with recovery off a drop is no longer repaired, but the package still waits that long before believing it and clearing the scenario.
+          - **Auto-recover:** Put a scenario back the way it was when something outside Home Assistant disturbs it. Three cases: a player that drops out of the group is rejoined, playback that stops on its own — a Net Radio stream ending, say — is resumed on the master, and members that fall quiet underneath a master still reporting playing get the station re-asserted. Off: a drop just clears the scenario and the other two are left alone (you can still tap the scenario to restore it — see Now Playing).
+          - **Fix silence after:** how long a player must sit quiet — reporting nothing playing while the master still says it is playing, and while it is still linked to that master — before the package treats it as a real fault and restarts the music. Distinct from **Recheck after**, which is a wait *after* acting; this one is the wait *before*. Short values react sooner but fire on hiccups that heal themselves: players have been seen coming back on their own after 7 seconds.
+          - **Max attempts / Recheck after:** how many times it retries a player before giving up on it, and how long it waits before checking whether the fix landed. The wait is also how long playback must stay stopped before a stop counts as real rather than a blip between tracks. Raise **Max attempts** if a player that does eventually come back is being given up on — the count under **Status** climbing to it, and a "could not be recovered" notification, is what that looks like. Raise **Recheck after** if recoveries are reported as failed and then turn out to have worked, which means the check is happening before the player has answered.
+          - **Re-link after / Check re-link after:** when players go quiet under a master that is still playing, the first thing tried is rebuilding the link — unlinking them and linking them straight back, which leaves the master alone so a playlist keeps its place. **Re-link after** is the pause between the two halves; too short and a player misses the rebuild and is left silent. **Check re-link after** is how long to let it settle before judging: players do not come back together, and judging too early reads a slow one as dead and falls back to restarting the station, which restarts a playlist for nothing. Both default to measured values — raise the first if a player is ever left out, the second if the fallback fires when it needn't.
+          - **Close popup after:** how long the **Undo** popup stays on screen. Undo reverses whatever was just done — a rejoined player is put back where it was and the scenario cleared; resumed playback is paused again, leaving the group alone. Use it when the change was deliberate, e.g. you moved a player to another group, or stopped the music, in the MusicCast app. Set it to 0 for no popup: recoveries are then accepted silently, which is what you want once you trust them. A recovery that *fails* raises a notification regardless of this setting — that one you want to hear about. Restarting a silent scenario has no Undo: nobody can have meant every room to go quiet.
+          - **Status:** the last active scenario, the favorite it would restore, and how many recoveries are currently failing. Counted per scenario, per player — a player that recovers successfully drops out of the count, and activating a scenario clears it. A number climbing toward **Max attempts** means a player is about to be given up on.
+
+          **The values the package ships with.** These are what **Reset** restores. They are timings measured on real hardware, not round numbers, and a fresh install starts *below* several of them — at each slider's minimum — so pressing **Reset** once is a reasonable part of setting up.
+
+          | Setting | Default |
+          |---|---|
+          | Auto-recover | on |
+          | Max attempts | 2 |
+          | Recheck after | 15 s |
+          | Fix silence after | 15 s |
+          | Re-link after | 10 s |
+          | Check re-link after | 45 s |
+          | Close popup after | 0 s (no popup) |
+          | Settle between steps | 1 s |
+          | Trust players after | 10 s |
+          | Trust dropout after | 5 s |
+          | Wait at most | 5 s |
+          | Drop scenario lock after | 180 s |
+          | Max volume | 0 % (no cap) |
+          | Debug logging | off |
+
           **Scenarios section:**
           - **Tap header:** Create a new scenario (name, icon, master player).
           - **Tap scenario tile:** Edit name, icon, or master player.
           - **Hold scenario tile:** Delete scenario.
 
           **Media Players section:**
-          - **Tap/double-tap header card:** Refresh all presets from all devices.
+          - **Tap header card:** Refresh all presets from all devices.
           - **Tap player:** Show presets for that player.
-          - **Double-tap player:** Refresh all presets from device.
           - **Hold player:** Exclude/include player from the active scenario group.
 
           **Presets list:** Shows all slots (empty slots shown as —).
@@ -1462,10 +1702,10 @@ views:
 
           Scans the local network to find MusicCast devices and match them to Home Assistant entities. Run this once after initial setup, or again if you add or replace a device.
 
-          The scan checks a configurable IP range (default: all of 192.168.1.x) and identifies devices by matching their network name against the friendly names registered in HA. Matched devices are shown with their IP address and entity ID.
+          The scan checks a configurable IP range — set **Subnet** to your network prefix (`192.168.1`, `10.0.0`, no trailing dot) and **First**/**Last** to the octet range; leave Subnet blank and it defaults to `192.168.1`. Devices are identified by matching their network name against the friendly names registered in HA. Matched devices are shown with their IP address and entity ID.
           
           If any devices appear under Unmatched, they were found on the network but could not be linked to a known entity — check that the device's network name matches its friendly name in HA.
 
           The scan also immediately refreshes the preset list, so presets in the Settings view are always up to date after a scan.
 
-          **After scanning:** reload YAML (Developer Tools → YAML → Reload all) to apply the updated IP mappings. No restart required.
+          **After scanning:** reload **Groups + Automations** (Developer Tools → YAML) to apply the updated IP mappings and player list. No restart required.

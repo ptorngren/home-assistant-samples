@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 shell_command:
   # Fetch preset list from MusicCast device
-  get_musiccast_presets: "curl -s http://{{ ip }}/YamahaExtendedControl/v1/netusb/getPresetInfo"
+  musiccast_get_presets: "curl -s http://{{ ip }}/YamahaExtendedControl/v1/netusb/getPresetInfo"
 
   # Read randomization state: CSV file with preset_num,state pairs
   # Returns JSON: {"1": "normal", "3": "locked", "5": "excluded"}
@@ -23,16 +23,35 @@ shell_command:
   musiccast_randomization_list: 'find /config/packages/musiccast/data -name "presets_*.csv" | xargs -I {} basename {} | sed "s/presets_//; s/.csv//" | jq -R -s -c "split(\"\\n\") | map(select(length > 0))"'
 
 # ================================================================
-# RANDOMIZATION STATE CONSTANTS - SOURCE OF TRUTH
+# RANDOMIZATION STATE CONSTANTS
 # ================================================================
-# Used throughout mixer.yaml scripts for preset state management
-# - "L": Preset is locked; always selected during randomization
-# - "X": Preset is excluded from random selection
-# - (omitted): Preset is in default state (implicit, not stored in CSV)
-# Short codes minimize JSON size for 40-preset scenarios (helper 255 char limit)
+# - "L" (code_locked):   preset is locked; always selected during randomization
+# - "X" (code_excluded): preset is excluded from random selection
+# - "N" (code_normal):   the default. Stored by absence — no CSV row is written for it,
+#                        so N exists at runtime but never in a file.
+# Short codes minimize JSON size for 40-preset scenarios (helper 255 char limit).
 #
-# ⚠️  KEEP IN SYNC: These codes are also referenced in dashboards/musiccast.yaml (RANDOMIZATION STATE CODES section)
-#     If you change these codes, update the YAML anchors in that file too!
+# Every script that needs them opens with its own `variables:` block naming the three:
+#
+#   - variables:
+#       code_normal: 'N'
+#       code_locked: 'L'
+#       code_excluded: 'X'
+#
+# so the templates below read `val == code_locked` rather than `val == 'L'`. The block is
+# repeated per script on purpose rather than shared through a YAML anchor: an anchor would
+# have to be defined on whichever script comes first, leaving the definition somewhere
+# arbitrary and invisible from the sites that use it, and breaking every alias if the file
+# is reorganised or a script moves to another file. A per-script block travels with its
+# script. Any change to a code belongs in all of them, and in the dashboard — see below.
+#
+# Two places keep a bare literal, each marked where it sits: the randomization-locks
+# sensor, whose Python runs inside a shell string, and the field descriptions on
+# musiccast_set_favorite_state, which are prose.
+#
+# ⚠️  KEEP IN SYNC with dashboards/musiccast.yaml, which defines the same codes as its own
+#     anchors at the top of that file. A YAML anchor cannot be referenced from another
+#     file, so there is no way to share one definition between the two.
 
 # ================================================================
 # HELPERS - Scenario state management
@@ -50,21 +69,68 @@ input_text:
 # -----------------------------------------------------------------------------
 template:
 
-  # Provides Now Playing from the active scenario's master
+  # The master currently in charge of a live group. The active scenario's master takes
+  # precedence; with no scenario active it resolves the master of whatever group is
+  # actually playing — the first member of a group is the master by design. Without this
+  # fallback the Now Playing card goes blank whenever a scenario clears (an unhealed
+  # drop, or players linked ad hoc) even though music is still playing. Powered-off
+  # players are ignored: a group that survives power-off is not "currently playing".
+  # A group needs at least one real member, so a player left alone is not a master —
+  # accepted consequence: unlinking the last member drops Now Playing while the former
+  # master keeps playing, until a scenario is activated again.
+  - sensor:
+      - name: "MusicCast Current Master"
+        unique_id: musiccast_current_master
+        state: >
+          {%- set scenario = states('input_text.musiccast_active_scenario') -%}
+          {%- set sc = state_attr('sensor.musiccast_scenarios', 'scenarios') or {} -%}
+          {#- The blank-state list is spelled out here, where scripts and automations
+              share a `blank_states` variable: a state-based template sensor has no
+              `variables:` block to hold one. -#}
+          {%- set scenario_master = sc.get(scenario, {}).get('master', '') if scenario not in ['', 'None', 'unknown', 'unavailable'] else '' -%}
+          {%- if scenario_master -%}
+            {{ scenario_master }}
+          {%- else -%}
+            {%- set pool = state_attr('group.musiccast_players', 'entity_id') or [] -%}
+            {%- set ns = namespace(m='') -%}
+            {%- for p in pool -%}
+              {%- set gm = state_attr(p, 'group_members') or [] -%}
+              {#- Real members only. The pool excludes stereo-pair slaves, which the
+                  master keeps enrolled after its last real member leaves — counting
+                  those would report a master of nothing. -#}
+              {%- set real = gm | select('in', pool) | reject('eq', p) | list -%}
+              {%- if ns.m == '' and real | length > 0 and gm[0] == p
+                     and states(p) not in ['off', 'unavailable', 'unknown'] -%}
+                {%- set ns.m = p -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.m }}
+          {%- endif -%}
+
+  # Provides Now Playing from whichever master is currently in charge.
+  #
+  # The tail of the artwork URL is appended to the state on purpose. The Now Playing
+  # card is a config-template-card watching this sensor, but what it actually reads is
+  # the `master` attribute below — and it re-renders on the state changing, so an
+  # attribute that moves while the state stands still can leave the card showing the
+  # previous master. entity_picture ends in a cache token that changes whenever the
+  # artwork does, so carrying a slice of it in the state makes the state move whenever
+  # the media does. The title alone is not enough: two stations can report the same
+  # title, and artwork can change while it does not. Eight characters is simply enough
+  # of the token to differ reliably.
   - sensor:
       - name: "MusicCast Scenario Now Playing"
         unique_id: musiccast_scenario_now_playing
         state: >
-          {% set sc = state_attr('sensor.musiccast_scenarios', 'scenarios') or {} %}
-          {% set master = sc.get(states('input_text.active_scenario'), {}).get('master', '') %}
+          {% set m = states('sensor.musiccast_current_master') %}
+          {% set master = '' if m in ['', 'None', 'unknown', 'unavailable'] else m %}
           {% set title = state_attr(master, 'media_title') if master else 'Inget spelas' %}
           {% set artwork = state_attr(master, 'entity_picture') if master else '' %}
           {{ title }}{{ ' | ' ~ artwork[-8:] if artwork else '' }}
         attributes:
-          scenario: "{{ states('input_text.current_scenario_name') }}"
           master: >
-            {% set scenario = states('input_text.active_scenario') %}
-            {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') if scenario else '' }}
+            {% set m = states('sensor.musiccast_current_master') %}
+            {{ '' if m in ['', 'None', 'unknown', 'unavailable'] else m }}
 
 # ---------------------------------------------------------------------------
 # SCRIPTS
@@ -77,6 +143,9 @@ script:
 
   # Link players to scenario's master
   # -------------------------------
+  # The caller owns input_boolean.musiccast_scenario_updating: it must be ON before this
+  # script runs and stay ON until the device has settled after playback starts,
+  # long after the join here completes.
   musiccast_scenario_link:
     alias: "Scenario: Link"
     mode: restart
@@ -84,10 +153,6 @@ script:
       scenario:
         description: "Scenario name"
     sequence:
-      - action: input_boolean.turn_on
-        target:
-          entity_id: input_boolean.scenario_updating
-
       # 1. Unlink all players
       - action: script.musiccast_unlink_all
 
@@ -102,25 +167,84 @@ script:
           sc: "{{ state_attr('sensor.musiccast_scenarios', 'scenarios') or {} }}"
           master: "{{ csv_players[0] if csv_players | length > 0 else sc.get(scenario, {}).get('master', '') }}"
           players: "{{ csv_players[1:] if csv_players | length > 1 else (sc.get(scenario, {}).get('players', []) | reject('eq', master) | list) }}"
+          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
+
+      # 2b. Drop members HA cannot reach. Calling join on an unavailable device raises
+      # MusicCastConnectionException from the integration, and HA classes that as an
+      # *unexpected* error — continue_on_error only suppresses HomeAssistantError, so
+      # such a failure aborts the join loop, this script and the calling toggle, and
+      # strands the guard. Not touching the dead device is the only reliable defence.
+      - variables:
+          reachable: "{{ expand(players) | rejectattr('state', 'in', ['unavailable', 'unknown']) | map(attribute='entity_id') | list }}"
+      - variables:
+          unreachable: "{{ players | reject('in', reachable) | list }}"
+      - if: "{{ unreachable | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Scenario link {{ scenario }} — skipping unreachable members: {{ unreachable }}"
+              level: warning
+              logger: musiccast
+
+      # An unreachable master cannot host the group at all, so stop with a clear reason
+      # rather than failing obscurely on the first join.
+      - if: "{{ states(master) in ['unavailable', 'unknown'] }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Scenario link {{ scenario }} — master {{ master }} is {{ states(master) }}, cannot start"
+              level: error
+              logger: musiccast
+          # Also surface it in the UI: the scenario simply not starting is otherwise
+          # indistinguishable from a tap that did not register. Fixed notification_id so
+          # repeated attempts replace the notice instead of stacking up.
+          - action: persistent_notification.create
+            data:
+              notification_id: musiccast_master_unreachable
+              title: "MusicCast: scenario could not start"
+              message: >-
+                **{{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {}).get(scenario, {}).get('name', scenario) }}** could not start —
+                its master **{{ state_attr(master, 'friendly_name') or master }}**
+                is {{ states(master) }}. Check that the device is powered and on the network,
+                then try again.
+          - stop: "Master {{ master }} unreachable"
 
       # 3. Stop any current playback on master
       - action: media_player.media_stop
         continue_on_error: true
         target:
           entity_id: "{{ master }}"
-      - delay: 00:00:01
+      # 1x the settle unit
+      - delay:
+          seconds: "{{ settle * 1 }}"
 
-      # 4. Link other players to master
-      - action: media_player.join
-        target:
-          entity_id: "{{ master }}"
-        data:
-          group_members: "{{ players }}"
-      - delay: 00:00:01  # Wait for players to stabilize after joining
+      # 4. Link other players to master, one at a time: an unreachable member raises,
+      #    and a single call for the whole list lets that one member abort the whole
+      #    activation. join is additive, so the group builds up member by member.
+      - repeat:
+          for_each: "{{ reachable }}"
+          sequence:
+            - action: media_player.join
+              continue_on_error: true
+              target:
+                entity_id: "{{ master }}"
+              data:
+                group_members: "{{ [repeat.item] }}"
+      # Wait for players to stabilize after joining (1x the settle unit)
+      - delay:
+          seconds: "{{ settle * 1 }}"
 
-      - action: input_boolean.turn_off
-        target:
-          entity_id: input_boolean.scenario_updating
+      # Name the members that never landed in the master's group — a skipped member
+      # is otherwise invisible: the scenario just plays in fewer rooms.
+      - variables:
+          not_linked: "{{ reachable | reject('in', state_attr(master, 'group_members') or []) | list }}"
+      - if: "{{ not_linked | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: Scenario link {{ scenario }} — members did not join: {{ not_linked }}"
+              level: warning
+              logger: musiccast
 
   # Play random preset on master
   # ----------------------------
@@ -134,15 +258,24 @@ script:
         description: "Force new preset selection (ignore locks)"
         default: false
     sequence:
+      # Raise the device guard for the whole mix. This script is also started directly —
+      # dashboard double-tap re-randomize, screensaver — so it cannot rely on a caller
+      # having raised it, and it owns the release: after the settle at the end, or before
+      # an early stop. A caller that raised it first simply keeps it up until then.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
       # 1. Get master and its IP
       - variables:
+          blank_states: ['', 'None', 'unknown', 'unavailable']
           master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}"
           player_name: "{{ master.replace('media_player.', '') }}"
       - variables:
           master_ip: "{{ (state_attr('sensor.musiccast_player_ips', 'by_entity') | default({})).get(player_name, 'unknown') }}"
 
       # 2. Fetch presets from device
-      - action: shell_command.get_musiccast_presets
+      - action: shell_command.musiccast_get_presets
         data:
           ip: "{{ master_ip }}"
         response_variable: preset_response
@@ -156,16 +289,20 @@ script:
             data:
               message: "MusicCast Preset Error: Empty response from {{ master_ip }}. Check player {{ player_name }} in sensor.musiccast_player_ips or run network scan."
               level: error
-          - action: input_text.set_value
-            target:
-              entity_id: input_text.active_scenario_source_caption
+              logger: musiccast
+          # No input type: nothing is playing, so the URI and the slot stay blank.
+          - action: script.musiccast_set_source
             data:
-              value: "#error - see log#"
-          - action: input_text.set_value
+              caption: "#error - see log#"
+          # Release both flags on the way out — nothing is going to play, and leaving
+          # them raised would mute drop detection and volume sync indefinitely and
+          # keep the mini-player hidden.
+          - action: input_boolean.turn_off
             target:
-              entity_id: input_text.active_scenario_source_uri
-            data:
-              value: ""
+              entity_id: input_boolean.musiccast_activation_in_progress
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.musiccast_scenario_updating
           - stop: "No response from MusicCast device at {{ master_ip }}"
 
       # 4. Parse and select random valid preset
@@ -180,13 +317,20 @@ script:
 
       - variables:
           randomization_state: "{{ (randomization_response.stdout | default('{}')) | from_json if (randomization_response.stdout | default('{}')) != '' else {} }}"
+          # Randomization state codes, defined here for the whole file and aliased by the
+          # scripts below — this is the first use, and a YAML alias cannot look ahead.
+          # Only L and X are ever written: normal is stored by absence of a row, so N
+          # exists at runtime but never reaches a CSV.
+          code_normal: 'N'
+          code_locked: 'L'
+          code_excluded: 'X'
 
-      # Check for locked preset (state code 'L')
+      # Check for a locked preset
       - variables:
           locked_preset_num: >
             {%- set ns = namespace(locked=0) -%}
             {%- for key, val in randomization_state.items() -%}
-            {%- if val == 'L' -%}{%- set ns.locked = key | int -%}{%- endif -%}
+            {%- if val == code_locked -%}{%- set ns.locked = key | int -%}{%- endif -%}
             {%- endfor -%}
             {{ ns.locked }}
       # If locked preset exists and NOT force_randomize, use it; otherwise select randomly from filtered list
@@ -202,11 +346,11 @@ script:
           - conditions: []
             sequence:
               - variables:
-                  # Build list of valid preset indices (1-based), excluding "unknown" input and excluded presets (state code 'X')
+                  # Build list of valid preset indices (1-based), excluding "unknown" input and excluded presets
                   valid_indices: >
                     {% set ns = namespace(indices=[]) %}
                     {% for i in range(presets | length) %}
-                      {% if presets[i].input != 'unknown' and presets[i].text != '' and randomization_state.get((i+1) | string) != 'X' %}
+                      {% if presets[i].input != 'unknown' and presets[i].text != '' and randomization_state.get((i+1) | string) != code_excluded %}
                         {% set ns.indices = ns.indices + [i + 1] %}
                       {% endif %}
                     {% endfor %}
@@ -215,24 +359,17 @@ script:
                   preset_name: "{{ presets[preset_num - 1].text if preset_num > 0 else 'Unknown' }}"
                   preset_input: "{{ presets[preset_num - 1].input if preset_num > 0 else 'unknown' }}"
 
-      # 4. Save preset name and source type
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_caption
+      # 4. Save preset slot, name and source type
+      - action: script.musiccast_set_source
         data:
-          value: "{{ preset_name }}"
-
-      # Create URI based on preset input type for dashboard source detection
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_uri
-        data:
-          value: "{% if preset_input == 'net_radio' %}net_radio://{{ preset_name }}{% elif preset_input == 'spotify' %}spotify://{{ preset_name }}{% else %}{{ preset_input }}://{{ preset_name }}{% endif %}"
+          preset: "{{ preset_num }}"
+          caption: "{{ preset_name }}"
+          input_type: "{{ preset_input }}"
 
       # Record timestamp for stale caption detection
       - action: input_text.set_value
         target:
-          entity_id: input_text.active_preset_timestamp
+          entity_id: input_text.musiccast_active_source_timestamp
         data:
           value: "{{ as_timestamp(now()) | int }}"
 
@@ -251,6 +388,178 @@ script:
           media_content_id: "presets:{{ preset_num }}"
           media_content_type: music
 
+      # The group is built and the right music is playing, so the now-playing state is
+      # trustworthy from here — let the dashboard draw it rather than making it wait out
+      # the settle below. A no-op on the direct re-randomize path, which never sets this.
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_activation_in_progress
+
+      # 8. Let the hardware settle before releasing the guard. The master reports its new
+      # source/media_artist up to ~10 s after play_media, long after this script returns.
+      # While the guard is down, that late device update is indistinguishable from an
+      # external change: the volume sync scales the members off it, and
+      # detect_stale_caption blanks a correct caption.
+      - delay:
+          seconds: "{{ states('input_number.musiccast_activation_settle') | int(0) }}"
+
+      # 8a. Did it actually start? play_media and the device's own recallPreset both
+      # report success even when the stored favorite is dead: the input is selected and
+      # playback stops. Nothing downstream notices — the scenario is active, the favorite
+      # is lit, and no room is playing. A wait rather than a bare test because
+      # musiccast_activation_settle can be 0, which would read the state before the device
+      # had any chance to start; this returns the moment it plays and only spends the
+      # ceiling when it genuinely does not.
+      - wait_template: "{{ is_state(master, 'playing') }}"
+        timeout: "{{ states('input_number.musiccast_player_settle_timeout') | float(5) }}"
+        continue_on_timeout: true
+
+      # 8b. Recall once more before concluding anything. A device sometimes takes the
+      # recall, selects the input and never starts: observed 2026-08-11 on a Spotify
+      # favorite that sat idle for 64 s after the first attempt and played 1.6 s after
+      # the second, with the same slot on the same player. So a stalled first attempt
+      # says nothing about the favorite, and a second one is nearly free.
+      - if:
+          - condition: template
+            value_template: "{{ not is_state(master, 'playing') }}"
+        then:
+          - action: media_player.play_media
+            target:
+              entity_id: "{{ master }}"
+            data:
+              media_content_id: "presets:{{ preset_num }}"
+              media_content_type: music
+          - wait_template: "{{ is_state(master, 'playing') }}"
+            timeout: "{{ states('input_number.musiccast_player_settle_timeout') | float(5) }}"
+            continue_on_timeout: true
+          # Worth a line even when it works: a dropped recall is invisible once the
+          # retry covers it, and how often it happens is the thing worth knowing.
+          - if:
+              - condition: template
+                value_template: "{{ is_state(master, 'playing') }}"
+            then:
+              - action: system_log.write
+                data:
+                  message: >-
+                    MusicCast: preset {{ preset_num }} "{{ preset_name }}" on {{ master }} ignored the
+                    first recall and started on the second. The favorite is fine; the device dropped
+                    the request.
+                  level: info
+                  logger: musiccast
+
+      - if:
+          - condition: template
+            value_template: "{{ not is_state(master, 'playing') }}"
+        then:
+          # What this run selected and played, taken from the run rather than read back
+          # from the helpers. The helpers are written by musiccast_set_source and are
+          # blank whenever that write has not landed or a teardown cleared them, which
+          # produces a notice naming no preset at all — useless exactly when something
+          # has gone wrong. These three are always populated by the time playback is
+          # attempted, and the input type distinguishes a dead Net Radio directory entry
+          # from a Spotify reference, which fail for different reasons.
+          - variables:
+              dead_slot: "{{ preset_num }}"
+              dead_caption: "{{ preset_name }}"
+              dead_input: "{{ preset_input }}"
+              dead_state: "{{ states(master) }}"
+          - action: system_log.write
+            data:
+              message: >-
+                MusicCast: preset {{ dead_slot }} "{{ dead_caption }}" ({{ dead_input or 'unknown input' }})
+                on {{ master }} did not start on two recalls — master is {{ dead_state }}. The device
+                accepted both and selected the input, so no layer reports an error. Two stalls in a
+                row make the favorite a likelier cause than a dropped request, but neither is
+                established: try the preset from the dashboard, and if it fails on every activation
+                check it and consider re-saving from a live source. Selecting the same preset in the
+                MusicCast app reports whether it is unavailable, which is the quickest confirmation.
+                Start latency also varies by source, and only Net Radio, server lists and Spotify
+                favorites have been tested in live use. A master that is `off` or `unavailable` is a
+                different fault: the device never came up, so nothing was played to begin with.
+              level: warning
+              logger: musiccast
+          # Surface it: silence is the only symptom, and nothing in the UI distinguishes a
+          # dead favorite from a tap that never registered. Fixed notification_id so
+          # repeated attempts replace the notice instead of stacking up.
+          - action: persistent_notification.create
+            data:
+              notification_id: musiccast_preset_did_not_start
+              title: "MusicCast: scenario is silent"
+              # Phrased for every caller: the mixer also runs from a double-tap or the
+              # screensaver with force_randomize, where nothing was "activated" and the
+              # scenario may not even have been the active one.
+              message: >-
+                Preset **{{ dead_slot }}** ("{{ dead_caption }}", {{ dead_input or 'unknown input' }}) on
+                **{{ state_attr(master, 'friendly_name') or master }}** was accepted but
+                never started, so
+                **{{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {}).get(scenario, {}).get('name', scenario) }}**
+                is silent. The player reports **{{ dead_state }}**, after two recalls.
+                {% if dead_state in ['off', 'unavailable'] -%}
+                That is the player never coming up rather than a bad favorite — check it is
+                powered and on the network, then activate again.
+                {%- else -%}
+                Try the preset from the dashboard. If it plays there, this was more likely a
+                dropped request than a bad favorite. If it fails there too, check the preset
+                and consider re-saving it from a live source in the MusicCast app.
+                {%- endif %}
+
+      # 9. The device has settled, so its media_artist is now the truth about what is
+      # streaming. A Net Radio preset stores a directory reference plus a label frozen
+      # when the favorite was saved; if the broadcaster re-points the channel, the
+      # preset plays a different station under the old name and no API reports it.
+      # Show what is playing rather than the label, and name both in the log so the
+      # drifted preset can be replaced or excluded. No retry — the request was
+      # honoured, so playing it again would tune the same wrong station.
+      # Net Radio only: for any other input the device reports track metadata rather
+      # than a station, so there is nothing to compare and the label stands.
+      # Compared case-insensitively: preset labels and stream metadata often differ
+      # only in capitalisation for the same station.
+      - variables:
+          shown_caption: "{{ states('input_text.musiccast_active_source_caption') }}"
+          playing_station: "{{ state_attr(master, 'media_artist') }}"
+      - if:
+          - condition: template
+            value_template: >-
+              {{ state_attr(master, 'source') == 'Net Radio'
+                 and playing_station not in ['', none, 'unknown', 'unavailable']
+                 and shown_caption not in blank_states
+                 and (playing_station | trim | lower) != (shown_caption | trim | lower) }}
+        then:
+          - action: system_log.write
+            data:
+              message: >-
+                MusicCast: preset "{{ shown_caption }}" on {{ master }} is playing
+                "{{ playing_station }}" — showing the station that is actually streaming.
+                The preset's stored station reference has drifted; re-save or replace it.
+              level: warning
+              logger: musiccast
+          # Surface it for the same reason as the dead-favorite branch above: the music
+          # plays, so nothing looks wrong, and the drift is only visible to someone who
+          # knows what the preset was meant to be. Fixed notification_id per preset so a
+          # second drifted preset gets its own notice rather than replacing this one.
+          - action: persistent_notification.create
+            data:
+              notification_id: "musiccast_preset_drifted_{{ states('input_text.musiccast_active_source_preset') }}"
+              title: "MusicCast: preset plays the wrong station"
+              message: >-
+                Preset **{{ states('input_text.musiccast_active_source_preset') }}** on
+                **{{ state_attr(master, 'friendly_name') or master }}** is saved as
+                "{{ shown_caption }}" but is streaming **{{ playing_station }}**.
+                The broadcaster re-pointed the channel; the favorite still plays, so
+                nothing is broken — re-save or replace it when convenient.
+          # The slot is passed back unchanged: this branch runs right after this script
+          # played it, so it still reproduces the station the device reports — only the
+          # preset's stored label has drifted.
+          - action: script.musiccast_set_source
+            data:
+              caption: "{{ playing_station }}"
+              input_type: net_radio
+              preset: "{{ states('input_text.musiccast_active_source_preset') }}"
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
   # Toggle scenario on/off
   # ----------------------
   musiccast_scenario_toggle:
@@ -262,17 +571,75 @@ script:
         example: "sauna"
     sequence:
       - variables:
-          active_scenario: "{{ states('input_text.active_scenario') }}"
+          blank_states: ['', 'None', 'unknown', 'unavailable']
+      - variables:
+          active_scenario: "{{ states('input_text.musiccast_active_scenario') }}"
           sc: "{{ state_attr('sensor.musiccast_scenarios', 'scenarios') or {} }}"
           is_active: "{{ active_scenario == scenario }}"
           current_master: "{{ sc.get(active_scenario, {}).get('master', '') if active_scenario else '' }}"
           # Live group_members — captures ad-hoc linked players, not just saved config
           # When toggling OFF: active_scenario == scenario, so current_master == target_master
-          current_players: >-
+          current_players_all: >-
             {{ (state_attr(current_master, 'group_members') or [])
                | select('in', state_attr('group.musiccast_players', 'entity_id') or [])
                | reject('eq', current_master) | list
                if current_master else [] }}
+
+      # Unjoining or powering off a player HA cannot reach raises an unexpected error
+      # that continue_on_error cannot suppress, aborting this script mid-teardown and
+      # stranding the guard. Act only on the ones that can answer.
+      - variables:
+          current_players: "{{ expand(current_players_all) | rejectattr('state', 'in', ['unavailable', 'unknown']) | map(attribute='entity_id') | list }}"
+          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
+          # A list so an unreachable master becomes an empty target, which HA treats as
+          # a no-op, instead of a service call that raises.
+          current_master_target: >-
+            {{ [current_master] if current_master and states(current_master) not in ['unavailable', 'unknown'] else [] }}
+
+      # Tap-to-restore: no scenario is active, the tapped scenario is the one that
+      # was last active, and its master is still on — so a member dropped and the
+      # scenario marker was cleared. Rejoin the missing members and restore the
+      # marker instead of a fresh randomized activation; playback is left untouched
+      # (no mixer, no re-randomize). Single-tap only — double-tap still re-randomizes.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ active_scenario in blank_states
+                 and scenario == states('input_text.musiccast_last_scenario')
+                 and sc.get(scenario, {}).get('master', '')
+                 and states(sc.get(scenario, {}).get('master', '')) not in ['off', 'unavailable', 'unknown'] }}
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.musiccast_active_scenario
+            data:
+              value: "{{ scenario }}"
+          # Relight the playing favorite from the snapshot, but ONLY if the master's live
+          # source still confirms it: a Net Radio station whose station name (media_artist)
+          # still equals the snapshot caption. Any other case — a station/source change, or
+          # any Spotify source (HA can't tell a playlist switch from the next track) — is
+          # unconfirmable, so leave the caption blank rather than relight a wrong favorite.
+          # Set the URI BEFORE the caption: writing a non-blank caption re-fires
+          # musiccast_record_source, which re-snapshots last_uri from the live URI, so the
+          # URI must already be in place.
+          - variables:
+              confirmed: >-
+                {% set master = sc.get(scenario, {}).get('master', '') %}
+                {% set snap = states('input_text.musiccast_last_caption') %}
+                {{ snap not in blank_states
+                   and state_attr(master, 'source') == 'Net Radio'
+                   and state_attr(master, 'media_artist') == snap }}
+          # The snapshot's URI is passed through rather than rebuilt: it was already
+          # built from the input type that was playing, which the snapshot does not keep.
+          - action: script.musiccast_set_source
+            data:
+              preset: "{{ states('input_text.musiccast_last_preset') if confirmed else '' }}"
+              caption: "{{ states('input_text.musiccast_last_caption') if confirmed else '' }}"
+              uri: "{{ states('input_text.musiccast_last_uri') if confirmed else '' }}"
+          - action: script.musiccast_rejoin_missing_members
+            data:
+              manual: true
+          - stop: "Tap-to-restore: rejoined {{ scenario }}"
 
       - if:
           - condition: template
@@ -281,50 +648,31 @@ script:
           # Toggle OFF - unlink, stop and power off
           - action: input_boolean.turn_on
             target:
-              entity_id: input_boolean.scenario_updating
-
-          - action: media_player.unjoin
+              entity_id: input_boolean.musiccast_scenario_updating
+          - action: input_boolean.turn_on
             target:
-              entity_id: "{{ current_players }}"
-          - delay: 00:00:01  # Wait for players to unlink
+              entity_id: input_boolean.musiccast_activation_in_progress
 
-          - action: media_player.media_stop
-            continue_on_error: true
-            target:
-              entity_id: "{{ current_master }}"
-          - delay: 00:00:00.5  # Wait for playback to stop
-
-          - action: media_player.turn_off
-            target:
-              entity_id: "{{ current_players }}"
-
-          # Wait for players to actually power off (up to 5 seconds)
-          - wait_template: >
-              {%- if current_players is string -%}
-                {{ states(current_players) == 'off' }}
-              {%- else -%}
-                {%- for z in current_players -%}
-                  {%- if states(z) != 'off' %}false{% endif -%}
-                {%- endfor -%}
-                true
-              {%- endif -%}
-            timeout: 00:00:05
-            continue_on_timeout: true
-
-          - action: media_player.turn_off
-            target:
-              entity_id: "{{ current_master }}"
-          - delay: 00:00:01  # Ensure master is off before clearing active_scenario
-
-          - action: input_text.set_value
-            target:
-              entity_id: input_text.active_scenario
+          - action: script.musiccast_teardown_group
             data:
-              value: ""
+              players: "{{ current_players }}"
+              master: "{{ current_master_target }}"
+
+          # Safe to clear only now: the teardown returns once the devices confirm they
+          # are off, so the scenario is never cleared over a group still coming apart.
+          # Via clear_scenario, not a direct write: the caption, uri and preset describe
+          # what the scenario was playing and are meaningless once it is gone. Nothing
+          # else clears them on this path — detect_manual_scenario would, but it is gated
+          # on musiccast_scenario_updating, which is still up while the players power off
+          # and comes down after this, leaving no trigger to fire.
+          - action: script.musiccast_clear_scenario
 
           - action: input_boolean.turn_off
             target:
-              entity_id: input_boolean.scenario_updating
+              entity_id: input_boolean.musiccast_activation_in_progress
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.musiccast_scenario_updating
         else:
           # Toggle ON / Switch scenario
           # Sequence: teardown old → link new → wait for HW → commit active_scenario → mix
@@ -332,7 +680,13 @@ script:
           # avoiding a stale snapshot where players appear idle even though they're linked.
           - action: input_boolean.turn_on
             target:
-              entity_id: input_boolean.scenario_updating
+              entity_id: input_boolean.musiccast_scenario_updating
+          # Hides the mini-player until the new group is playing — until then the
+          # now-playing state still describes the outgoing scenario. The mixer clears
+          # it once playback starts, well before the guard comes down.
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.musiccast_activation_in_progress
 
           # Step 1: Tear down the currently active scenario (if any)
           # current_master/current_players use live group_members so ad-hoc linked players
@@ -341,31 +695,10 @@ script:
               - condition: template
                 value_template: "{{ current_master != '' }}"
             then:
-              - action: media_player.unjoin
-                target:
-                  entity_id: "{{ current_players }}"
-              - delay: 00:00:01  # Wait for players to unlink
-
-              - action: media_player.media_stop
-                continue_on_error: true
-                target:
-                  entity_id: "{{ current_master }}"
-              - delay: 00:00:00.5  # Wait for playback to stop
-
-              - action: media_player.turn_off
-                target:
-                  entity_id: "{{ current_players }}"
-              - action: media_player.turn_off
-                target:
-                  entity_id: "{{ current_master }}"
-              # Wait for hardware to confirm powered off before starting new scenario
-              - wait_template: >
-                  {%- for z in ([current_master] + current_players) -%}
-                    {%- if states(z) != 'off' %}false{% endif -%}
-                  {%- endfor -%}
-                  true
-                timeout: 00:00:05
-                continue_on_timeout: true
+              - action: script.musiccast_teardown_group
+                data:
+                  players: "{{ current_players }}"
+                  master: "{{ current_master_target }}"
 
           # Step 2: Link new scenario group
           - action: script.musiccast_scenario_link
@@ -375,23 +708,23 @@ script:
           # Step 3: Wait for group_members attribute to propagate from hardware to HA
           # Without this delay, active_scenario would be committed before HA sees the updated
           # group_members, causing the UI to render an idle snapshot instead of linked state.
-          - delay: "00:00:02"
+          - delay:
+              seconds: "{{ settle * 2 }}"
 
           # Step 4: Commit — triggers config-template-card re-render with accurate group state
           - action: input_text.set_value
             target:
-              entity_id: input_text.active_scenario
+              entity_id: input_text.musiccast_active_scenario
             data:
               value: "{{ scenario }}"
           - delay: 00:00:01
+          # Step 5: Mix. The guard stays up across this call and the mixer releases it
+          # once the devices have settled, so activation and a bare re-randomize get the
+          # same protection.
           - action: script.musiccast_scenario_mixer
             data:
               scenario: "{{ scenario }}"
               force_randomize: false
-
-          - action: input_boolean.turn_off
-            target:
-              entity_id: input_boolean.scenario_updating
 
   # Play preset by index on active scenario master
   # -----------------------------------------------
@@ -402,8 +735,16 @@ script:
       preset_index:
         description: "Preset index (1-based)"
     sequence:
+      # Raise the device guard for the same reason the mixer does: the master reports
+      # its new source/media_artist up to ~10 s after play_media, and with the guard
+      # down that echo looks like an external change — detect_stale_caption would blank
+      # the caption this script just set. Released after the settle below.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
       - variables:
-          active_scenario: "{{ states('input_text.active_scenario') }}"
+          active_scenario: "{{ states('input_text.musiccast_active_scenario') }}"
 
       - variables:
           master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(active_scenario, {}).get('master', '') }}"
@@ -416,22 +757,19 @@ script:
       - variables:
           preset: "{{ preset_info | selectattr('num', 'eq', preset_index | int) | first | default({}) }}"
 
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_caption
+      # The slot comes from the looked-up preset rather than the argument, so an index
+      # that is not in the list leaves all three blank instead of naming a preset that
+      # was never found.
+      - action: script.musiccast_set_source
         data:
-          value: "{{ preset.text }}"
-
-      - action: input_text.set_value
-        target:
-          entity_id: input_text.active_scenario_source_uri
-        data:
-          value: "{% if preset.input == 'net_radio' %}net_radio://{{ preset.text }}{% elif preset.input == 'spotify:artist' %}spotify:artist://{{ preset.text }}{% else %}{{ preset.input }}://{{ preset.text }}{% endif %}"
+          preset: "{{ preset.get('num') or '' }}"
+          caption: "{{ preset.get('text') or '' }}"
+          input_type: "{{ preset.get('input') or '' }}"
 
       # Record timestamp for stale caption detection
       - action: input_text.set_value
         target:
-          entity_id: input_text.active_preset_timestamp
+          entity_id: input_text.musiccast_active_source_timestamp
         data:
           value: "{{ as_timestamp(now()) | int }}"
 
@@ -441,6 +779,14 @@ script:
         data:
           media_content_id: "presets:{{ preset_index }}"
           media_content_type: music
+
+      # Same settle as scenario activation, then release the guard.
+      - delay:
+          seconds: "{{ states('input_number.musiccast_activation_settle') | int(0) }}"
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
 
   # Set favorite randomization state (helper to update CSV)
   # -------------------------------------------------------
@@ -465,67 +811,53 @@ script:
           scenario: "{{ scenario }}"
         response_variable: read_response
 
-      # Consolidate logic: Parse -> Update -> CSV Format (use short codes L/X)
-      # This keeps the dictionary as an Object (raw_map) so lookups work correctly
       - variables:
-          csv_lines: >
-            {# 1. Parse JSON from shell command #}
+          code_normal: 'N'
+          code_locked: 'L'
+          code_excluded: 'X'
+
+      # The preset states after this change, as a dict keyed by preset number.
+      # Stays an object so the two derivations below can index it. Normal is stored by
+      # absence: setting it drops the key instead of writing a row.
+      - variables:
+          final_map: >
             {% set raw_map = (read_response.stdout | default('{}')) | from_json %}
-
-            {# 2. Prepare target data (state is already short code: N, L, or X) #}
             {% set target_key = preset_num | string %}
-
-            {# 3. Merge update into map (N means remove/normal) #}
-            {% if state == 'N' %}
-              {# Remove the key - rebuild dict without target_key #}
+            {% if state == code_normal %}
               {% set ns = namespace(result={}) %}
               {% for k, v in raw_map.items() %}
                 {% if k != target_key %}
                   {% set ns.result = ns.result | combine({k: v}) %}
                 {% endif %}
               {% endfor %}
-              {% set final_map = ns.result %}
+              {{ ns.result }}
             {% else %}
-              {% set final_map = raw_map | combine({target_key: state}) %}
+              {{ raw_map | combine({target_key: state}) }}
             {% endif %}
 
-            {# 4. Sort keys numerically and build CSV #}
+      # Both derivations of final_map. A separate block because a variables: block is
+      # evaluated as a single unit, so final_map is not visible inside its own block.
+      - variables:
+          # Keys sorted numerically; only locked and excluded are written, since a missing
+          # row means normal.
+          csv_lines: >
             {% set ns = namespace(lines=[]) %}
             {% for key_int in final_map.keys() | map('int') | sort %}
               {% set key_str = key_int | string %}
-              {% set val = final_map[key_str] %}
-
-              {# Only output L and X (omit N/normal - it's implicit) #}
-              {% if val in ('L', 'X') %}
-                {% set ns.lines = ns.lines + [key_str ~ ',' ~ val] %}
+              {% if final_map[key_str] in (code_locked, code_excluded) %}
+                {% set ns.lines = ns.lines + [key_str ~ ',' ~ final_map[key_str]] %}
               {% endif %}
             {% endfor %}
             {{ ns.lines | join('\n') }}
+          # For the helper the dashboard reads. to_json, matching the other writer of
+          # this helper — tojson spaces its separators, and the helper caps at 255 chars.
+          final_state_map: "{{ final_map | to_json }}"
 
       # Write updated CSV back to file
       - action: shell_command.musiccast_randomization_write
         data:
           scenario: "{{ scenario }}"
           csv_content: "{{ csv_lines }}"
-
-      # Build final state map for helper storage (dashboard visualization)
-      - variables:
-          final_state_map: >
-            {# Rebuild final_map to store in helper (use short codes) #}
-            {% set raw_map = (read_response.stdout | default('{}')) | from_json %}
-            {% set target_key = preset_num | string %}
-            {% if state == 'N' %}
-              {# Remove the key - rebuild dict without target_key #}
-              {% set ns = namespace(result={}) %}
-              {% for k, v in raw_map.items() %}
-                {% if k != target_key %}
-                  {% set ns.result = ns.result | combine({k: v}) %}
-                {% endif %}
-              {% endfor %}
-              {{ ns.result | tojson }}
-            {% else %}
-              {{ (raw_map | combine({target_key: state})) | tojson }}
-            {% endif %}
 
       # Refresh locks sensor (reads all CSV files — covers all scenarios)
       - action: homeassistant.update_entity
@@ -535,7 +867,7 @@ script:
       # Update active state helper only when this scenario is currently active
       - if:
           - condition: template
-            value_template: "{{ scenario == states('input_text.active_scenario') }}"
+            value_template: "{{ scenario == states('input_text.musiccast_active_scenario') }}"
         then:
           - action: input_text.set_value
             target:
@@ -563,11 +895,16 @@ script:
           scenario: "{{ scenario }}"
         response_variable: read_response
 
-      # Determine next state: L→N, X→N, N→X (using short codes)
+      - variables:
+          code_normal: 'N'
+          code_locked: 'L'
+          code_excluded: 'X'
+
+      # Determine next state: locked or excluded → normal, normal → excluded
       - variables:
           state_map: "{{ ((read_response.stdout | default('{}')) | from_json) if (read_response.stdout | default('{}')) != '' else {} }}"
-          current_state: "{{ state_map.get(preset_num | string, 'N') }}"
-          next_state: "{% if current_state in ('L', 'X') %}N{% else %}X{% endif %}"
+          current_state: "{{ state_map.get(preset_num | string, code_normal) }}"
+          next_state: "{% if current_state in (code_locked, code_excluded) %}{{ code_normal }}{% else %}{{ code_excluded }}{% endif %}"
 
       # Call set_favorite_state script with short code
       - action: script.musiccast_set_favorite_state
@@ -596,22 +933,26 @@ script:
           scenario: "{{ scenario }}"
         response_variable: read_response
 
-      # Determine next state and find any existing lock (state code 'L')
+      - variables:
+          code_normal: 'N'
+          code_locked: 'L'
+
+      # Determine next state and find any existing lock
       - variables:
           state_map: "{{ ((read_response.stdout | default('{}')) | from_json) if (read_response.stdout | default('{}')) != '' else {} }}"
-          current_state: "{{ state_map.get(preset_num | string, 'N') }}"
-          next_state: "{% if current_state == 'L' %}N{% else %}L{% endif %}"
+          current_state: "{{ state_map.get(preset_num | string, code_normal) }}"
+          next_state: "{% if current_state == code_locked %}{{ code_normal }}{% else %}{{ code_locked }}{% endif %}"
           existing_lock: >
             {%- set ns = namespace(lock_num=0) -%}
             {%- for k, v in state_map.items() -%}
-            {%- if v == 'L' -%}{%- set ns.lock_num = k | int -%}{%- endif -%}
+            {%- if v == code_locked -%}{%- set ns.lock_num = k | int -%}{%- endif -%}
             {%- endfor -%}
             {{ ns.lock_num }}
 
       # If locking and different preset already locked, unlock it first
       - if:
           - condition: template
-            value_template: "{{ next_state == 'L' and existing_lock > 0 and existing_lock != preset_num | int }}"
+            value_template: "{{ next_state == code_locked and existing_lock > 0 and existing_lock != preset_num | int }}"
         then:
           - action: script.musiccast_set_favorite_state
             data:
@@ -625,45 +966,6 @@ script:
           scenario: "{{ scenario }}"
           preset_num: "{{ preset_num }}"
           state: "{{ next_state }}"
-
-  # Test script: Write and read randomization state (hard-coded data)
-  # -------------------------------------------------------
-  debug_musiccast_randomization_io:
-    alias: "MusicCast: Test Randomization I/O"
-    description: "Test shell commands with hard-coded data (bypass template issues)"
-    mode: single
-    sequence:
-      # Step 1: Write hard-coded CSV data to file
-      - action: shell_command.musiccast_randomization_write
-        data:
-          scenario: "test"
-          csv_content: "1,excluded\n2,locked\n4,normal"
-        response_variable: write_response
-
-      - action: persistent_notification.create
-        data:
-          title: "TEST: Write Response"
-          message: "stdout=[{{ write_response.stdout }}]\nstderr=[{{ write_response.stderr | default('') }}]"
-
-      # Step 2: Read it back
-      - action: shell_command.musiccast_randomization_read
-        data:
-          scenario: "test"
-        response_variable: read_response
-
-      - action: persistent_notification.create
-        data:
-          title: "TEST: Read Response (Raw)"
-          message: "stdout=[{{ read_response.stdout }}]\nstderr=[{{ read_response.stderr | default('') }}]"
-
-      # Step 3: Parse and display
-      - variables:
-          parsed: "{{ ((read_response.stdout | default('{}')) | from_json) if (read_response.stdout | default('{}')) != '' else {} }}"
-
-      - action: persistent_notification.create
-        data:
-          title: "TEST: Parsed Data"
-          message: "{{ parsed }}"
 
 # ================================================================
 # SENSOR: Randomization locks (one sensor covers all scenarios)
@@ -682,7 +984,7 @@ command_line:
             try:
                 for line in open(f):
                     parts = line.strip().split(',')
-                    if len(parts) == 2 and parts[1].strip() == 'L':
+                    if len(parts) == 2 and parts[1].strip() == 'L':   # code_locked — see the header; a shell string takes no variable
                         lock_num = int(parts[0].strip())
                         break
             except Exception:
@@ -694,6 +996,10 @@ command_line:
       json_attributes:
         - locks
       value_template: "{{ value_json.locks | length }}"
+      # As close to "never" as command_line allows: presets_*.csv changes only when a favorite
+      # is locked or excluded from here, and those scripts refresh this sensor with
+      # homeassistant.update_entity. media_players.yaml anchors the same value and explains it
+      # in full; YAML anchors do not cross files, so this one is written out.
       scan_interval: 86400
       # Reads all presets_*.csv files and finds locked preset per scenario
       # Access via: state_attr('sensor.musiccast_randomization_locks', 'locks').get(scenario, 0)
@@ -707,7 +1013,7 @@ automation:
     alias: MusicCast Refresh Master Presets
     triggers:
       - trigger: state
-        entity_id: input_text.active_scenario
+        entity_id: input_text.musiccast_active_scenario
     actions:
       # Redundant in normal use (all presets already loaded), but re-fetches
       # in case device presets changed since last scan
@@ -717,7 +1023,7 @@ automation:
       # Load randomization state for the newly active scenario
       - action: shell_command.musiccast_randomization_read
         data:
-          scenario: "{{ states('input_text.active_scenario') }}"
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
         response_variable: rand_response
       - variables:
           rand_state: "{{ (rand_response.stdout | default('{}')) | from_json if (rand_response.stdout | default('{}')) != '' else {} }}"

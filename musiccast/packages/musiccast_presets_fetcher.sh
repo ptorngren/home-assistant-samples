@@ -6,7 +6,7 @@
 # Reads media_players.csv, curls getPresetInfo for each player in
 # parallel, outputs JSON keyed by entity_id.
 #
-# Output: {"presets": {"media_player.bastu": [...], ...}}
+# Output: {"presets": {"media_player.kitchen": [...], ...}}
 # Used by: command_line sensor.musiccast_media_player_presets
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"

@@ -1,10 +1,14 @@
 # MusicCast Multi-Room Audio Control for Home Assistant
 
-A Home Assistant package for multi-room audio using Yamaha MusicCast native favorites. Define named scenarios for different listening contexts, link players on demand, and let the system randomize your preset music — all from a dashboard, without touching YAML.
+A Home Assistant package for multi-room audio using Yamaha MusicCast native favorites. It does two things: it gives you named scenarios — tap one to start the right music, on the right players, at the right volumes — and it keeps those scenarios alive, because MusicCast on its own does not.
 
-**What you get:** A dashboard with scenario buttons. Tap a scenario to start music on the right players at the right volumes. Long-press to save the current group and volumes. The system is entirely set up in the UI — adding scenarios, managing players, tuning randomization.
+**The orchestration.** Define scenarios for different listening contexts, link players on demand, and let the system randomize your preset music — all from a dashboard, without touching YAML. Long-press a scenario to save the current group and volumes. Everything is set up in the UI: adding scenarios, managing players, tuning randomization.
 
-> **Note:** This is not a replacement for the MusicCast app. It extends it with convenient controls from within Home Assistant to enable automations — you can still use the MusicCast app to manage your rooms, favorites, and routines.
+**The reliability half, which is why the package is as large as it is.** MusicCast groups come apart in specific, repeatable ways: a player drops out mid-playback; a device powers off without dissolving the group it was in; a returning device stays invisible for about ten minutes; a Net Radio favorite drifts from the station it actually plays; playback stops on its own when a stream ends, leaving a scenario reporting itself active over a silent house. Roughly half of what this package does is absorbing those, and each one is documented in [Known Limitations](#known-limitations) with what the package does about it.
+
+⚠️ **The timing numbers that ship with this package are observations from one house, not constants.** How long a group takes to build, how long a player takes to report itself accurately, and how long a stream takes to start all vary with wiring — wired, WiFi and powerline behave very differently — and with how many players you have, their generation, and what else is on the network at that moment. A player that rejoins in 2 seconds here may take 20 elsewhere. That is why the Stability settings are exposed instead of hard-coded: the tuning surface is a feature of the problem, not clutter. Start with the defaults and change them if your house disagrees.
+
+> **Note:** This is not a replacement for the MusicCast app — you can still use it to manage rooms, favorites and routines, and presets must be maintained there. What this adds is automation and, in practice, speed: the MusicCast app is slow to link groups and often fails at it, while Home Assistant does the same job faster and more reliably, using the same native linking mechanism.
 
 ## TL;DR – Quick Start
 
@@ -29,11 +33,50 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 
 **Now Playing** — Your daily driver. Scenario buttons show active state, master player, and current source. Activate a scenario, re-randomize its preset, or save the current group and volumes. Below the scenarios: a live media player card for the active master player, and a table of presets for the current scenario with lock/exclude controls.
 
-**Players** — Link or unlink players to the active scenario. Linked players follow the master; unlinking also turns the player off. Changes take effect immediately without restarting the scenario.
+**Players** — Link or unlink players to the active scenario. Linked players follow the master; unlinking leaves the player on and playing by itself. Hold to unlink *and* power it off. Changes take effect immediately without restarting the scenario.
 
-**Settings** — Scenario and preset management. Create, edit, or delete scenarios. See which presets are loaded on each player, including empty slots. Duplicate presets are highlighted.
+**Settings** — Scenario and preset management. Create, edit, or delete scenarios. See which presets are loaded on each player, including empty slots. Duplicate presets are highlighted. Also holds the **Stability** controls (see below).
 
 **Discovery** — Network scan to resolve player IP addresses. Run once after initial setup and after adding new devices.
+
+**Guide** — In-dashboard help: what every tap, double-tap and hold does in each view, what the colours and badges mean, and what each Stability setting is for.
+
+### Auto-Recovery
+
+A playing scenario can be disturbed from outside Home Assistant in two ways, and **Auto-Recovery** (toggle in the Settings view) handles both.
+
+**A player drops out of the group** — a device or network hiccup. The system rejoins it to its scenario automatically and keeps the current source, with no re-randomize.
+
+**Playback stops on its own** — most often an internet radio stream ending, which leaves the player paused with the group still intact. Without this, the scenario goes on reporting itself active while the house is silent. The system presses play again on the master.
+
+Either way, a popup with an **Undo** button appears on any open dashboard afterwards, in case the change was deliberate — you moved a speaker to another group in the MusicCast app, or stopped the music there. Undo reverses exactly what was done: a rejoined player is removed again and the scenario cleared; resumed playback is paused again, leaving the group alone. If the recovery *fails* you get a notification instead of a popup — it waits until you acknowledge it, so it can't be missed while no dashboard is open.
+
+A pause or stop you make yourself is never overridden. The package distinguishes a change made through Home Assistant — the dashboard, an automation, a script — from one the device made on its own, and only acts on the latter.
+
+If Auto-Recovery is off, or a player can't be recovered, the scenario clears and the dashboard shows no active scenario. To get it back:
+- **Single-tap the scenario** — restores it: rejoins the dropped players and keeps the source playing, with no new preset. Double-tap instead for a fresh randomized start.
+- **Tap a dropped player** in the Players view — relinks just that one player to the still-playing master.
+
+**Why so many timing settings?** Because MusicCast is timing-sensitive and the timings are not universal. Building a distribution group, reporting a state change back to Home Assistant, and starting a stream all take a variable amount of time, and how much depends on the environment: wired versus WiFi versus powerline, how many players are in the group, which generation the devices are, and what else is on the network at that moment. A player that rejoins in two seconds here may take twenty somewhere else.
+
+So every number shipped below is **an observation from one house, not a constant** — taken in an installation of around twenty MusicCast devices reachable over WiFi and powerline, on its largest scenario, which groups seven of them. A smaller installation, or one entirely on wired ethernet, will likely need lower values; a busier or slower network, higher ones. Expect to tune them. Each setting's description says which symptom means "raise this", so the tuning is diagnosable rather than guesswork: a player left silent after a recovery means one value is too low, a recovery that reports failure while the room is audibly fine means another is.
+
+Tuning is in the Settings → **Stability** block, which is split into two cards: **Timings & Limits**, which always applies, and **Recovery**, which only matters while Auto-recover is on and dims when it is off.
+
+The **Recovery** labels drop the word *recovery* because the card supplies it: **Max attempts** (how many times to retry a stubborn player before giving up), **Recheck after** (how long to wait before checking the fix landed — also how long playback must stay stopped before a stop counts as real rather than a blip between tracks), **Fix silence after** (how long a player must sit quiet, while the master still reports playing and the player is still linked to it, before that counts as a fault worth fixing — the wait *before* acting, where Recheck after is the wait *after*) **Re-link after** and **Check re-link after** (a silent scenario is first fixed by rebuilding the link — unlinking the players and linking them straight back, leaving the master alone so a playlist keeps its place; the first is the pause between unlink and link, the second is how long to let it settle before judging, since players do not return together and judging early falls back to restarting the station for nothing), and **Close popup after** (how long the **Undo** popup stays on screen; 0 for no popup at all, so recoveries are accepted silently, which is what you want once you trust them — a recovery that *fails* raises a notification regardless). The heading also covers a read-only status line showing the last scenario, the favorite it would restore, and how many recoveries are currently failing — counted per scenario and per player, since a player that recovers successfully drops out of the count and activating a scenario clears it.
+
+**Timings & Limits** holds the settings that apply whether or not Auto-recover is on:
+
+- **Settle between steps** — the unit the waits between grouping steps are expressed in; unjoin, join and stop each wait a documented multiple of it. A device does not report its own new role fast enough to wait on, so these are deliberate blind waits. Raise it on slower hardware.
+- **Trust dropout after** — how long a player must be *absent from the group* before that counts as a real dropout. A player that comes straight back cancels the wait, so only persistent absences reach it. Distinct from **Fix silence after**, which watches a member that is still enrolled but has gone quiet: this one watches membership, that one watches sound.
+- **Wait at most** — a ceiling on the waits that watch for devices to confirm a group or power change, not a delay. Operations return as soon as the devices report, and only spend this when one is slow or gone. It applies per wait, so a script with two waits can spend it twice in the worst case.
+- **Drop scenario lock after** — a safety net rather than a timing parameter. While the package is rebuilding a group it raises a lock that stands down drop detection, the volume sync and the caption check; if the script holding it dies part-way the lock would otherwise stay up silently and the package would stop noticing faults. This releases it and logs a warning. It must exceed the longest scenario rebuild your house performs — raise it if it ever fires during a real activation.
+- **Debug logging** — diagnostic logging, off in normal use. Worth turning on when investigating why a scenario misbehaved: auto-recovery heals some faults within seconds, so the only trace of an incident can otherwise be the single line saying it was fixed.
+
+and two more that are deliberately **not** recovery settings:
+
+- **Trust players after** — set too short and two things go wrong with no drop involved: the favorite indicator goes dark seconds after a scenario is tapped, and member volumes drift off the scenario's. A player reports its new source and volume up to ~10 s *after* it starts playing, and until then what it says about itself still describes the previous scenario. This is how long the package waits, from the moment playback starts, before believing players again (0 = believe them immediately). It gates the volume sync and the caption check as well as drop detection, so it stays in effect with Auto-Recovery off.
+- **Max volume** — a ceiling on the volumes the package sets itself, i.e. scenario volumes and members following the master (0% = off, no cap). Volumes you set by hand are never capped: any player can be turned above the ceiling manually, but a member following a master above it stops at the ceiling.
 
 ---
 
@@ -113,6 +156,7 @@ config/
     └── musiccast/
         ├── orchestrator.yaml
         ├── mixer.yaml
+        ├── stabilizer.yaml
         ├── media_players.yaml
         ├── musiccast_local.yaml        ← put site-specific automations here
         ├── scenario_persistor.sh
@@ -150,6 +194,9 @@ Open the **Discovery** view in the MusicCast dashboard:
 2. Tap **Resolve Entity IPs**
 3. Wait for the scan to complete (~15 seconds for a narrow range, up to 60s for full subnet)
 4. Review matched vs unmatched players
+5. Reload **Groups + Automations** (Developer Tools → YAML). No restart required.
+
+Step 5 is not optional: the scan also rewrites the player list that `group.musiccast_players` and the automation triggers are built from, and those are only re-read on reload.
 
 The scan writes `data/media_players.csv` with `ip=entity_id` entries. All playback scripts use this file for IP lookups. Re-run whenever you add new devices or your network DHCP assignments change.
 
@@ -178,7 +225,7 @@ The main view. Shows the active scenario with a now-playing card at the top, fol
 
 **What you see:**
 - **Now-playing card** — Active scenario name, current preset title, and playback controls
-- **Scenario buttons** — One button per scenario; tap to activate, long-press to save current group and volumes, hold to exclude from randomization
+- **Scenario buttons** — One button per scenario; tap to activate (or restore a dropped scenario, keeping the source — see Auto-Recovery), double-tap to re-randomize the preset, hold to save the current group and volumes
 
 ### Players
 
@@ -203,9 +250,10 @@ The setup view. Shows all scenarios and all players in a grid, with the preset l
 <img src="docs/Setup.jpg" width="20%" alt="Settings">
 
 **What you see:**
+- **Stability** — Toggle auto-rejoin, tune the retry cap and the waits, cap the volumes the package applies, and see the last scenario, its favorite, and any currently failing rejoins (see Auto-Recovery above)
 - **Scenarios grid** — Tap to edit, hold to delete; tap the header card to create a new scenario
-- **Players grid** — Tap a player to view its presets; double-tap to refresh all presets; hold to exclude/include from the active player pool
-- **Players header card** — Refresh all presets from all devices
+- **Players grid** — Tap a player to view its presets; hold to exclude/include from the active player pool
+- **Players header card** — Tap to refresh all presets from all devices
 - **Preset list** — All preset slots for the selected players, including empty slots. Duplicates are highlighted. Source type is reflected per preset.
 
 ### Network Scan
@@ -215,7 +263,7 @@ Admin view for discovering player IPs on the local network. Run once during setu
 <img src="docs/Scan.jpg" width="20%" alt="Network Scan">
 
 **What you see:**
-- **IP range sliders** — Set the scan range (typically the full subnet, e.g. 192.168.1.1–254)
+- **Subnet + IP range sliders** — Set the network prefix (blank defaults to `192.168.1`; use e.g. `10.0.0` on another network) and the octet range to scan (typically the full subnet, 1–254)
 - **Matched devices** — Players found at their expected IPs, mapped to HA entity IDs
 - **Unmatched devices** — Players found on the network but not matched to a known HA entity (network name doesn't match the friendly name), or players where no IP was detected (e.g. Zone 2 of a multi-zone AVR, which shares its parent device's IP)
 
@@ -232,7 +280,7 @@ Put all site-specific automations in `musiccast_local.yaml`. The package ships w
 ```yaml
 conditions:
   - condition: template
-    value_template: "{{ states('input_text.active_scenario') != '' }}"
+    value_template: "{{ states('input_text.musiccast_active_scenario') != '' }}"
 ```
 
 #### Check if a specific player is in the active group
@@ -241,7 +289,7 @@ conditions:
 conditions:
   - condition: template
     value_template: >
-      {% set scenario = states('input_text.active_scenario') %}
+      {% set scenario = states('input_text.musiccast_active_scenario') %}
       {% set players = state_attr('sensor.musiccast_scenarios', 'scenarios')[scenario]['players'] %}
       {{ 'media_player.my_zone' in players }}
 ```
@@ -252,7 +300,7 @@ conditions:
 actions:
   - action: script.musiccast_scenario_toggle
     data:
-      scenario: "{{ states('input_text.active_scenario') }}"
+      scenario: "{{ states('input_text.musiccast_active_scenario') }}"
 ```
 
 ### Overlay Players
@@ -264,13 +312,13 @@ An overlay player is joined to a playing scenario on the fly by an automation, w
 
 The shipped example (`musiccast_local.yaml`) links a patio speaker to the playing kitchen master when the kitchen door stays open, and turns it off again after the door closes:
 
-- **Kitchen door open → patio overlay ON** — triggers when the door has been open for a configurable delay, or when a kitchen-mastered scenario starts while the door is already open. Conditions: the active scenario's master is the kitchen player (dynamic check — no scenario names in code), the patio player isn't already linked, and an optional outdoor temperature gate passes. The overlay joins at the master's current volume scaled by the volume factor (below), waits for the master to be powered on first, verifies the join and retries once, and aborts cleanly if the door closes meanwhile.
+- **Kitchen door open → patio overlay ON** — triggers when the door has been open for a configurable delay, when a kitchen-mastered scenario starts while the door is already open, or when the patio lights are turned on with the door open and music playing. Conditions: the active scenario's master is the kitchen player (dynamic check — no scenario names in code), the patio player isn't already linked, and the intent gate passes: outdoor temperature above the threshold **or** patio lights on (the lights only turn on by deliberate action, so they signal someone is out there despite the cold — e.g. at the grill). The overlay joins at the master's current volume scaled by the volume factor (below), waits for the master to be powered on first, verifies the join and retries once, and aborts cleanly if the door closes meanwhile.
 - **Kitchen door closed → patio music OFF** — unlinks and turns off the patio player after the door has been closed for a configurable delay. (Unlink before power-off matters: turning off a linked group member alone leaves it muted but still registered in the master's group.)
 
 Helpers (sliders; the first three use **0 = disabled**, matching the garage music timers):
 - **Patio music start delay** (seconds) — how long the door must stay open before linking. 0 disables the overlay entirely.
 - **Patio music stop delay** (seconds) — how long the door must stay closed before turn-off. 0 disables auto-off.
-- **Patio temperature threshold** (°C) — minimum outdoor temperature for linking. 0 disables the temperature gate.
+- **Patio temperature threshold** (°C) — minimum outdoor temperature for linking; overridden by the patio lights being on. 0 disables the temperature gate.
 - **Patio volume factor** (0.5–2.0, neutral 1.0) — multiplier applied to the master's volume when the overlay joins, compensating for different amplifier/speaker sensitivity (Home Assistant's 0–1 volume scale is percent-of-device-range, not loudness). The ratio-based volume sync preserves the factor while linked. Alternative: cap **Max Volume** on the overlay device in the MusicCast app, which rescales what 0–1 means for that device.
 
 ### Excluding Players
@@ -302,8 +350,6 @@ Here's how I use it day-to-day. The scenarios are set up around how we actually 
 
 **Changing the mood** — If the current preset isn't right, I re-randomize or pick directly from the preset list. The randomization is a key part of the value — the MusicCast app's routines are locked to a single source, which gets repetitive. Here, net radio stations and Spotify artist playlists saved as favorites give a good mix without having to think about it.
 
-Furthermore, the MusicCast app is slow and often fails to link groups. For some reason, HA does the same job faster and more reliably — still using the native MusicCast linking mechanism.
-
 ---
 
 ## Known Limitations
@@ -318,7 +364,11 @@ The Players view sorts alphabetically but not locale-aware. Swedish characters �
 <details>
 <summary><strong>Long-pressing a linked player in the Players view deactivates the scenario</strong></summary>
 
-Long-pressing a player tile in the Players view unlinks it and powers it off. The power-off is asynchronous — the device goes offline after the HA action completes — and HA interprets this the same way it would if the device were powered off externally via the MusicCast app: the scenario is no longer active. For scenario management, use single-tap to link/unlink players while keeping the scenario active; reserve long-press for when you intentionally want to remove a player from playback entirely.
+Long-pressing a player tile in the Players view unlinks it and powers it off, and ends the scenario. That is deliberate on both counts: the package raises its guard for the duration, so the unlink is *not* mistaken for a device dropping out and auto-recovery leaves it alone, and it then clears the scenario itself. Without the clear, the scenario would still list the player it no longer has, and the next group event would rejoin it.
+
+Only the player you held is powered off. Hold a member and the other rooms play on; hold the **master** and they stay powered on but fall silent, having lost the source they were following — to switch everything off, tap the Scenarios header in Now Playing, or toggle the scenario off.
+
+For scenario management, use single-tap to link/unlink players while keeping the scenario active; reserve long-press for when you intentionally want to remove a player from playback entirely.
 
 </details>
 
@@ -332,30 +382,115 @@ You cannot add, delete, or rename presets from HA. The package reads and plays t
 <details>
 <summary><strong>Scenarios sharing a master player share that master's preset pool</strong></summary>
 
-Two scenarios with the same master player will see the same raw presets, though their lock/exclude states are independent per scenario.
+Two scenarios with the same master player will see the same raw presets, though their lock/exclude states are independent per scenario. Use those per-scenario states to shape what each one plays; if two scenarios need genuinely separate music, give them different masters.
 
 </details>
 
 <details>
 <summary><strong>Zone 2 players cannot be resolved by network scan</strong></summary>
 
-Zone 2 players share their parent device's IP address. They work for playback control but cannot be fetched for presets directly.
+Zone 2 players share their parent device's IP address. They work for playback control but cannot be fetched for presets directly. Use the parent device as the scenario master — a Zone 2 player works as a linked member, just not as the player a scenario draws its presets from.
 
 </details>
 
 <details>
 <summary><strong>Spotify playlist switches are not detected</strong></summary>
 
-The media player reflects what is currently playing, but MusicCast provides no preset metadata to HA. If the user switches to a different Spotify playlist in the MusicCast app, HA cannot detect that the active preset has changed — the scenario header card in the dashboard may then show a stale or incorrect now-playing state.
+The media player reflects what is currently playing, but MusicCast provides no preset metadata to HA. If the Spotify content changes, HA cannot detect that the active preset has changed — the scenario header card in the dashboard may then show a stale or incorrect now-playing state. Within Spotify a content change and an ordinary track change look identical to Home Assistant, which is why the stale-caption check deliberately ignores both: acting on them would blank the caption on every song.
 
+**Two things can cause this, and the second is not obvious.** The first is someone switching playlist in the MusicCast app. The second is **Auto-Recovery's own resume**: when playback stops by itself, the package presses play on the master, and on a Spotify source that resumes whatever Spotify's session decides to serve next — often related content rather than the preset originally recalled. The music continues, but it is no longer the favorite the dashboard names.
 
+Playback itself is unaffected. Re-randomize or re-activate the scenario to put Home Assistant back in charge of the source, which replaces the stale caption.
 
 </details>
 
 <details>
-<summary><strong>Spotify cannot be cast directly to MusicCast</strong></summary>
+<summary><strong>Favorites started from the MusicCast app are not recorded by HA</strong></summary>
 
-There is no official Spotify integration for HA that supports MusicCast. The workaround is saving Spotify playlists, artists, or "artist radio" as MusicCast favorites and playing them via presets, which is how this package uses them.
+When a scenario's source is chosen in the MusicCast app rather than through HA (for example, selecting a Net Radio station or favorite directly on the device), HA has no preset metadata for it — the active-source caption/URI stay blank. Playback itself is unaffected, but the dashboard cannot highlight which favorite is playing, and any feature that depends on knowing the source (such as restoring the favorite after a dropout auto-recovery) has nothing to restore. The Spotify-playlist case above is a specific instance of this.
+
+Start a favorite from the dashboard whenever you want the preset highlighted and auto-recovery able to restore it after a dropout. The MusicCast app stays fine for anything Home Assistant does not need to track.
+
+</details>
+
+<details>
+<summary><strong>Linking players by hand doesn't set the scenario, and identical scenarios can't be told apart</strong></summary>
+
+Scenarios are detected from the shape of the group: which players are linked to which master. Two consequences follow.
+
+Linking players by hand — in the Players view or the MusicCast app — starts the music but doesn't set the scenario, even if you happen to recreate a scenario's exact group. The dashboard will show players linked and playing with no scenario active. **Tap the scenario to set it**; that's the intended way, it takes one tap, and unlike guessing from group shape it says unambiguously which scenario you meant. Hand-linking restores the sound, tapping the scenario restores the scenario.
+
+If two scenarios have the same master and the same members, detection cannot distinguish them and always picks the one defined first. Both still work when you tap them — each keeps its own volumes and favorites — but after a dropout clears the scenario, or after a Home Assistant restart, the group may be identified as the other one, and volumes and favorites will then come from it. If you want the same rooms at two different volume levels, expect to tap the one you want rather than rely on it being recognised.
+
+</details>
+
+<details>
+<summary><strong>A player that just came back online can be left out of a scenario for a few minutes</strong></summary>
+
+Activating a scenario skips any player Home Assistant currently considers unavailable, so one offline player can't fail the whole scenario. The catch is how quickly HA notices a player returning. Once a MusicCast device has failed, the integration only retries it on a fixed cycle of roughly ten minutes — measured at 10 min 3 s, with no variation. Until that retry lands the player stays unavailable and gets skipped, even though the MusicCast app already shows it, because the app discovers devices on the network directly. It also can't announce itself: MusicCast devices push their state to a subscribed controller, and that subscription is lost when the device power-cycles.
+
+So after plugging a player back in, rebooting it, or restoring its network, expect a wait before it joins scenarios again. Either activate the scenario once more a few minutes later, or force HA to look now: call `homeassistant.update_entity` on that player from Developer Tools → Actions, or reload the Yamaha MusicCast integration.
+
+</details>
+
+<details>
+<summary><strong>A Net Radio favorite can drift from the station it actually plays</strong></summary>
+
+A Yamaha Net Radio preset doesn't store a stream URL. It stores a reference into the internet-radio directory, plus a label captured when you saved the favorite. If the broadcaster re-points that channel — or the directory reassigns it — the preset plays a different station under the old name, and nothing in the API reports the change. Seen in practice: a preset labelled "1.FM - Slow Jamz" that plays "1.FM - 90s RnB" on every attempt, manual taps included, on every device holding that favorite.
+
+The package detects this after playback settles by comparing the master's reported station against the caption, and shows **the station that is actually streaming**, with a warning in the log naming both. Because the corrected caption no longer matches any stored preset label, no row in the preset list is highlighted — which is honest: what's playing genuinely isn't the preset's label. To fix it at source, re-save the favorite on the device from the current directory entry, then refresh the preset cache (tap the **Media Players** header in Settings). If the station has disappeared from the directory entirely, replace the preset or exclude it from randomization.
+
+</details>
+
+<details>
+<summary><strong>A Spotify favorite can stop working while the playlist behind it still plays</strong></summary>
+
+A favorite is recalled by slot number, and for Spotify that slot behaves as a fixed pointer to a playlist. The pointer can stop resolving while the playlist itself is perfectly healthy, and the failure is silent: the device accepts the recall, selects the Spotify input, stops whatever was playing, and never starts. Nothing reports an error — the scenario just goes quiet.
+
+**Re-saving the favorite fixes it.** Re-save it from a live source in the MusicCast app, then refresh the preset cache (tap the **Media Players** header in Settings). A slot that would not start at all recalls normally afterwards, usually within a second.
+
+⚠️ **Why the pointer stops resolving is not established.** The likeliest explanation is that the playlist it refers to was retired, replaced, or re-created, so the reference saved at the time no longer points at anything — that would also explain the playlist still playing when started from the Spotify app, since that starts the current one. But nothing in the API can confirm it: preset metadata carries no Spotify identity, so there is no stored reference to inspect, and re-saving repairs a changed reference and a corrupted entry equally well. Treat the cause as a working theory and the remedy as reliable.
+
+**This cannot be detected automatically, unlike the Net Radio drift above.** Net Radio reports the station in `media_artist`, so a mismatch against the stored label is visible and the caption can be corrected. Spotify reports the *track*, which says nothing about which playlist it came from — there is nothing to compare, so the package cannot flag it. Expect to diagnose this one by hand.
+
+**Diagnosing it — each step rules something out:**
+
+1. **Tap the favorite directly in the dashboard.** If it plays, the scenario path had a dropped request rather than a broken favorite, and nothing needs re-saving.
+2. **Try a different favorite on the same player.** If others start normally, the player and its Spotify session are fine and the fault is specific to this favorite.
+3. **Start the same playlist from the Spotify app.** If it plays there, the content is alive and only the stored reference is broken.
+
+A favorite that fails the first two but passes the third is the case described here — re-save it.
+
+</details>
+
+<details>
+<summary><strong>The Auto-Recovery Undo popup only appears on an open dashboard</strong></summary>
+
+The "player rejoined — Undo" popup is shown via browser_mod, so it only appears on a device that currently has a dashboard open in the foreground. A phone with the app backgrounded won't show it. The rejoin itself still happens and is logged (`MusicCast:` prefix); the popup is a convenience for undoing an unwanted rejoin, not a required step. If it's missed, the same correction is available by tapping the rejoined player to unlink it.
+
+This applies only to the Undo popup. A *failed* rejoin is reported as a persistent notification precisely because it can't afford to be missed: notifications wait until acknowledged and don't depend on a dashboard being open.
+
+</details>
+
+<details>
+<summary><strong>Sources are capped at 40 per player, and maintained only in the MusicCast app</strong></summary>
+
+Everything this package plays is a favorite stored on the device, so the device's own limits are the package's limits. Each player holds **at most 40**, and they can only be created, edited or reordered in the MusicCast app — there is no way to add one from Home Assistant, and no way to copy a set between players.
+
+**Spotify favorites appear to be capped lower than 40**, separately from the overall limit. Saving one past that point produces an error in the MusicCast app. The exact number is not established here — it was seen once in practice and has not been measured — so treat it as "fewer than 40" rather than a specific figure.
+
+Both are consequences of playing by preset slot rather than by content reference. They would not apply to a package that could hand a player an arbitrary URI; see the roadmap for why that is a substantial rewrite rather than a setting.
+
+</details>
+
+<details>
+<summary><strong>Arbitrary Spotify content cannot be started from Home Assistant</strong></summary>
+
+MusicCast devices are Spotify Connect receivers — that is how Spotify content is saved and played on them, and the device pulls the stream from Spotify itself. What this package cannot do is hand a *specific* Spotify URI to a player from Home Assistant: the device API plays a favorite by slot (`presets:N`), and preset metadata carries no Spotify identity, so there is nothing to address.
+
+Spotify content is therefore used exactly like every other source — saved as a favorite in the MusicCast app, then played by slot. Starting a chosen playlist from Home Assistant would mean transferring a Spotify Connect session to the player, which is a different mechanism from the preset playback this package is built on.
+
+To add new Spotify content, save it as a favorite in the MusicCast app and then refresh the preset cache (tap the **Media Players** header in Settings). It behaves like any other preset from that point on.
 
 </details>
 
@@ -391,6 +526,35 @@ When creating or editing scenarios, the icon field requires typing `mdi:icon-nam
 
 </details>
 
+<details>
+<summary><strong>Music started outside Home Assistant keeps playing when a scenario is activated</strong></summary>
+
+Activating a scenario unlinks every player, which silences anything that was following a master. A player that is its own source keeps playing — so if you started music from the MusicCast app on a player the new scenario does not use, it plays on.
+
+Players the scenario *does* use are taken over: the master's playback is stopped before the new source starts, and members are linked to the master and follow it. So the rule is that Home Assistant does not stop playback it did not start, unless it needs that player for the scenario you just activated.
+
+Switching between scenarios is unaffected either way, because the outgoing scenario is torn down first — and MusicCast-app grouping that happens to match a saved scenario is recognised as that scenario and torn down too.
+
+</details>
+
+<details>
+<summary><strong>Re-saving favorites on a device leaves the dashboard showing the old list</strong></summary>
+
+Presets are cached. If you add, remove or re-save favorites in the MusicCast app, the dashboard's preset list, the Now Playing highlight and manual preset taps keep reading the cached copy until you refresh it by tapping the **Media Players** header in Settings.
+
+Randomization is unaffected — it fetches the list live, so a randomized scenario plays the correct favorite while the dashboard may still show the old one.
+
+</details>
+
+<details>
+<summary><strong>A Net Radio station can take a long time to start</strong></summary>
+
+A player reports `playing` as soon as its input is selected, not when audio arrives. For Net Radio the device still has to reach the station and fill its buffer, and a slow station can take tens of seconds — 34 seconds has been measured. Until the stream arrives the room is silent, the grouped members stay idle, and the dashboard shows the scenario as active.
+
+Nothing is wrong and no action is needed; local sources (server lists, USB) start in a second or two by comparison. If it never starts at all, see *"MusicCast: scenario is silent"* under Troubleshooting.
+
+</details>
+
 ---
 
 ## Troubleshooting
@@ -404,6 +568,34 @@ A trailing space in the device name in the MusicCast app causes the HA integrati
 1. Remove the trailing space from the device name in the MusicCast app
 2. Reload the MusicCast integration in HA (Settings → Devices & Services → Yamaha MusicCast → Reload)
 3. Recreate the entity ID (Settings → Entities → find the entity → edit → regenerate)
+
+</details>
+
+<details>
+<summary><strong>Notification: "MusicCast: scenario could not start"</strong></summary>
+
+The scenario's master player could not be reached, so nothing was started. The message names the player and the state Home Assistant sees it in (`unavailable` or `unknown`). A master must be reachable to host the group at all, so the activation stops rather than failing partway through.
+
+Members are treated differently: an unreachable *member* is skipped with a warning in the log and the scenario starts without it.
+
+**Fix:**
+1. Check the player is powered and on the network — try it in the MusicCast app
+2. If the app reaches it but HA does not, reload the MusicCast integration
+3. If its IP has changed, re-run the network scan (Discovery view)
+
+</details>
+
+<details>
+<summary><strong>Notification: "MusicCast: scenario is silent"</strong></summary>
+
+The preset was accepted by the player but playback never started, so the scenario is active and no room is playing. The message names the preset slot and its caption.
+
+This usually means the favorite has gone invalid — a stored Spotify reference can expire, and the device reports no error when asked to play it. The MusicCast app may refuse the same favorite while the API accepts it.
+
+**Fix:**
+1. Try the scenario again — a stream can simply fail to start once
+2. If it fails again, play the favorite from the MusicCast app to confirm
+3. Re-save it from a live source in the app, then re-run the network scan so the cached preset list picks up the change
 
 </details>
 
@@ -426,25 +618,31 @@ A trailing space in the device name in the MusicCast app causes the HA integrati
 
 MusicCast devices store up to 40 favorites (presets) directly on the hardware. These are net radio stations, Spotify artists/playlists, or other sources you've saved in the MusicCast app. This package uses those presets as its music source.
 
+This is as much a constraint as a choice. The device API plays a favorite by slot, and there is no way to hand a player an arbitrary content reference, so presets are what is addressable — see Known Limitations for what that caps and where sources have to be maintained.
+
 The alternative — server-side streaming via Music Assistant — was removed because:
-- Presets are already curated per-device and per-user in the MusicCast app
+- Presets already exist on the device, so playback needs nothing else running
 - Native playback is more reliable (no server dependency, no stream buffering)
 - Preset management stays in the MC app where users are already familiar with it
 
-Spotify cannot be cast directly to MusicCast from HA — there is no official integration that supports it. The practical solution is saving Spotify playlists, artists, or artist radio as MusicCast favorites, which this package plays via presets. Net radio stations work the same way. This gives good source variety without requiring any streaming server.
+Spotify works the same way: the devices are Spotify Connect receivers, so Spotify playlists, artists and "artist radio" are saved as MusicCast favorites and played by slot, exactly like net radio stations. What this package does not do is start a *chosen* Spotify URI from Home Assistant — see the limitation of that name. The result is good source variety with no streaming server in the path.
 
 </details>
 
 <details>
 <summary><strong>Package Structure</strong></summary>
 
-The package is split across three YAML files by concern:
+The package is split across four YAML files by concern:
 
 **`orchestrator.yaml`** — Scenario management and transport control: create, edit and delete scenarios; link and unlink players; capture and restore volumes; scripts backing the scenario editor; automations for detecting manual player changes.
 
 **`mixer.yaml`** — Playback engine: fetch presets from devices, apply randomization logic (lock/exclude), select and play a preset, track the active scenario's now-playing state.
 
+**`stabilizer.yaml`** — Keeping a playing scenario playing: the detectors that notice a player has dropped out or fallen silent, the recovery scripts they call, their Undo counterparts, the Stability settings that tune them, and the two diagnostics. Separate because it answers to faults rather than to you — nothing in it is triggered by pressing anything. The file boundary is not a dependency boundary, and the file's header says which parts it depends on: scenario detection, the shared guard and the playing-source writers stay in `orchestrator.yaml`.
+
 **`media_players.yaml`** — Discovery and configuration: expose all MusicCast players and their IPs, expose scenario group config (master and members), fetch and cache preset lists, network scan.
+
+Alongside them sits one file that is yours, not the package's:
 
 **`musiccast_local.yaml`** — Site-specific automations. This is the only file you should modify for your own setup. Examples: stop music when a TV turns on, turn off music when the alarm arms, trigger specific scenarios from physical buttons.
 
@@ -457,17 +655,30 @@ The package is split across three YAML files by concern:
 User taps scenario button
         ↓
 script.musiccast_scenario_toggle
-        ├─ Read group from scenario_{id}.csv (master = line 1, members = rest)
-        ├─ Power on master player
-        ├─ Link member players
-        ├─ Apply saved volumes from scenario_{id}.csv
+        ├─ Call script.musiccast_scenario_link
+        │       ├─ Unlink every player from whatever it was in
+        │       ├─ Read group from scenario_{id}.csv (master = line 1, members = rest)
+        │       ├─ Drop members HA cannot reach (join on an unavailable device raises)
+        │       ├─ Stop whatever the master was playing
+        │       └─ Link members onto the master, one at a time
+        ├─ Set input_text.musiccast_active_scenario
         └─ Call script.musiccast_scenario_mixer
                 ├─ Read master IP from sensor.musiccast_player_ips
                 ├─ Fetch presets via HTTP: GET /YamahaExtendedControl/v1/netusb/getPresetInfo
                 ├─ Read randomization state from presets_{id}.csv
                 ├─ Select preset (locked → play that one; else random from non-excluded)
-                └─ Play via media_player.play_media
+                ├─ Record the choice (slot, caption, source type) so the dashboard can show it
+                ├─ Apply saved volumes from scenario_{id}.csv   ← before playback, not after
+                ├─ Play via media_player.play_media
+                ├─ Wait "Trust players after" (input_number.musiccast_activation_settle)
+                └─ Verify the master actually reached 'playing'; warn + notify if it never did
 ```
+
+**Two details in that order are load-bearing.** Volumes are applied **before** `play_media`, not as a
+step of the toggle — a scenario saved loud would otherwise announce itself at the old volume first.
+And the last two steps are what catch a dead favorite: `play_media` and the device's own `recallPreset`
+both report success when a stored favorite has gone dead, and playback simply never starts — so the
+master is checked afterwards rather than trusted.
 
 </details>
 
@@ -492,13 +703,21 @@ All files are plain text and human-readable, but are managed by the system and m
 
 | Entity | Type | Purpose |
 |---|---|---|
-| `input_text.active_scenario` | input_text | ID of the currently active scenario (empty = none) |
-| `sensor.musiccast_scenario_config` | sensor | Scenario metadata: names and icons (from `scenarios.json`) |
+| `input_text.musiccast_active_scenario` | input_text | ID of the currently active scenario (empty = none) |
+| `sensor.musiccast_scenarios_labels` | sensor | Scenario metadata: names and icons (from `scenarios.json`) |
 | `sensor.musiccast_scenarios` | sensor | Scenario group config: master player and members (from CSV files) |
 | `sensor.musiccast_media_players` | sensor | Discovered player → IP mappings (from `media_players.csv`) |
 | `sensor.musiccast_media_player_presets` | sensor | Presets for all players (fetched on demand) |
 | `group.musiccast_players` | group | All active (non-excluded) MusicCast players |
-| `input_boolean.scenario_updating` | input_boolean | True while a scenario script is running (use for automations) |
+| `sensor.musiccast_current_master` | sensor | The master player currently in charge — the active scenario's, or the live group's when no scenario is set. Empty when nothing is grouped |
+| `input_text.musiccast_last_scenario` | input_text | The scenario that was last active. Survives the scenario being cleared, which is what makes tap-to-restore possible |
+| `input_boolean.musiccast_scenario_updating` | input_boolean | Raised while the package is building or tearing down a group, and **held past playback start for "Trust players after"** (`input_number.musiccast_activation_settle`). While it is on, drop detection, the volume sync and the caption check all stand down — check it before reacting to player state in your own automations. ⚠️ It is **dropped automatically** once it has been held for "Drop scenario lock after", so do not rely on a hold of your own outlasting that |
+| `input_boolean.musiccast_activation_in_progress` | input_boolean | Raised for the duration of a scenario activation, so the dashboard can show it is working |
+| `input_boolean.musiccast_auto_recovery` | input_boolean | Master switch for rejoining dropped players and restarting stopped playback. Turn it off to work on a player by hand without the package undoing you |
+| `input_number.musiccast_max_volume` | input_number | Ceiling on volumes the package sets itself (0 = no cap). Manual changes are never capped |
+| `input_number.musiccast_activation_settle` | input_number | "Trust players after" — how long after playback starts before a player's own reports are believed again |
+| `input_number.musiccast_scenario_guard_timeout` | input_number | "Drop scenario lock after" — how long `input_boolean.musiccast_scenario_updating` may stay raised before it is cleared automatically and a warning logged. A safety net for a script that stopped part-way, not a timing parameter: it must exceed the longest scenario rebuild your house performs, so raise it if it ever fires during a real activation |
+| `input_text.musiccast_recovery_attempts` | input_text | Per-player count of consecutive failed recoveries, as JSON. Cleared when a player recovers or a scenario is activated |
 
 </details>
 
@@ -506,7 +725,7 @@ All files are plain text and human-readable, but are managed by the system and m
 <summary><strong>Core Files</strong></summary>
 
 - **Dashboard:** `dashboards/musiccast.yaml`
-- **Core packages:** `packages/musiccast/orchestrator.yaml`, `packages/musiccast/mixer.yaml`, `packages/musiccast/media_players.yaml`
+- **Core packages:** `packages/musiccast/orchestrator.yaml`, `packages/musiccast/mixer.yaml`, `packages/musiccast/stabilizer.yaml`, `packages/musiccast/media_players.yaml`
 - **Site-specific:** `packages/musiccast/musiccast_local.yaml`
 - **Data files:** `packages/musiccast/data/`
 

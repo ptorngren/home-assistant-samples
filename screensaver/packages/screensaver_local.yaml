@@ -118,7 +118,7 @@ script:
           regex_matches: "{{ browser_id | regex_findall(transform_pattern) }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else '' }}"
           charger_location: >
-            {% set mapping = states('input_text.device_charger_locations') | from_json %}
+            {% set mapping = states('input_text.bt_device_charger_locations') | from_json %}
             {{ mapping.get(device_id, 'unknown') }}
             
           # Time-based scenario thresholds for mobile
@@ -178,7 +178,11 @@ script:
         data:
           browser_id: "{{ browser_id }}"
         response_variable: resolved
+      - variables:
+          blank_states: ['', 'None', 'unknown', 'unavailable']
       - choose:
+          # A scenario resolved for this device and hour: toggle it. That one call starts
+          # it, stops it, or switches to it, depending on what is active.
           - conditions:
               - condition: template
                 value_template: "{{ resolved.target_scenario != 'unknown' }}"
@@ -186,6 +190,18 @@ script:
               - action: script.musiccast_scenario_toggle
                 data:
                   scenario: "{{ resolved.target_scenario }}"
+
+          # Nothing resolved — at night the resolver deliberately names no scenario, so a
+          # tap cannot start music. Stopping it stays available: toggle whatever is
+          # actually active, which turns it off. The resolved name cannot be used here,
+          # because toggling a scenario that is not the active one switches to it instead.
+          - conditions:
+              - condition: template
+                value_template: "{{ states('input_text.musiccast_active_scenario') not in blank_states }}"
+            sequence:
+              - action: script.musiccast_scenario_toggle
+                data:
+                  scenario: "{{ states('input_text.musiccast_active_scenario') }}"
 
   screensaver_double_tap:
     alias: "Screensaver: Handle double tap"
@@ -195,16 +211,33 @@ script:
         data:
           browser_id: "{{ browser_id }}"
         response_variable: resolved
+      - variables:
+          blank_states: ['', 'None', 'unknown', 'unavailable']
       - choose:
+          # This device's own scenario is the one playing: re-randomize it.
           - conditions:
               - condition: template
                 value_template: "{{ resolved.target_scenario != 'unknown' }}"
               - condition: template
-                value_template: "{{ states('input_text.active_scenario') == resolved.target_scenario }}"
+                value_template: "{{ states('input_text.musiccast_active_scenario') == resolved.target_scenario }}"
             sequence:
               - action: script.musiccast_scenario_mixer
                 data:
                   scenario: "{{ resolved.target_scenario }}"
+                  force_randomize: true
+
+          # Nothing resolved, so which scenario belongs to this device cannot be checked.
+          # Re-randomizing only changes what an already-playing scenario plays — it never
+          # starts music — so it stays available and acts on whatever is active.
+          - conditions:
+              - condition: template
+                value_template: "{{ resolved.target_scenario == 'unknown' }}"
+              - condition: template
+                value_template: "{{ states('input_text.musiccast_active_scenario') not in blank_states }}"
+            sequence:
+              - action: script.musiccast_scenario_mixer
+                data:
+                  scenario: "{{ states('input_text.musiccast_active_scenario') }}"
                   force_randomize: true
         default: []
 
@@ -334,7 +367,7 @@ automation:
     description: Load the garage MusicCast scenario when the phone is detected in the garage
     triggers:
       - trigger: state
-        entity_id: input_text.device_charger_locations
+        entity_id: input_text.bt_device_charger_locations
     conditions:
       # Fire only when the phone's location NEWLY became 'garage' (was something else before)
       - condition: template
@@ -345,7 +378,7 @@ automation:
           {{ new_map.get(device, '') == 'garage' and old_map.get(device, '') != 'garage' }}
       # Skip if garage is already active — toggle would turn it OFF
       - condition: template
-        value_template: "{{ states('input_text.active_scenario') != 'garage' }}"
+        value_template: "{{ states('input_text.musiccast_active_scenario') != 'garage' }}"
     action:
       - action: script.musiccast_scenario_toggle
         data:

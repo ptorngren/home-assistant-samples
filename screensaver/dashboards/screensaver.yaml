@@ -242,7 +242,7 @@ decluttering_templates:
         # Charger location + battery charge indicator (top right)
         # Combines the detected charger location and the device's battery level as "location:charge%".
         # Both are device-aware via the same Browser ID transform used by the alarm field:
-        #   - location  ← input_text.device_charger_locations mapping (only set while docked on a known charger)
+        #   - location  ← input_text.bt_device_charger_locations mapping (only set while docked on a known charger)
         #   - charge    ← sensor.{device_id}_battery_level (Companion App; shown whenever the sensor has a value)
         # Falls back to whichever is present: "location:84%" (both) / "84%" (no location) / "location" (no battery).
         charger_location: |
@@ -262,7 +262,7 @@ decluttering_templates:
 
             // Read device-to-location JSON mapping from helper
             let location = '';
-            const mappingJson = states['input_text.device_charger_locations']?.state;
+            const mappingJson = states['input_text.bt_device_charger_locations']?.state;
             if (mappingJson) {
               try {
                 const loc = JSON.parse(mappingJson)[mappingKey];
