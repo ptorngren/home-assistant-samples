@@ -137,6 +137,19 @@ shell_command:
 # BT Latest Scan Full sensor is now webhook-triggered template sensor (see template section)
 # Other sensors read from file (fingerprints, location scores, ignored beacons)
 # ------------------------------------------------------------------
+#
+# POLLING — why every command_line sensor here says scan_interval: 86400
+# ------------------------------------------------------------------
+# Each of these sensors reads a file this package writes, and every writer refreshes the
+# sensor it affects with homeassistant.update_entity, which works whatever the interval
+# is. Polling therefore only ever re-runs a command against an unchanged file, and each
+# run spawns a bash plus a python3 to re-read and re-sort the whole file.
+#
+# A day is as close to "never" as this integration allows. command_line has no way to
+# switch polling off — the toggle under an integration's System options exists only for
+# UI/config-flow integrations, not YAML platform entities — and omitting scan_interval
+# selects the 60-second default instead, which is why every sensor here sets it.
+# ------------------------------------------------------------------
 command_line:
   - sensor:
       name: "BT Fingerprint Database File"
@@ -145,8 +158,9 @@ command_line:
       json_attributes:
         - fingerprints
       value_template: "{% if value_json.fingerprints %}ready{% else %}empty{% endif %}"
+      scan_interval: 86400   # effectively never — see POLLING above
       # Reads fingerprints from file and wraps in JSON object for attributes extraction
-      # Runs at HA startup and on YAML reload (no scan_interval to avoid unnecessary polling)
+      # Refreshed by script.bt_write_fingerprints after every write, and at HA startup
       # Dashboard/scripts access via: state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
 
@@ -157,7 +171,9 @@ command_line:
       json_attributes:
         - ignored
       value_template: "{% if value_json.ignored %}{{ value_json.ignored | length }}{% else %}0{% endif %}"
+      scan_interval: 86400   # effectively never — see POLLING above
       # Reads globally excluded beacon MACs from file (supports 100+ beacons)
+      # Refreshed by script.bt_beacon_toggle_global_ignored after every write
       # Stores as JSON array in attributes: state_attr('sensor.bt_ignored_beacons', 'ignored')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
 
@@ -168,7 +184,9 @@ command_line:
       json_attributes:
         - statistics
       value_template: "{% if value_json.statistics %}{{ value_json.statistics | length }}{% else %}0{% endif %}"
+      scan_interval: 86400   # effectively never — see POLLING above
       # Per-beacon RSSI sample history from capture/merge operations (file-backed, unlimited size)
+      # Refreshed by script.bt_record_merge_statistics and script.bt_clear_statistics after every write
       # Format: statistics[].loc + beacons{MAC: [[rssi, timestamp], ...]} — null rssi = beacon absent in that session
       # Dashboard access: state_attr('sensor.bt_merge_statistics', 'statistics')
 
@@ -1906,6 +1924,11 @@ script:
         data:
           json_content: "{{ updated_statistics }}"
 
+      # Refresh sensor to pick up changes
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_merge_statistics
+
       - action: system_log.write
         data:
           message: "Recorded merge statistics for location {{ location_index }}: {{ scan_map | length }} beacons from scan"
@@ -2119,6 +2142,11 @@ script:
     description: "Clear all scan history statistics and refresh sensor"
     sequence:
       - action: shell_command.bt_statistics_clear
+
+      # Refresh sensor to pick up changes
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.bt_merge_statistics
 
       - action: system_log.write
         data:
