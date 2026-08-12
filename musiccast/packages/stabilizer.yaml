@@ -167,7 +167,12 @@ automation:
   # that aborts the script mid-run. The flags then stay raised forever, silently muting
   # drop detection, volume sync and stale-caption detection, and hiding the mini-player.
   # Nothing legitimate holds them this long: the slowest activation is teardown + link +
-  # mixer + the settle (max 30 s), comfortably under two minutes.
+  # mixer + the settle, and a nine-player scenario here holds the lock about 24 s.
+  #
+  # The hold comes from input_number.musiccast_scenario_guard_timeout, because how long a
+  # full rebuild takes depends on how many players the house has and how fast they answer.
+  # Clearing is the safe direction: at worst it costs one spurious detection while nothing
+  # is being changed.
   - id: musiccast_release_stuck_guard
     alias: "MusicCast: Release stuck guard"
     description: "Clear scenario flags left raised by a script that died mid-run."
@@ -178,14 +183,23 @@ automation:
           - input_boolean.musiccast_scenario_updating
           - input_boolean.musiccast_activation_in_progress
         to: 'on'
-        for: "00:02:00"
+        # NOTE: input_number states are float strings ("180.0") — must go through float
+        # before int, or the int filter silently falls back to the default
+        for: "{{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }}"
+    # The favorite check holds the guard legitimately for the length of a full sweep,
+    # which is minutes rather than the seconds any scenario rebuild takes. It is the one
+    # case where a long hold means the script is alive and working, not that it died.
+    conditions:
+      - condition: template
+        value_template: "{{ not is_state('script.musiccast_verify_favorites', 'on') }}"
     actions:
       - action: system_log.write
         data:
           message: >-
-            MusicCast: {{ trigger.entity_id }} was still on 2 minutes after it was raised —
-            a scenario script most likely aborted. Releasing it so recovery and volume sync
-            resume; check the log above for the failing device.
+            MusicCast: {{ trigger.entity_id }} was still on
+            {{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }} s
+            after it was raised — a scenario script most likely aborted. Releasing it so
+            recovery and volume sync resume; check the log above for the failing device.
           level: warning
           logger: musiccast
       - action: input_boolean.turn_off

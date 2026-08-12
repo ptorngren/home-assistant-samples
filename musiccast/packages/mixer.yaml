@@ -64,6 +64,27 @@ input_text:
     name: Randomization State (Active Scenario)
     max: 255
 
+  # The player the favorite check is currently holding, as "entity|power|volume".
+  # Written before the player is powered on and cleared once it is restored, so a run
+  # that is killed rather than aborted leaves the one player it disturbed named here.
+  # The next run restores it before starting. No initial: the value must survive a restart.
+  musiccast_verify_snapshot:
+    name: Favorite Check Snapshot
+    max: 255
+
+  # Slots that failed the favorite check, as "player/slot" separated by spaces, capped
+  # at the helper's length. The full run is in the log; this only feeds the notification.
+  musiccast_verify_failures:
+    name: Favorite Check Failures
+    max: 255
+
+input_boolean:
+  # Raised by a second hold while the check is running. The loops test it between slots
+  # and stop doing work, which lets the run reach its own restore step rather than being
+  # killed part-way through with a player left on and muted.
+  musiccast_verify_abort:
+    name: Abort Favorite Check
+
 # -----------------------------------------------------------------------------
 # TEMPLATE SENSORS
 # -----------------------------------------------------------------------------
@@ -787,6 +808,427 @@ script:
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.musiccast_scenario_updating
+
+  # Favorite check — play every populated preset on every player and report the
+  # slots that never start. Held from the Media Players header card.
+  # ---------------------------------------------------------------------------
+  musiccast_verify_favorites_toggle:
+    alias: "MusicCast Admin: Start or abort the favorite check"
+    mode: single
+    sequence:
+      - if: "{{ is_state('script.musiccast_verify_favorites', 'on') }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.musiccast_verify_abort
+        else:
+          # script.turn_on rather than calling it directly: this script must return
+          # immediately, or it stays busy for the whole run and the second hold —
+          # the one that aborts — is dropped as an overlapping call.
+          - action: script.turn_on
+            target:
+              entity_id: script.musiccast_verify_favorites
+
+  musiccast_verify_favorites:
+    alias: "MusicCast Admin: Verify favorites"
+    description: >-
+      Play every populated preset on every player and report the ones that never start.
+      Powers players on, mutes them, and restores volume and power afterwards. Minutes, not seconds.
+    mode: single
+    fields:
+      player:
+        description: "Limit the check to one player. Omit to check every player."
+        example: media_player.kitchen
+        selector:
+          entity:
+            domain: media_player
+    sequence:
+      # Refuse rather than ask: the run powers players on and off, and there is no
+      # version of that which is safe over music someone is listening to.
+      - if: "{{ states('input_text.musiccast_active_scenario') | trim not in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: musiccast_verify_favorites
+              title: Favorite check not started
+              message: >-
+                A scenario is playing ({{ states('input_text.musiccast_active_scenario') }}).
+                Stop it first — the check powers players on and off.
+          - stop: A scenario is active
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_verify_abort
+
+      # A run that was killed rather than aborted leaves the one player it was
+      # holding named in the snapshot, at volume 0. Give it its volume back and
+      # switch it off before starting.
+      - variables:
+          stale: "{{ states('input_text.musiccast_verify_snapshot') | trim }}"
+
+      - if: "{{ stale | length > 0 and '|' in stale }}"
+        then:
+          - action: media_player.volume_set
+            continue_on_error: true
+            target:
+              entity_id: "{{ stale.split('|')[0] }}"
+            data:
+              volume_level: "{{ stale.split('|')[1] | float(0.2) }}"
+          - action: media_player.turn_off
+            continue_on_error: true
+            target:
+              entity_id: "{{ stale.split('|')[0] }}"
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.musiccast_verify_snapshot
+            data:
+              value: ""
+
+      - variables:
+          all_presets: >-
+            {% set every = state_attr('sensor.musiccast_media_player_presets', 'presets') or {} %}
+            {% set one = player | default('', true) %}
+            {{ {one: every.get(one, [])} if one else every }}
+          # A dead favorite falls back to idle in well under a second; this only has to
+          # outlast a slow device answering, not a slow stream reaching audio.
+          wait_seconds: 15
+          # A literal newline. Notification messages are markdown, and a YAML folded
+          # scalar turns single newlines into spaces, so every deliberate line break
+          # has to be concatenated in rather than typed.
+          newline: "\n"
+
+      # The run owns the house for its duration: every player it touches must be off
+      # when it starts, and every one is off when it finishes. Anything gentler means
+      # deciding per player whether to restore power, and a device that wakes itself
+      # after teardown then goes unnoticed — both observed before this rule existed.
+      - variables:
+          # Only players the run will actually touch. The map also holds the passive
+          # halves of stereo pairs, which carry no presets and are skipped by the run —
+          # naming them here would ask for players to be switched off for no reason.
+          already_on: >-
+            {%- set ns = namespace(on=[]) -%}
+            {%- for p, prs in all_presets.items() -%}
+              {%- if prs | length > 0 and states(p) not in ['off', 'unavailable', 'unknown'] -%}
+                {%- set ns.on = ns.on + [p] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.on }}
+
+      - if: "{{ already_on | length > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: musiccast_verify_favorites
+              title: Favorite check not started
+              message: >-
+                {{ already_on | map('replace', 'media_player.', '') | join(', ') }}
+                {{ 'is' if already_on | length == 1 else 'are' }} switched on. The check needs every
+                player off, and leaves them all off when it finishes — switch them off and start again.
+          - stop: Players are switched on
+
+      - variables:
+          total: "{{ all_presets.values() | map('length') | sum }}"
+          started_at: "{{ now().timestamp() | int }}"
+          # MusicCast players the run cannot speak for. `unreachable` are in the preset
+          # list but not answering; `uncovered` never made it into the list at all,
+          # because the presets are fetched per device and one that was off or unplugged
+          # at fetch time contributes nothing. Without naming them, "all N started" reads
+          # as a clean bill of health for players that were never tested.
+          unreachable: >-
+            {%- set ns = namespace(u=[]) -%}
+            {%- for p in all_presets.keys() -%}
+              {%- if states(p) == 'unavailable' -%}{%- set ns.u = ns.u + [p] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.u }}
+          # Found through the device registry rather than integration_entities(): that
+          # resolves entities via loaded config entries, so a player whose device is
+          # unreachable is missing from it entirely — the one case this line exists to
+          # report. The device registry keeps the entry regardless of whether the device
+          # answers, so an unplugged player is still named.
+          uncovered: >-
+            {%- set ns = namespace(u=[]) -%}
+            {%- if not (player | default('', true)) -%}
+              {%- for e in states.media_player -%}
+                {%- if device_attr(e.entity_id, 'manufacturer') == 'Yamaha Corporation'
+                       and e.entity_id not in all_presets -%}
+                  {%- set ns.u = ns.u + [e.entity_id] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {{ ns.u }}
+
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.musiccast_verify_failures
+        data:
+          value: ""
+
+      - action: system_log.write
+        data:
+          logger: musiccast.verify
+          level: info
+          message: "Favorite check started — {{ total }} presets across {{ all_presets | length }} players"
+
+      # Starting a job this long with no visible sign that it started is confusing, so
+      # the notification goes up immediately and is rewritten per player as progress.
+      # Same notification_id throughout, so the result replaces it rather than stacking.
+      - action: persistent_notification.create
+        data:
+          notification_id: musiccast_verify_favorites
+          title: Favorite check running
+          message: >-
+            {{ 'Starting — ' ~ total ~ ' favorites on ' ~ (all_presets | length) ~ ' players.'
+               ~ newline ~ '**Hold the Media Players card again to abort.**' }}
+
+      # Drop detection, volume sync and the caption check would all react to the churn
+      # this creates, so the package is held for the whole run.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      - repeat:
+          for_each: "{{ all_presets | dictsort }}"
+          sequence:
+            - variables:
+                player: "{{ repeat.item[0] }}"
+                presets: "{{ repeat.item[1] }}"
+                player_index: "{{ repeat.index }}"
+
+            # Aborting does not kill the run: the loops stop doing work and fall
+            # through to the restore below, so no player is left on and muted.
+            - if: >-
+                {{ presets | length > 0
+                   and is_state('input_boolean.musiccast_verify_abort', 'off')
+                   and states(player) != 'unavailable' }}
+              then:
+                - action: persistent_notification.create
+                  data:
+                    notification_id: musiccast_verify_favorites
+                    title: Favorite check running
+                    message: >-
+                      {%- set failed = states('input_text.musiccast_verify_failures') | trim -%}
+                      {{ player.split('.')[1] ~ ' — player ' ~ player_index ~ ' of '
+                         ~ (all_presets | length) ~ ', ' ~ (presets | length) ~ ' favorites.'
+                         ~ ((' ' ~ (failed.split() | length) ~ ' failed so far.') if failed else '')
+                         ~ newline ~ '**Hold the Media Players card again to abort.**' }}
+
+                - action: media_player.turn_on
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+
+                - wait_template: "{{ states(player) not in ['off', 'unavailable', 'unknown'] }}"
+                  timeout: 10
+                  continue_on_timeout: true
+
+                # Read the volume only once the player is up: a powered-off player
+                # reports None, and powering on resumes its last source at whatever
+                # volume it holds. That value is what has to go back afterwards —
+                # power does not, because every player ends the run switched off.
+                - variables:
+                    was_volume: "{{ state_attr(player, 'volume_level') | float(0.2) }}"
+
+                - action: input_text.set_value
+                  target:
+                    entity_id: input_text.musiccast_verify_snapshot
+                  data:
+                    value: "{{ player }}|{{ was_volume }}"
+
+                - action: media_player.volume_set
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+                  data:
+                    volume_level: 0
+
+                - repeat:
+                    for_each: "{{ presets }}"
+                    sequence:
+                      # A player that goes unavailable part-way through its own list
+                      # would otherwise report every remaining slot as a dead favorite.
+                      - if: >-
+                          {{ is_state('input_boolean.musiccast_verify_abort', 'off')
+                             and states(player) != 'unavailable' }}
+                        then:
+                          - variables:
+                              slot: "{{ repeat.item.num }}"
+                              label: "{{ repeat.item.text }}"
+                              # What the recall has to change. Reaching `playing` proves
+                              # nothing here: the previous slot is normally still playing,
+                              # and a recall that fails simply leaves it playing.
+                              #
+                              # Stopping the player first would make the transition
+                              # cleaner but does not work — `media_stop` on Net Radio is
+                              # undone by the device within tens of milliseconds, so the
+                              # wait for it either times out or catches the bounce. The
+                              # content comparison makes the stop unnecessary anyway.
+                              before: "{{ state_attr(player, 'media_artist') }}|{{ state_attr(player, 'media_title') }}"
+
+                          - action: media_player.play_media
+                            continue_on_error: true
+                            target:
+                              entity_id: "{{ player }}"
+                            data:
+                              media_content_id: "presets:{{ slot }}"
+                              media_content_type: music
+
+                          - wait_template: >-
+                              {{ is_state(player, 'playing')
+                                 and (state_attr(player, 'media_artist') ~ '|' ~ state_attr(player, 'media_title')) != before }}
+                            timeout: "{{ wait_seconds }}"
+                            continue_on_timeout: true
+
+                          # One stall may be a dropped request; two make the favorite
+                          # the likelier cause. The retry is the discriminator, not a
+                          # repair attempt.
+                          - if: "{{ not wait.completed }}"
+                            then:
+                              - action: media_player.play_media
+                                continue_on_error: true
+                                target:
+                                  entity_id: "{{ player }}"
+                                data:
+                                  media_content_id: "presets:{{ slot }}"
+                                  media_content_type: music
+                              - wait_template: >-
+                                  {{ is_state(player, 'playing')
+                                     and (state_attr(player, 'media_artist') ~ '|' ~ state_attr(player, 'media_title')) != before }}
+                                timeout: "{{ wait_seconds }}"
+                                continue_on_timeout: true
+
+                          - if: "{{ not wait.completed }}"
+                            then:
+                              # Player and slot only — the label is looked up again for
+                              # the notification, which keeps this inside 255 characters.
+                              - action: input_text.set_value
+                                target:
+                                  entity_id: input_text.musiccast_verify_failures
+                                data:
+                                  value: >-
+                                    {% set cur = states('input_text.musiccast_verify_failures') | trim %}
+                                    {% set add = player.split('.')[1] ~ '/' ~ slot %}
+                                    {{ ((cur ~ ' ' ~ add) if cur else add)[:255] }}
+
+                          - action: system_log.write
+                            data:
+                              logger: musiccast.verify
+                              level: info
+                              message: >-
+                                {{ 'ok' if wait.completed else 'FAILED' }} — {{ player }}
+                                slot {{ slot }} "{{ label }}"
+
+                - action: media_player.media_stop
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+
+                - action: media_player.volume_set
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+                  data:
+                    volume_level: "{{ was_volume }}"
+
+                # Unconditional: the run starts with every player off and ends the same
+                # way. No verification here — a device with a live cloud session can
+                # accept the power-off and wake itself again seconds later, so the only
+                # check worth making is the final pass below, once nothing else is
+                # happening.
+                - action: media_player.turn_off
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+
+                - action: input_text.set_value
+                  target:
+                    entity_id: input_text.musiccast_verify_snapshot
+                  data:
+                    value: ""
+
+      # Final pass, with the whole picture. A player powered off during its own teardown
+      # can wake itself again while the run continues elsewhere — seen twice, both times
+      # on a device holding a live cloud session — and the per-player step has long since
+      # moved on. This is the only point that can see every player at once, and the run
+      # promised to leave them all off.
+      - repeat:
+          for_each: "{{ all_presets | dictsort }}"
+          sequence:
+            - if: "{{ states(repeat.item[0]) not in ['off', 'unavailable', 'unknown'] }}"
+              then:
+                - action: media_player.turn_off
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ repeat.item[0] }}"
+                - action: system_log.write
+                  data:
+                    logger: musiccast.verify
+                    level: info
+                    message: "{{ repeat.item[0] }} woke up during the run — switched off again"
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      - variables:
+          failures: "{{ states('input_text.musiccast_verify_failures') | trim }}"
+          aborted: "{{ is_state('input_boolean.musiccast_verify_abort', 'on') }}"
+          elapsed: "{{ (now().timestamp() | int) - (started_at | int) }}"
+
+      - action: system_log.write
+        data:
+          logger: musiccast.verify
+          level: info
+          message: >-
+            Favorite check {{ 'aborted' if aborted else 'finished' }} after {{ elapsed }} s —
+            {{ failures.split() | length }} failed
+            {{ 'of the slots reached' if aborted else 'of ' ~ total }}
+
+      - action: persistent_notification.create
+        data:
+          notification_id: musiccast_verify_favorites
+          title: >-
+            {{ 'Favorite check aborted' if aborted else 'Favorite check' }}
+          # Built as a list and joined on a real newline. A YAML folded scalar collapses
+          # single newlines into spaces, which ran the headline and the first failure
+          # together and left the rest as one block — the layout has to be explicit.
+          message: >-
+            {%- set all = state_attr('sensor.musiccast_media_player_presets', 'presets') or {} -%}
+            {%- set failed = failures.split() -%}
+            {%- set skipped = (unreachable + uncovered) | map('replace', 'media_player.', '') | list -%}
+            {%- set ns = namespace(out=[]) -%}
+            {#- An aborted run cannot speak for the slots it never reached, so it counts
+                nothing against `total` — saying "all 221 started" after 23 s is a lie the
+                report told once already. -#}
+            {%- if failed | length == 0 and aborted -%}
+              {%- set ns.out = ['Aborted after ' ~ elapsed ~ ' s. Nothing had failed yet, but most'
+                    ~ ' favorites were never reached.'] -%}
+            {%- elif failed | length == 0 -%}
+              {%- set ns.out = ['All ' ~ total ~ ' favorites started (' ~ elapsed ~ ' s).'] -%}
+            {%- elif aborted -%}
+              {%- set ns.out = [failed | length ~ ' favorites did not start before the run was aborted after '
+                    ~ elapsed ~ ' s. Re-save each one in the MusicCast app, then refresh the presets.'
+                    ~ ' The rest were never reached.', ''] -%}
+            {%- else -%}
+              {%- set ns.out = [failed | length ~ ' of ' ~ total ~ ' favorites did not start ('
+                    ~ elapsed ~ ' s). Re-save each one in the MusicCast app, then refresh the presets.', ''] -%}
+              {%- for f in failed -%}
+                {%- set p = 'media_player.' ~ f.split('/')[0] -%}
+                {%- set n = f.split('/')[1] | int -%}
+                {%- set label = (all.get(p, []) | selectattr('num', 'eq', n)
+                      | map(attribute='text') | first) | default('unknown', true) -%}
+                {%- set ns.out = ns.out + [f.split('/')[0] ~ ' slot ' ~ n ~ ': ' ~ label] -%}
+              {%- endfor -%}
+            {%- endif -%}
+            {%- if skipped | length > 0 -%}
+              {%- set ns.out = ns.out + ['', 'Not checked: ' ~ (skipped | join(', ')), '',
+                    'These did not answer when the preset list was last fetched, so their favorites'
+                    ~ ' are unknown. A player that is merely powered off is checked normally.'] -%}
+            {%- endif -%}
+            {{ ns.out | join(newline) }}
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_verify_abort
 
   # Set favorite randomization state (helper to update CSV)
   # -------------------------------------------------------

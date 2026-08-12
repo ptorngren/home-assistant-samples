@@ -1096,7 +1096,7 @@ views:
             show_label: true
             label: |
               [[[
-                return 'Keep a scenario intact and predictable: rejoin dropped<br>players, cap volumes, give players time to catch up.<br><b>Hold to reset every setting below to its default.</b>';
+                return 'Keep a scenario intact and predictable: rejoin dropped<br>players, cap volumes, give players time to catch up<br><b>Hold to reset every setting below to its default</b>';
               ]]]
             tap_action:
               action: none
@@ -1264,7 +1264,7 @@ views:
         show_label: true
         label: |
           [[[
-            return 'Tap to create a new scenario.<br>Scenario: tap=edit, hold=delete';
+            return 'Tap to create a new scenario<br>Scenario: tap=edit, hold=delete';
           ]]]
         styles:
           card:
@@ -1332,26 +1332,124 @@ views:
             name: Media Players
             icon: mdi:tune
             show_label: true
+            # The anchor has to be handed to the JS through a card-level variables block:
+            # a YAML anchor is resolved at parse time and is invisible to templates
+            # (patterns.md Pattern 10).
+            variables:
+              idle_border: *idle_border
+              active_border: *active_border
+              primary_text_fg: *primary_text_fg
+            # While a favorite check runs the card stops advertising its gestures and
+            # reports the run instead — a job that takes ten minutes and shows nothing is
+            # indistinguishable from one that never started. The position comes from the
+            # snapshot helper, which already names the player being held, indexed against
+            # the same alphabetical order the sweep walks.
             label: |
               [[[
-                return 'Tap a player to show its presets<br>Tap this card to refresh all presets<br>Hold a player to exclude/include';
+                if (states['script.musiccast_verify_favorites']?.state === 'on') {
+                  const snap = states['input_text.musiccast_verify_snapshot']?.state || '';
+                  const player = snap.split('|')[0] || '';
+                  const presets = states['sensor.musiccast_media_player_presets']?.attributes?.presets || {};
+                  const keys = Object.keys(presets).sort();
+                  const at = keys.indexOf(player) + 1;
+                  const name = player.replace('media_player.', '') || '…';
+                  const failed = (states['input_text.musiccast_verify_failures']?.state || '').trim();
+                  const failures = failed ? failed.split(/\s+/).length : 0;
+                  return `<b>Checking favorites…</b><br>${name}${at ? ' — ' + at + ' of ' + keys.length : ''}` +
+                         `<br>${failures} failed so far · <b>hold to abort</b>`;
+                }
+                return 'Tap to refresh, double-tap for coverage, hold to check favorites<br>Player: tap=presets, hold=exclude/include';
               ]]]
             tap_action:
               action: perform-action
               perform_action: homeassistant.update_entity
               target:
                 entity_id: sensor.musiccast_media_player_presets
+            # Double-tap was a duplicate of tap, so it costs nothing to give it the
+            # coverage table. It also belongs here rather than on a button of its own:
+            # the preset lists below expand as players are selected, so anything under
+            # them moves around and is hard to find.
+            #
+            # The table is the other half of the italics in those lists — italic answers
+            # "is this favorite only here", this answers "where else is it".
             double_tap_action:
               action: perform-action
-              perform_action: homeassistant.update_entity
-              target:
-                entity_id: sensor.musiccast_media_player_presets
+              perform_action: browser_mod.popup
+              data:
+                # Target the browser that was tapped. Without this the popup broadcasts
+                # to every registered browser — right for the recovery popups, which fire
+                # from an automation with no caller, wrong for anything reached by a tap.
+                browser_id: '[[[ return window.browser_mod.browserID; ]]]'
+                title: Preset coverage
+                size: wide
+                content:
+                  type: markdown
+                  # A literal block scalar, not `>-`: a folded scalar turns every single
+                  # newline into a space, which collapses a markdown table into one
+                  # paragraph of pipes. Anything whose line breaks carry meaning has to
+                  # keep them, so the Jinja control tags are trimmed with {%- -%} instead.
+                  content: |
+                    {%- set all = state_attr('sensor.musiccast_media_player_presets', 'presets') or {} -%}
+                    {#- Rows are "NN|label|type|players" strings, the count zero-padded so a
+                        plain reverse sort orders by how many players carry the favorite. -#}
+                    {%- set ns = namespace(rows=[]) -%}
+                    {%- for label in (all.values() | map('map', attribute='text') | map('list')
+                                      | sum(start=[]) | unique | sort) -%}
+                      {%- set ns2 = namespace(who=[]) -%}
+                      {%- for pl, prs in all | dictsort -%}
+                        {%- if prs | selectattr('text', 'eq', label) | list | length > 0 -%}
+                          {%- set ns2.who = ns2.who + [pl | replace('media_player.', '')] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- set kind = all.values() | sum(start=[]) | selectattr('text', 'eq', label)
+                                     | map(attribute='input') | first -%}
+                      {%- set ns.rows = ns.rows + ['%02d' | format(ns2.who | length) ~ '|' ~ label
+                                                   ~ '|' ~ kind ~ '|' ~ (ns2.who | join(', '))] -%}
+                    {%- endfor -%}
+                    {%- set shared = ns.rows | reject('search', '^01') | list | sort(reverse=true) -%}
+                    ## {{ shared | length }} favorites are on more than one player
+
+                    | On | Favorite | Type | Players |
+                    |---:|---|---|---|
+                    {% for r in shared %}| {{ r.split('|')[0] | int }} | {{ r.split('|')[1] }} | {{ r.split('|')[2] }} | {{ r.split('|')[3] }} |
+                    {% endfor %}
+                    A further **{{ ns.rows | select('search', '^01') | list | length }}** are on one player only, and are shown in *italics* in the preset lists.
+            # Tap asks the devices what favorites they hold; hold tests whether they
+            # play. Same hold-plus-confirmation as the stability reset, for the same
+            # reason: it is slow and it disturbs the house.
+            hold_action:
+              action: perform-action
+              perform_action: script.musiccast_verify_favorites_toggle
+              # Lovelace confirms before it calls anything, so the script's own refusal
+              # cannot suppress this dialog — being asked and then refused reads as a
+              # bug. The text therefore carries the refusal itself when a scenario is
+              # playing. Templated the same way as the delete-scenario confirmation.
+              confirmation:
+                text: |
+                  [[[
+                    const scenario = states['input_text.musiccast_active_scenario']?.state || '';
+                    const running = states['script.musiccast_verify_favorites']?.state === 'on';
+                    if (scenario) return `"${scenario}" is playing. Stop it first — the favorite check powers players on and off, so it will refuse to start.`;
+                    if (running) return 'Abort the favorite check that is running? Players already tested keep their restored volume and power.';
+                    return 'Play every favorite on every player? Several minutes, and players power on and off. Hold again to abort.';
+                  ]]]
+              haptic: heavy
             styles:
               card:
                 - height: 90px
                 - padding: 12px
                 - border-radius: 6px
                 - border: 1px solid *idle_border
+                # A translucent wash over the whole card while a favorite check runs, so
+                # the card itself shows the run is live rather than leaving it to the
+                # notification panel. Same treatment as the motorvärmare dashboard uses
+                # for an active heater — it reads as a glow without being one.
+                - background-color: |
+                    [[[
+                      return states['script.musiccast_verify_favorites']?.state === 'on'
+                        ? 'rgba(33,150,243,0.12)'
+                        : 'transparent';
+                    ]]]
                 - box-shadow: none
               grid:
                 - grid-template-areas: '"i n" "i l"'
@@ -1361,7 +1459,13 @@ views:
                 - row-gap: 4px
               icon:
                 - width: *icon_large
-                - color: *primary_text_fg
+                # Carries the same accent as the wash above, for the same reason.
+                - color: |
+                    [[[
+                      return states['script.musiccast_verify_favorites']?.state === 'on'
+                        ? variables.active_border
+                        : variables.primary_text_fg;
+                    ]]]
               name:
                 - font-size: 12px
                 - font-weight: 500
@@ -1420,9 +1524,24 @@ views:
                 return "";
                   }
 
+                  // How many players carry each label, counted once per player, so a
+                  // label duplicated within one player still counts as one holder.
+                  // Identity is the label text alone. Two favorites sharing a label but
+                  // pointing at different source types would be counted as one, which is
+                  // the right trade: the label is what a person recognises, and keying on
+                  // label plus input would split the same station saved twice under
+                  // slightly different names — the commoner case by far.
+                  const holders = {};
+                  for (const prs of Object.values(allPresets)) {
+                    for (const text of new Set(prs.map(p => p.text))) {
+                      holders[text] = (holders[text] || 0) + 1;
+                    }
+                  }
+
                   // Must match the three icons emitted below: net_radio, anything
                   // containing "spotify", everything else.
-                  let out = "<p><em>📻 Net Radio  •  🎵 Cloud Service  •  🗄️ Other (Local / DLNA)</em></p>";
+                  let out = "<p><em>📻 Net Radio  •  🎵 Cloud Service  •  🗄️ Other (Local / DLNA)</em><br>"
+                          + "<em>italic</em> = no other player has this favorite</p>";
 
                   for (const entityId of selectedPlayers) {
                     const presets = allPresets[entityId] || [];
@@ -1447,7 +1566,18 @@ views:
                         const style = isDup
                           ? `border-left:3px solid ${variables.duplicate_border};padding-left:6px;margin:2px 0`
                           : 'padding-left:9px;margin:2px 0';
-                        out += `<div style="${style}"><strong>${n}.</strong> ${dupPrefix}${preset.text} ${inputIcon}</div>`;
+                        // Italic marks a favorite no other player has — the rare case, so
+                        // the marker stays meaningful. Deliberately not bold: the
+                        // triangulation dashboard uses bold for a beacon seen in several
+                        // locations, and the same weight meaning "shared" there and
+                        // "unique" here would be worse than no convention at all.
+                        // A label duplicated within this player takes precedence and is
+                        // left unmarked: once a row is flagged locally, whether others
+                        // hold it too is beside the point, and two markers read as noise.
+                        const text = (!isDup && holders[preset.text] === 1)
+                          ? `<em>${preset.text}</em>`
+                          : preset.text;
+                        out += `<div style="${style}"><strong>${n}.</strong> ${dupPrefix}${text} ${inputIcon}</div>`;
                       } else {
                         out += `<div style="padding-left:9px;margin:2px 0"><strong>${n}.</strong> —</div>`;
                       }
@@ -1690,10 +1820,19 @@ views:
           - **Tap header card:** Refresh all presets from all devices.
           - **Tap player:** Show presets for that player.
           - **Hold player:** Exclude/include player from the active scenario group.
+          - **Double-tap header card:** Which favorites are on several players, and where.
+          - **Hold header card:** Check every favorite on every player — see below.
+
+          **Checking favorites.** A favorite can stop working while the music it points at is fine: the device accepts the recall, selects the input and never starts, so a scenario comes up silent with nothing to explain it. Holding the Media Players header plays every favorite on every player in turn and reports the ones that never start.
+          - It powers each player on, mutes it, tests its slots, restores the volume and switches it off again. Several minutes for a full house — the card and a notification show which player it is on, and hold again to abort.
+          - **Every player must be off before it starts, and every player is off when it finishes.** It refuses otherwise, naming the ones that are on — the check takes over the house for its duration. It also refuses while a scenario is playing.
+          - The report names each failing slot by player, number and label. **The fix is to re-save that favorite in the MusicCast app**, then refresh the presets — the stored reference is what died, not the station or playlist.
+          - A slot counts as started only if the player begins playing *something different*. Two slots holding the same station in a row will therefore report as failures.
 
           **Presets list:** Shows all slots (empty slots shown as —).
           - 📻 Net Radio  •  🎵 Cloud Service  •  🗄️ Other (Local / DLNA)
           - **⚠ prefix + amber border:** Preset text is duplicated on this player.
+          - *Italic:* no other player has this favorite. Deliberately faint — a hint while you are looking at something else, not a warning. Double-tap the header for the other direction: which favorites are shared, and with whom.
 
       # --- DISCOVERY VIEW ---
       - type: markdown

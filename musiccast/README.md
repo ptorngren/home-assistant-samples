@@ -279,8 +279,19 @@ The setup view. Shows all scenarios and all players in a grid, with the preset l
 - **Stability** — Toggle auto-rejoin, tune the retry cap and the waits, cap the volumes the package applies, and see the last scenario, its favorite, and any currently failing rejoins (see Auto-Recovery above)
 - **Scenarios grid** — Tap to edit, hold to delete; tap the header card to create a new scenario
 - **Players grid** — Tap a player to view its presets; hold to exclude/include from the active player pool
-- **Players header card** — Tap to refresh all presets from all devices
-- **Preset list** — All preset slots for the selected players, including empty slots. Duplicates are highlighted. Source type is reflected per preset.
+- **Players header card** — Tap to refresh all presets from all devices; **double-tap** for a table of which favorites are shared across players; **hold to check every favorite** (see below)
+- **Preset list** — All preset slots for the selected players, including empty slots. Duplicates are highlighted. Source type is reflected per preset. A favorite in *italics* is on no other player — deliberately faint, a hint rather than a warning.
+
+#### Checking favorites
+
+A favorite can stop working while the music it points at is perfectly fine. The device accepts the recall, selects the input, and never starts — nothing errors anywhere, and the first sign is a scenario coming up silent. Holding the **Media Players** header card plays every favorite on every player in turn and reports the ones that never start, so a dead favorite can be found deliberately instead of discovered by a quiet room.
+
+- **Every player must be switched off before it starts, and every player is switched off when it finishes.** The check refuses to run otherwise, naming the players that are on. It takes over the house for its duration — anything gentler would mean deciding per player whether to hand it back, and a device that wakes itself up afterwards would go unnoticed. Volumes are restored; power is not, because the answer is always off.
+- **Confirm first.** It asks before starting, and refuses outright while a scenario is playing.
+- **It takes minutes, not seconds.** The header card and a notification both show which player it is on and how many have failed so far. Hold the card again to abort; the player being tested is still restored.
+- **The report names every failing slot** by player, slot number and label. The remedy is to re-save that favorite in the MusicCast app and refresh the presets — what died is the stored reference, not the station or the playlist, which usually still plays fine from its own app.
+- **Players that never answered are named too**, so a clean result cannot quietly exclude a device that was unplugged when the preset list was last fetched.
+- **Re-run before acting on a single failure.** Repeated runs over the same house agree on most slots but not all: roughly a third of the failures in one run pass in the next, whatever the source type. A slot that fails twice is worth re-saving; one that failed once may simply have been unlucky. The check is a way to narrow down where to look, not a verdict.
 
 ### Network Scan
 
@@ -379,6 +390,25 @@ Here's how I use it day-to-day. The scenarios are set up around how we actually 
 ---
 
 ## Known Limitations
+
+<details>
+<summary><strong>The favorite check proves a favorite started, not that it made a sound</strong></summary>
+
+A slot passes when the player starts playing *something different* from what it was playing a moment earlier. That catches the fault it exists for — a recall the device accepts and never acts on — but it cannot tell you a station resolved and then streamed silence. A clean report means every favorite started, not that every favorite was audible.
+
+Two consequences worth knowing:
+
+- **Two slots holding the same station in a row are reported as failures.** Nothing changes when the second is recalled, so it is indistinguishable from one that never started. Duplicated presets within one player are flagged with an amber ⚠ in the preset list, which is where to check first if a failure looks wrong.
+- **A player that goes unavailable mid-run** has its remaining slots skipped rather than reported as dead favorites, but slots tested just before it dropped may still be wrong.
+
+</details>
+
+<details>
+<summary><strong>The favorite check asks for confirmation even when it will refuse to start</strong></summary>
+
+Holding the Media Players header while a scenario is playing opens a confirmation whose text explains that the check will refuse. The dialog cannot be suppressed: Home Assistant evaluates a confirmation before it calls anything, so the refusal necessarily comes afterwards, and the dialog is fixed at two buttons. Either button is harmless — the check still refuses, and says so in a notification.
+
+</details>
 
 <details>
 <summary><strong>Players view sorts Å/Ä/Ö as A/A/O</strong></summary>

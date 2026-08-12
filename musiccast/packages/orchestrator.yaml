@@ -919,34 +919,8 @@ automation:
   # detection, the stale-caption check and the volume sync, so the package simply stops
   # noticing faults until someone clears it by hand.
   #
-  # The hold before releasing is input_number.musiccast_scenario_guard_timeout, because it
-  # depends on how long a full scenario rebuild takes on this hardware. Clearing is the
-  # safe direction: at worst it costs one spurious detection while nothing is being
-  # changed. Logged as a warning because reaching this point always means a script died
-  # part-way.
-  - id: musiccast_release_stranded_scenario_guard
-    alias: "MusicCast: Release a stranded scenario guard"
-    mode: single
-    triggers:
-      - trigger: state
-        entity_id: input_boolean.musiccast_scenario_updating
-        to: 'on'
-        # NOTE: input_number states are float strings ("180.0") — must go through float
-        # before int, or the int filter silently falls back to the default
-        for: "{{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }}"
-    action:
-      - action: system_log.write
-        data:
-          message: >-
-            MusicCast: scenario guard held for
-            {{ states('input_number.musiccast_scenario_guard_timeout') | float(180) | int }} s
-            and was released automatically. A script holding it did not finish — check the
-            log above for an unexpected error in a media_player group call.
-          level: warning
-          logger: musiccast
-      - action: input_boolean.turn_off
-        target:
-          entity_id: input_boolean.musiccast_scenario_updating
+  # The safety net that releases it lives in stabilizer.yaml as
+  # musiccast_release_stuck_guard, and covers musiccast_activation_in_progress as well.
 
 # ================================================================
 # SCRIPTS
