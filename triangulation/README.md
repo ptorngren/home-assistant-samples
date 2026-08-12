@@ -125,16 +125,21 @@ homeassistant:
     !include_dir_named packages/
 ```
 
-### 4. Exclude Statistics Sensor from Recorder
+### 4. Exclude Large Sensors from Recorder
 
-`sensor.bt_merge_statistics` carries a large payload that exceeds HA's recorder limit. Add it to your recorder exclusions in `configuration.yaml`:
+Two sensors carry payloads that exceed HA's 16 KB recorder attribute limit. Add both to your recorder exclusions in `configuration.yaml`:
 
 ```yaml
 recorder:
   exclude:
     entities:
       - sensor.bt_merge_statistics
+      - sensor.bt_device_names
 ```
+
+`sensor.bt_merge_statistics` holds the scan history, which is file-backed and simply too large to record. `sensor.bt_device_names` is a display lookup that grows without bound — a defect rather than a design trade-off, so the exclusion is a mitigation; see *Device name lookup grows without bound* under Known Limitations.
+
+**Note:** Recorder filters are read when the integration starts, so this change needs a full Home Assistant restart. Reloading packages (step 5) does not apply it.
 
 ### 5. Reload Packages
 
@@ -1044,6 +1049,19 @@ Each location update is based on one Bluetooth scan, taken when the phone connec
 <summary><strong>Scan history statistics not stored in HA history</strong></summary>
 
 `sensor.bt_merge_statistics` carries the full scan history payload (up to 50 readings per beacon across all locations), which exceeds HA's 16 KB recorder limit. The sensor is excluded from the recorder to avoid database performance warnings. The underlying data is persisted in `data/bt_statistics.json` and is always read live from file — no data is lost. The only consequence is that this sensor has no history in the HA History or Logbook views.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Device name lookup grows without bound</strong></summary>
+
+`sensor.bt_device_names` maps each MAC address to the device name advertised with it, and the dashboard reads it purely for display. It records a pair for every named device any scan sees and never evicts one. Because BLE devices rotate their MAC address — typically every 15 minutes or so — a single chatty device mints new permanent entries several times an hour, and the map survives restarts through HA's restore-state store. It therefore grows monotonically for the life of the installation. One install measured 928 entries for only 128 distinct names, with a single device accounting for 530 of them.
+
+Past roughly 16 KB the recorder refuses the attributes and logs `State attributes for sensor.bt_device_names exceed maximum size of 16384 bytes` on every scan. Excluding the sensor from the recorder (see Installation step 4) silences that and costs nothing, because the map is a display lookup that is never queried as history — but it is a mitigation, not a cure: the map keeps growing in memory.
+
+**This is a defect, not a trade-off.** The intended fix is to bound the map to the MACs that can actually be displayed — those in the current scan, in the fingerprint database, or on the ignore list — and drop the rest whenever it is rebuilt, which keeps it permanently bounded. Names are used only for display, so nothing depends on the long tail.
 
 </details>
 
