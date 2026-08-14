@@ -57,7 +57,7 @@ shell_command:
         lines.append(entity)
     with open(path, "w") as f:
         f.write("# MusicCast player exclusion list — entities to skip when writing media_players.include\n")
-        f.write("# Managed via long-press on player buttons in the Admin view\n")
+        f.write("# Managed via long-press on player tiles in the Settings view\n")
         f.write("# Format: one media_player entity_id per line\n")
         f.write("# NOTE: .exclude suffix prevents HA package loader from treating this as a package definition\n")
         if lines:
@@ -151,8 +151,9 @@ command_line:
       unique_id: musiccast_scenarios_labels
       command: |
         python3 -c "
-        import json
-        data = json.load(open('/config/packages/musiccast/data/scenarios.json'))
+        import json, os
+        path = '/config/packages/musiccast/data/scenarios.json'
+        data = json.load(open(path)) if os.path.exists(path) else {'scenarios': {}}
         print(json.dumps(data))
         "
       json_attributes:
@@ -160,6 +161,8 @@ command_line:
       value_template: "{{ value_json.scenarios | length }}"
       scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads scenarios.json — display names + icons keyed by scenario_id
+      # No file yet means no scenarios: the empty map keeps the shape the value_template and
+      # json_attributes expect, so the sensor reports 0 instead of failing every update
       # Access: state_attr('sensor.musiccast_scenarios_labels', 'scenarios').get(scenario_id, {})
 
   - sensor:
@@ -273,10 +276,10 @@ template:
   # - Polling sensors load immediately on startup/reload
   # - Trigger-based sensors only evaluate when event fires
   # - Mixing them in same block breaks the polling sensors during reload
-  # Admin player selection state (no persistence needed — resets on reload)
+  # Player selection state (no persistence needed — resets on reload)
   # -------------------------------------------------------
   # Stores the list of media_player entity IDs currently selected
-  # in the Admin view for preset comparison.
+  # in the Settings view for preset comparison.
   # Updated by script.musiccast_toggle_preset_player via event.
   - trigger:
       - platform: event
@@ -295,7 +298,7 @@ template:
 
 script:
 
-  # Toggle a player in/out of the Admin view selection
+  # Toggle a player in/out of the Settings view selection
   # -------------------------------------------------------
   # Reads current selection from sensor.musiccast_preset_players,
   # adds or removes the given entity_id, then fires event to update sensor.
@@ -324,7 +327,7 @@ script:
   # Toggle a player in/out of the exclusion list
   # -------------------------------------------------------
   # Calls shell command to add/remove entity from media_players.exclude,
-  # then refreshes sensor.musiccast_excluded_players so the Admin view
+  # then refreshes sensor.musiccast_excluded_players so the Settings view
   # immediately reflects the new state.
   musiccast_toggle_exclude_player:
     alias: "MusicCast: Toggle Player Exclusion"

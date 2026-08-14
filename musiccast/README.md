@@ -16,14 +16,15 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 
 1. Ensure the **Yamaha MusicCast** integration is installed and your devices are discovered in Home Assistant
 2. Register the MusicCast dashboard in `configuration.yaml`
-3. Copy the dashboard and package files to your `dashboards/` and `packages/musiccast/` directories
-4. Install required HACS components
-5. Restart HA
-6. Open the **Discovery** view and run a network scan to resolve player IP addresses
-7. Open the **Settings** view and create your first scenario (tap the header card, enter name/icon/master player)
-8. Switch to the **Now Playing** view and tap your scenario to start music
-9. Open the **Players** view, tap the players you want in the scenario, and adjust the volumes
-10. Go back to **Now Playing** and long-press the scenario to save the group and volumes
+3. Copy the dashboard and package files to your `dashboards/` and `packages/musiccast/` directories — including `data/media_players.include`, without which HA will not start
+4. Install required HACS components (HACS itself first, if you do not have it)
+5. Empty or edit `musiccast_local.yaml` — it ships as one household's worked example
+6. Restart HA
+7. Open the **Discovery** view, set your subnet and IP range, and run a network scan to resolve player IP addresses
+8. Open the **Settings** view and create your first scenario (tap the header card, enter name/icon/master player)
+9. Switch to the **Now Playing** view and tap your scenario to start music
+10. Open the **Players** view, tap the players you want in the scenario, and adjust the volumes
+11. Go back to **Now Playing** and long-press the scenario to save the group and volumes
 
 ---
 
@@ -98,6 +99,21 @@ and two more that are deliberately **not** recovery settings:
 
 ## Prerequisites
 
+### Home Assistant
+
+**This package tracks current Home Assistant.** It is developed and run on the latest stable release
+and adopts new syntax as HA introduces it, so **no minimum version is maintained or tested**. It will
+certainly not load on anything older than roughly **2024.10** — it uses the modern
+`triggers:` / `conditions:` / `actions:` script syntax and `action: perform-action` — but the practical
+advice is simply to be current.
+
+**It is developed and run on Home Assistant OS.** Every `shell_command`, every `command_line` sensor
+and all five scripts use absolute `/config/packages/musiccast/…` paths, and the scripts need
+`bash`, `jq`, `python3`, `curl`, `base64`, `seq`, `xargs`, `mktemp`, `sort -V`, `find` and `date` to be
+present in Home Assistant's own environment. Container and venv Core installs are **untested rather
+than unsupported** — they may work if those tools are available and `/config` is the config directory,
+but nothing here has been verified against them.
+
 ### Yamaha MusicCast Integration
 
 This package requires the **Yamaha MusicCast** integration (built-in to HA). Your devices must be discovered and their media_player entities must be available before setup.
@@ -110,7 +126,13 @@ Player IP addresses are resolved once via network scan and stored. If your devic
 
 ### Required HACS Components
 
-Install via HACS (Settings → Devices & Services → HACS → Integrations):
+**HACS itself is a prerequisite** — it is not part of Home Assistant and has to be installed first;
+see [hacs.xyz](https://hacs.xyz) for its own instructions. Once it is in place, HACS opens from the
+**sidebar**.
+
+All eight components below are **frontend plugins** rather than integrations, so they are found under
+HACS → *Frontend* (in older HACS versions; current releases present one combined list). The exception
+is `browser-mod`, which is both — see the note under the table.
 
 | Component | Purpose |
 |---|---|
@@ -170,6 +192,7 @@ config/
         ├── musiccast_presets_fetcher.sh
         ├── randomization_persistor.sh
         └── data/
+            ├── media_players.include   ← ships with a placeholder; copy it, do not skip it
             ├── scenarios.json          ← scenario metadata (created on first scenario)
             ├── media_players.csv       ← player IPs (created by network scan)
             └── ...                     ← scenario_*.csv and presets_*.csv created as you add scenarios
@@ -179,17 +202,30 @@ The `.sh` scripts do not need to be made executable — every `shell_command` in
 `bash /config/packages/musiccast/<script>.sh`, so file permissions do not matter. This means you can
 install the package with the File Editor add-on or a Samba share alone, without terminal access.
 
-**You do not need to create `data/` yourself** — the scripts that write into it create it on first use,
-and the scripts that read from it exit quietly while it is still missing. It fills up as you run the
-network scan and add scenarios.
+⚠️ **`data/media_players.include` must be in place before you start Home Assistant.** It is the one
+file in `data/` that ships with the package rather than being created for you, because the packages
+read it *while loading their configuration*: `group.musiccast_players` and every automation that
+watches your players build their entity lists from it. If it is missing, Home Assistant will not
+start.
+
+It arrives holding one placeholder entity, which does nothing and matches no real device — enough for
+the configuration to load. **Your first network scan replaces it with your actual players**, and every
+later scan rewrites it. You never edit it by hand.
+
+**The rest of `data/` you do not need to create** — the scripts that write into it create it on first
+use, and the scripts that read from it exit quietly while it is still missing. It fills up as you run
+the network scan and add scenarios.
 
 **If your config directory is a Git repository**, the two halves of `data/` deserve different treatment:
 
 ```gitignore
 # Machine-specific, rebuilt by any network scan — safe to ignore
 packages/musiccast/data/media_players.csv
-packages/musiccast/data/media_players.include
 ```
+
+⚠️ **Do not ignore `media_players.include`, even though a scan rebuilds it too.** It is read while
+Home Assistant loads its configuration, so a config restored from a repository that omits it will not
+start — and the scan that would recreate it cannot run until Home Assistant is up.
 
 Everything else in `data/` — `scenarios.json`, `scenario_*.csv`, `presets_*.csv` — *is* your
 configuration: scenario definitions, per-player volumes and preset states, all edited through the
@@ -204,6 +240,13 @@ homeassistant:
   packages: !include_dir_named packages/
 ```
 
+⚠️ **Empty or edit `musiccast_local.yaml` before restarting.** It ships as a *worked example* — one
+household's real automations, wired to that house's entities (a Verisure alarm, a kitchen door sensor,
+a patio light, named MusicCast players). None of those exist in your Home Assistant, so left as-is it
+gives you a file full of automations referencing nothing. It is there to show the shape of site-specific
+wiring, not to be used unchanged. Delete its contents and keep the file, or replace the examples with
+your own; nothing else in the package depends on what is in it.
+
 Then restart HA.
 
 ⚠️ **A full restart, not a YAML reload — and the same applies to every later change.** The package
@@ -216,15 +259,28 @@ effect, this is the first thing to check.
 
 Open the **Discovery** view in the MusicCast dashboard:
 
-1. Set IP range (default 1–254; narrow it to your device subnet for speed, e.g. 10–50)
-2. Tap **Resolve Entity IPs**
-3. Wait for the scan to complete (~15 seconds for a narrow range, up to 60s for full subnet)
-4. Review matched vs unmatched players
-5. Reload **Groups + Automations** (Developer Tools → YAML). No restart required.
+1. **Set the subnet.** Leave it blank and it scans `192.168.1`. If your players are on `10.0.0.x` or
+   `192.168.2.x`, set it here first — otherwise the scan sweeps a subnet you do not use and finds
+   nothing, with no indication why.
+2. **Set the IP range — a new install scans nothing until you do.** Both ends start at 1, giving a
+   range of 1–1, so the first scan finds no players and reports no error. Set it to cover your devices:
+   1–254 for a whole subnet, or narrow it for speed, e.g. 10–50.
+3. Tap **Scan for media players**
+4. Wait for the scan to complete (~15 seconds for a narrow range, up to 60s for full subnet)
+5. Review matched vs unmatched players — see below for what to do about an unmatched one
+6. Reload **Groups + Automations** (Developer Tools → YAML). No restart required.
 
-Step 5 is not optional: the scan also rewrites the player list that `group.musiccast_players` and the automation triggers are built from, and those are only re-read on reload.
+The reload is not optional: the scan also rewrites the player list that `group.musiccast_players` and the automation triggers are built from, and those are only re-read on reload.
 
 The scan writes `data/media_players.csv` with `ip=entity_id` entries. All playback scripts use this file for IP lookups. Re-run whenever you add new devices or your network DHCP assignments change.
+
+**How players are matched, and what to do when one is not.** The scan asks each device on the subnet
+for its own name and pairs it with the Home Assistant entity whose **friendly name is identical**
+(leading and trailing spaces ignored). So a player shows as unmatched when the two names differ — the
+device is called *Kitchen Speaker* in the MusicCast app while its entity is named *Kitchen*, for
+instance. Fix it by making them the same, in whichever place is easier: rename the entity under
+Settings → Devices & Services → Entities, or rename the device in the MusicCast app. Then run the scan
+again.
 
 > **Zone 2 players** (e.g., a second output zone on an AV receiver) share their parent device's IP and cannot be matched by the network scan. They appear as unmatched (`0.0.0.0=media_player.zone2_name`). This is expected — they work for playback via HA but cannot be directly queried for presets.
 
@@ -279,7 +335,7 @@ The setup view. Shows all scenarios and all players in a grid, with the preset l
 - **Stability** — Toggle auto-rejoin, tune the retry cap and the waits, cap the volumes the package applies, and see the last scenario, its favorite, and any currently failing rejoins (see Auto-Recovery above)
 - **Scenarios grid** — Tap to edit, hold to delete; tap the header card to create a new scenario
 - **Players grid** — Tap a player to view its presets; hold to exclude/include from the active player pool
-- **Players header card** — Tap to refresh all presets from all devices; **double-tap** for a table of which favorites are shared across players; **hold to check every favorite** (see below)
+- **Media Players header card** — Tap to refresh all presets from all devices; **double-tap** for a table of which favorites are shared across players; **hold to check every favorite** (see below)
 - **Preset list** — All preset slots for the selected players, including empty slots. Duplicates are highlighted. Source type is reflected per preset. A favorite in *italics* is on no other player — deliberately faint, a hint rather than a warning.
 
 #### Checking favorites
@@ -293,9 +349,9 @@ A favorite can stop working while the music it points at is perfectly fine. The 
 - **Players that never answered are named too**, so a clean result cannot quietly exclude a device that was unplugged when the preset list was last fetched.
 - **Re-run before acting on a single failure.** Repeated runs over the same house agree on most slots but not all: roughly a third of the failures in one run pass in the next, whatever the source type. A slot that fails twice is worth re-saving; one that failed once may simply have been unlucky. The check is a way to narrow down where to look, not a verdict.
 
-### Network Scan
+### Discovery
 
-Admin view for discovering player IPs on the local network. Run once during setup, or re-run if devices change IP address.
+The view for finding player IPs on the local network. Run once during setup, or re-run if devices change IP address.
 
 <img src="docs/Scan.jpg" width="20%" alt="Network Scan">
 
@@ -347,16 +403,18 @@ An overlay player is joined to a playing scenario on the fly by an automation, w
 - **Scenario detection tolerates extra members** — an active scenario is only cleared when one of its *defined* players leaves the group, never because an extra player joined (`orchestrator.yaml`, detect manual scenario).
 - **Master volume sync covers all live group members** — volume changes on the master scale every linked player proportionally, overlay players included.
 
-The shipped example (`musiccast_local.yaml`) links a patio speaker to the playing kitchen master when the kitchen door stays open, and turns it off again after the door closes:
+The shipped example (`musiccast_local.yaml`) links a patio speaker to the p laying kitchen master when the kitchen door stays open, and turns it off again after the door closes:
 
 - **Kitchen door open → patio overlay ON** — triggers when the door has been open for a configurable delay, when a kitchen-mastered scenario starts while the door is already open, or when the patio lights are turned on with the door open and music playing. Conditions: the active scenario's master is the kitchen player (dynamic check — no scenario names in code), the patio player isn't already linked, and the intent gate passes: outdoor temperature above the threshold **or** patio lights on (the lights only turn on by deliberate action, so they signal someone is out there despite the cold — e.g. at the grill). The overlay joins at the master's current volume scaled by the volume factor (below), waits for the master to be powered on first, verifies the join and retries once, and aborts cleanly if the door closes meanwhile.
 - **Kitchen door closed → patio music OFF** — unlinks and turns off the patio player after the door has been closed for a configurable delay. (Unlink before power-off matters: turning off a linked group member alone leaves it muted but still registered in the master's group.)
 
-Helpers (sliders; the first three use **0 = disabled**, matching the garage music timers):
-- **Patio music start delay** (seconds) — how long the door must stay open before linking. 0 disables the overlay entirely.
-- **Patio music stop delay** (seconds) — how long the door must stay closed before turn-off. 0 disables auto-off.
-- **Patio temperature threshold** (°C) — minimum outdoor temperature for linking; overridden by the patio lights being on. 0 disables the temperature gate.
-- **Patio volume factor** (0.5–2.0, neutral 1.0) — multiplier applied to the master's volume when the overlay joins, compensating for different amplifier/speaker sensitivity (Home Assistant's 0–1 volume scale is percent-of-device-range, not loudness). The ratio-based volume sync preserves the factor while linked. Alternative: cap **Max Volume** on the overlay device in the MusicCast app, which rescales what 0–1 means for that device.
+Helpers (sliders; the first three use **0 = disabled**, matching the garage music timers). The example
+file uses that household's own vocabulary, so the entity ids are given here too — the names in bold are
+translations for reading, not what you will find in Home Assistant:
+- **Patio music start delay** (seconds) — `input_number.altanmusik_start_delay` — how long the door must stay open before linking. 0 disables the overlay entirely.
+- **Patio music stop delay** (seconds) — `input_number.altanmusik_stop_delay` — how long the door must stay closed before turn-off. 0 disables auto-off.
+- **Patio temperature threshold** (°C) — `input_number.altanmusik_temp_threshold` — minimum outdoor temperature for linking; overridden by the patio lights being on. 0 disables the temperature gate.
+- **Patio volume factor** (0.5–2.0, neutral 1.0) — `input_number.altanmusik_volume_factor` — multiplier applied to the master's volume when the overlay joins, compensating for different amplifier/speaker sensitivity (Home Assistant's 0–1 volume scale is percent-of-device-range, not loudness). The ratio-based volume sync preserves the factor while linked. Alternative: cap **Max Volume** on the overlay device in the MusicCast app, which rescales what 0–1 means for that device.
 
 ### Excluding Players
 
@@ -364,6 +422,11 @@ Long-press any player tile in the **Settings** view to exclude/include it from `
 - Don't appear in the Players view
 - Can't be selected as master for new scenarios
 - Are not powered off when scenarios change
+
+⚠️ **Reload Automations afterwards** (Developer Tools → YAML), or the exclusion is only half applied.
+Excluding regenerates the player list and reloads Groups immediately, so the three effects above take
+hold at once — but the recovery automations bind their trigger lists from that same file when they
+load, so until they are reloaded an excluded player still triggers drop and silence detection.
 
 ### Tuning Randomization
 
@@ -651,7 +714,7 @@ This usually means the favorite has gone invalid — a stored Spotify reference 
 **Fix:**
 1. Try the scenario again — a stream can simply fail to start once
 2. If it fails again, play the favorite from the MusicCast app to confirm
-3. Re-save it from a live source in the app, then re-run the network scan so the cached preset list picks up the change
+3. Re-save it from a live source in the app, then tap the **Media Players** header card in Settings so the cached preset list picks up the change
 
 </details>
 
@@ -663,7 +726,7 @@ This usually means the favorite has gone invalid — a stored Spotify reference 
 
 - **Enable/disable presets per scenario** — Selectively exclude presets from randomization per scenario (e.g. a Christmas playlist active only in December). Would extend the existing lock/exclude model with time- or date-based qualification.
 
-- **Delete players from UI** — Currently, removing a player requires editing `data/media_players.exclude` manually. An explicit delete flow in the Admin view would also handle cleanup: surfacing any scenarios that use the player as master and need reassignment.
+- **Delete players from UI** — Excluding a player is already a long-press in the **Settings** view, but there is no way to remove one outright. An explicit delete flow would also handle the cleanup an exclusion does not: surfacing any scenarios that use the player as master and need reassignment.
 
 ---
 
@@ -690,9 +753,9 @@ Spotify works the same way: the devices are Spotify Connect receivers, so Spotif
 
 The package is split across four YAML files by concern:
 
-**`orchestrator.yaml`** — Scenario management and transport control: create, edit and delete scenarios; link and unlink players; capture and restore volumes; scripts backing the scenario editor; automations for detecting manual player changes.
+**`orchestrator.yaml`** — Scenario management and transport control: create, edit and delete scenarios; link and unlink individual players; tear a group down; capture and restore volumes; scripts backing the scenario editor; automations for detecting manual player changes.
 
-**`mixer.yaml`** — Playback engine: fetch presets from devices, apply randomization logic (lock/exclude), select and play a preset, track the active scenario's now-playing state.
+**`mixer.yaml`** — Playback engine and scenario activation: `musiccast_scenario_toggle` and `musiccast_scenario_link` — the two entry points at the top of the Data Flow diagram — plus fetching presets from devices, applying randomization logic (lock/exclude), selecting and playing a preset, and tracking the active scenario's now-playing state.
 
 **`stabilizer.yaml`** — Keeping a playing scenario playing: the detectors that notice a player has dropped out or fallen silent, the recovery scripts they call, their Undo counterparts, the Stability settings that tune them, and the two diagnostics. Separate because it answers to faults rather than to you — nothing in it is triggered by pressing anything. The file boundary is not a dependency boundary, and the file's header says which parts it depends on: scenario detection, the shared guard and the playing-source writers stay in `orchestrator.yaml`.
 
@@ -748,7 +811,7 @@ master is checked afterwards rather than trusted.
 | `data/presets_{id}.csv` | CSV | Randomization state: `preset_num,state` (L=locked, X=excluded) |
 | `data/media_players.csv` | CSV | Player IPs: `ip=entity_id` per line |
 | `data/media_players.exclude` | Text | Excluded players: one entity_id per line |
-| `data/media_players.include` | Text | Active players: auto-generated from csv minus exclusions |
+| `data/media_players.include` | Text | Active players: auto-generated from csv minus exclusions. **Ships with a placeholder entity and must exist before HA starts** — it is read at configuration load by `group.musiccast_players` and the automation triggers |
 
 All files are plain text and human-readable, but are managed by the system and may be overwritten. They are not intended to be edited manually.
 
