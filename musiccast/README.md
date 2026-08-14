@@ -20,11 +20,12 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 4. Install required HACS components (HACS itself first, if you do not have it)
 5. Empty or edit `musiccast_local.yaml` — it ships as one household's worked example
 6. Restart HA
-7. Open the **Discovery** view, set your subnet and IP range, and run a network scan to resolve player IP addresses
-8. Open the **Settings** view and create your first scenario (tap the header card, enter name/icon/master player)
-9. Switch to the **Now Playing** view and tap your scenario to start music
-10. Open the **Players** view, tap the players you want in the scenario, and adjust the volumes
-11. Go back to **Now Playing** and long-press the scenario to save the group and volumes
+7. Open the **Settings** view and **hold the Stability header** to apply the shipped defaults — a new install starts with Auto-recover off and every timing at its minimum
+8. Open the **Discovery** view, set your subnet and IP range, and run a network scan to resolve player IP addresses
+9. Open the **Settings** view and create your first scenario (tap the header card, enter name/icon/master player)
+10. Switch to the **Now Playing** view and tap your scenario to start music
+11. Open the **Players** view, tap the players you want in the scenario, and adjust the volumes
+12. Go back to **Now Playing** and long-press the scenario to save the group and volumes
 
 ---
 
@@ -109,9 +110,10 @@ certainly not load on anything older than roughly **2024.10** — it uses the mo
 advice is simply to be current.
 
 **It is developed and run on Home Assistant OS.** Every `shell_command`, every `command_line` sensor
-and all five scripts use absolute `/config/packages/musiccast/…` paths, and the scripts need
-`bash`, `jq`, `python3`, `curl`, `base64`, `seq`, `xargs`, `mktemp`, `sort -V`, `find` and `date` to be
-present in Home Assistant's own environment. Container and venv Core installs are **untested rather
+and all five scripts use absolute `/config/packages/musiccast/…` paths, and the scripts need a working
+shell environment — among the tools they call are `bash`, `jq`, `python3`, `curl`, `base64`, `seq`,
+`xargs`, `mktemp`, `sort -V`, `find`, `date`, `awk`, `sed`, `cut` and `tr`. That names the ones worth
+checking on a non-HAOS install, not every coreutil the scripts touch. Container and venv Core installs are **untested rather
 than unsupported** — they may work if those tools are available and `/config` is the config directory,
 but nothing here has been verified against them.
 
@@ -256,7 +258,21 @@ Configuration* leaves the previous definitions live in memory, so an edited or n
 `shell_command` silently keeps running its old version. If a change to this package appears to have no
 effect, this is the first thing to check.
 
-### 4. Run Network Scan
+### 4. Apply the Shipped Defaults
+
+⚠️ **Do this before anything else, or the package will look broken.** Home Assistant does not give a
+new helper a value, so on a fresh install every setting sits at its minimum and **Auto-recover is
+off** — the recovery behaviour described above is present but disabled, and the timings are all at
+their lowest.
+
+Open the **Settings** view and **hold the Stability header card**. It offers to reset every setting to
+its default; accept. That one action turns Auto-recover on and sets every timing to the shipped value,
+which is also what the Guide view's defaults table lists.
+
+You only need it once, on a new installation. Afterwards the same gesture is how you get back to a
+known starting point if tuning has wandered.
+
+### 5. Run Network Scan
 
 Open the **Discovery** view in the MusicCast dashboard:
 
@@ -285,7 +301,7 @@ again.
 
 > **Zone 2 players** (e.g., a second output zone on an AV receiver) share their parent device's IP and cannot be matched by the network scan. They appear as unmatched (`0.0.0.0=media_player.zone2_name`). This is expected — they work for playback via HA but cannot be directly queried for presets.
 
-### 5. Create Your First Scenario
+### 6. Create Your First Scenario
 
 Open the **Settings** view:
 
@@ -354,10 +370,10 @@ A favorite can stop working while the music it points at is perfectly fine. The 
 
 The view for finding player IPs on the local network. Run once during setup, or re-run if devices change IP address.
 
-<img src="docs/Scan.jpg" width="20%" alt="Network Scan">
+<img src="docs/Scan.jpg" width="20%" alt="Discovery">
 
 **What you see:**
-- **Subnet + IP range sliders** — Set the network prefix (blank defaults to `192.168.1`; use e.g. `10.0.0` on another network) and the octet range to scan (typically the full subnet, 1–254)
+- **Subnet field and IP range sliders** — Type the network prefix (blank defaults to `192.168.1`; use e.g. `10.0.0` on another network) and drag the octet range to scan (typically the full subnet, 1–254)
 - **Matched devices** — Players found at their expected IPs, mapped to HA entity IDs
 - **Unmatched devices** — Players found on the network but not matched to a known HA entity (network name doesn't match the friendly name), or players where no IP was detected (e.g. Zone 2 of a multi-zone AVR, which shares its parent device's IP)
 
@@ -404,7 +420,7 @@ An overlay player is joined to a playing scenario on the fly by an automation, w
 - **Scenario detection tolerates extra members** — an active scenario is only cleared when one of its *defined* players leaves the group, never because an extra player joined (`orchestrator.yaml`, detect manual scenario).
 - **Master volume sync covers all live group members** — volume changes on the master scale every linked player proportionally, overlay players included.
 
-The shipped example (`musiccast_local.yaml`) links a patio speaker to the p laying kitchen master when the kitchen door stays open, and turns it off again after the door closes:
+The shipped example (`musiccast_local.yaml`) links a patio speaker to the playing kitchen master when the kitchen door stays open, and turns it off again after the door closes:
 
 - **Kitchen door open → patio overlay ON** — triggers when the door has been open for a configurable delay, when a kitchen-mastered scenario starts while the door is already open, or when the patio lights are turned on with the door open and music playing. Conditions: the active scenario's master is the kitchen player (dynamic check — no scenario names in code), the patio player isn't already linked, and the intent gate passes: outdoor temperature above the threshold **or** patio lights on (the lights only turn on by deliberate action, so they signal someone is out there despite the cold — e.g. at the grill). The overlay joins at the master's current volume scaled by the volume factor (below), waits for the master to be powered on first, verifies the join and retries once, and aborts cleanly if the door closes meanwhile.
 - **Kitchen door closed → patio music OFF** — unlinks and turns off the patio player after the door has been closed for a configurable delay. (Unlink before power-off matters: turning off a linked group member alone leaves it muted but still registered in the master's group.)
@@ -702,6 +718,29 @@ Members are treated differently: an unreachable *member* is skipped with a warni
 1. Check the player is powered and on the network — try it in the MusicCast app
 2. If the app reaches it but HA does not, reload the MusicCast integration
 3. If its IP has changed, re-run the network scan (Discovery view)
+
+</details>
+
+<details>
+<summary><strong>Notification: "MusicCast: &lt;scenario&gt; did not start"</strong></summary>
+
+The activation was still running when **Report failure after** elapsed, so it has failed. This is the
+case where nothing else can tell you: a device refusing a group call stops the activation where it
+stands, and every check that would normally report a problem runs later in the same script. Without
+this notification the only symptoms are powered-on speakers and silence.
+
+Distinct from *"scenario could not start"* above, which fires when the **master** is unreachable and is
+detected before anything is attempted. This one means the master answered and the grouping itself
+failed — usually a member.
+
+**Fix:**
+1. Tap the scenario again — a group call that failed once often succeeds
+2. If it fails again, check the log for the device that did not answer; the warning beside this
+   notification names the scenario, and the entries above it name the device
+3. If the same player keeps failing, restart it from the MusicCast app. A player can hold a stale group
+   id that no longer exists, which blocks every attempt to group it, and only a device restart clears it
+4. If the message says *"a scenario did not shut down"* instead, the same applies to the teardown — a
+   player did not confirm it had stopped
 
 </details>
 

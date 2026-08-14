@@ -230,11 +230,8 @@ automation:
         entity_id: input_boolean.musiccast_activation_in_progress
         to: 'on'
         for: "{{ states('input_number.musiccast_activation_timeout') | float(60) | int }}"
-    conditions:
-      # The favorite sweep holds these flags for the length of a full run, minutes rather
-      # than the seconds a rebuild takes — the one long hold that means work, not failure.
-      - condition: template
-        value_template: "{{ not is_state('script.musiccast_verify_favorites', 'on') }}"
+    # No carve-out for the favorite sweep, unlike the guard release above: the sweep holds
+    # musiccast_scenario_updating, never this flag, which only activation and teardown raise.
     actions:
       - variables:
           target: "{{ states('input_text.musiccast_activation_target') }}"

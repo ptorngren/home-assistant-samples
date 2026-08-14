@@ -1078,7 +1078,7 @@ views:
                 
 
   # ------------------------------------------------------
-  # VIEW 3: ADMIN - PRESETS
+  # VIEW 3: SETTINGS - STABILITY, SCENARIOS, PLAYERS, PRESETS
   # ------------------------------------------------------
   - title: Settings
     icon: mdi:tune
