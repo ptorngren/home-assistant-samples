@@ -221,8 +221,6 @@ automation:
     alias: "MusicCast: Detect playback stopped"
     description: "Resume playback that something outside HA paused or stopped."
     mode: single
-    variables:
-      blank_states: ['', 'None', 'unknown', 'unavailable']
     triggers:
       # The pause has to persist: a momentary blip between tracks or during a
       # buffer refill is not a stopped stream. Reuses the recovery settle so the
@@ -230,11 +228,37 @@ automation:
       # NOTE: input_number states are float strings ("4.0") — float before int, or
       # the int filter silently falls back to the default.
       - trigger: state
+        id: player_stopped
         entity_id: !include data/media_players.include
         to:
           - 'paused'
           - 'idle'
         for: "{{ states('input_number.musiccast_recovery_settle') | float(1) | int }}"
+
+      # Re-arm when the guard comes down. A stream ending makes the caption go stale
+      # too, so `detect_stale_caption` reacts to the same event and raises the guard to
+      # correct it — and the condition below then stands this automation down while the
+      # music is genuinely stopped. Seen 2026-08-13: master idle at 06:52:52, guard up at
+      # 06:52:57, this trigger blocked at 06:53:07, guard down at 06:53:13, and nothing
+      # ever resumed. The trigger has been and gone by then, so it needs re-arming rather
+      # than a longer wait: the guard cannot distinguish "the package is changing things"
+      # from "the package is reacting to the same fault I am".
+      - trigger: state
+        id: guard_cleared
+        entity_id: input_boolean.musiccast_scenario_updating
+        to: 'off'
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+      # The player to act on differs by trigger: the one that stopped, or — when the
+      # guard has just cleared — the active scenario's master, if it is still silent.
+      target_player: >-
+        {%- set scenario = states('input_text.musiccast_active_scenario') -%}
+        {%- set master = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') if scenario not in blank_states else '' -%}
+        {%- if trigger.id == 'guard_cleared' -%}
+          {{ master if master and states(master) in ['idle', 'paused'] else '' }}
+        {%- else -%}
+          {{ trigger.entity_id if trigger.entity_id == master else '' }}
+        {%- endif -%}
     conditions:
       - condition: state
         entity_id: input_boolean.musiccast_auto_recovery
@@ -247,25 +271,22 @@ automation:
       # the dashboard carries the pressing user's user_id; one from a script or
       # automation carries a parent_id. A device-side change carries neither, so
       # this is what stops the feature fighting a deliberate pause.
+      # Only meaningful for the player trigger: on the re-arm the context belongs to
+      # whatever lowered the guard, which says nothing about why the music stopped.
       - condition: template
         value_template: >-
-          {{ trigger.to_state.context.user_id is none
-             and trigger.to_state.context.parent_id is none }}
-      # Only the master of a currently-active scenario.
+          {{ trigger.id == 'guard_cleared'
+             or (trigger.to_state.context.user_id is none
+                 and trigger.to_state.context.parent_id is none) }}
+      # Resolves to the master of a currently-active scenario, still silent, or nothing.
       - condition: template
-        value_template: >-
-          {%- set scenario = states('input_text.musiccast_active_scenario') -%}
-          {%- if scenario in blank_states -%}
-            false
-          {%- else -%}
-            {{ trigger.entity_id == (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}
-          {%- endif -%}
+        value_template: "{{ target_player != '' }}"
     actions:
       # Called inline, not detached: mode: single then keeps this automation busy
       # for the duration, so the resume's own state changes cannot re-enter it.
       - action: script.musiccast_resume_playback
         data:
-          player: "{{ trigger.entity_id }}"
+          player: "{{ target_player }}"
 
   - id: musiccast_detect_silent_members
     alias: "MusicCast: Detect silent members"

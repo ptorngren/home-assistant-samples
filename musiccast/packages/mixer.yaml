@@ -1021,6 +1021,22 @@ script:
                   timeout: 10
                   continue_on_timeout: true
 
+                # Leave any group before driving this player through its presets. A device
+                # keeps its group membership through standby, so "every player was off" does
+                # not mean none of them is still enrolled — and playing a preset on a client
+                # takes it out of the group by changing its input, without either device
+                # being told. That leaves the pair inconsistent, which is one way a master
+                # ends up holding a group its members have left.
+                #
+                # continue_on_error is deliberate but not sufficient on its own: a failing
+                # group call raises MusicCastGroupException, which is not a HomeAssistantError
+                # and therefore aborts the run. Nothing here depends on the unjoin succeeding,
+                # so the risk is accepted rather than guarded.
+                - action: media_player.unjoin
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ player }}"
+
                 # Read the volume only once the player is up: a powered-off player
                 # reports None, and powering on resumes its last source at whatever
                 # volume it holds. That value is what has to go back afterwards —
