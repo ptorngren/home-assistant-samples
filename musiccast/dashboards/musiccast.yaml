@@ -1170,6 +1170,8 @@ views:
                 name: Wait at most
               - entity: input_number.musiccast_scenario_guard_timeout
                 name: Drop scenario lock after
+              - entity: input_number.musiccast_activation_timeout
+                name: Report failure after
               - entity: input_number.musiccast_max_volume
                 name: Max volume
               - entity: input_boolean.musiccast_debug
@@ -1780,6 +1782,7 @@ views:
           - **Trust dropout after:** the companion to **Trust players after** — that one is about what a player says of itself, this one about it being gone. How long a player must be missing from the group before the package treats the absence as real rather than a glitch. MusicCast devices drop out and rejoin by themselves — two rooms have been seen gone for a second and a third for seven, all returning unaided — and a player that comes back inside this window cancels the wait, so nothing happens at all. What happens when the window elapses depends on **Auto-recover**: on, the player is rejoined; off, the scenario is cleared. Raise it if something fires on drops that were healing on their own; lower it if a player that has genuinely left sits unlinked for too long.
           - **Wait at most:** a ceiling, not a wait. When the package takes a scenario down it asks the players to power off and then waits for them to confirm, instead of guessing how long they need; this is how long it waits before giving up on a player and carrying on. The teardown ends as soon as the last player answers — typically well under a second — so this number is only ever spent when a player is slow or unreachable. That makes it the opposite of **Trust players after**, which is always spent in full: raising this one costs nothing in normal use, and is the right response if a teardown ever seems to finish before a player has really stopped.
           - **Drop scenario lock after:** a safety net, not a timing. While the package rebuilds a group it raises a lock that stands down drop detection, the volume sync and the caption check, and lowers it when it finishes. If the script holding it dies part-way — a device refusing a group call is the usual way — the lock would stay up silently and the package would simply stop noticing faults, with nothing to show for it. This releases it and logs a warning. It has to outlast the longest rebuild your house performs, so raise it if it ever fires during a real activation; a full nine-player scenario here holds the lock for about 24 s.
+          - **Report failure after:** how long a scenario may be starting, or shutting down, before the package says it has failed. A grouping call that a device refuses stops the activation where it stands, and everything that would normally report a problem runs *later* in the same script — so the failure is silent by construction: two players powered on, no music, no scenario, nothing said. This watches from outside and raises a notification naming the scenario. It only reports; the lock is still cleared by **Drop scenario lock after**, which is why this number is much the shorter of the two. It has to outlast a legitimate rebuild — about 24 s for nine players here — so raise it if it ever fires while a scenario is still starting.
           - **Max volume:** a ceiling on the volumes the package sets itself — scenario volumes and members following the master (0% = off, no cap). Manual changes are never capped: any player, master or member, can be turned above it by hand — but members following a master above the cap stop at the cap.
           - **Debug logging:** off in normal use. On, every player state change is logged (`MusicCast transport:`) with who caused it — Home Assistant or the device itself. Worth turning on while investigating why a scenario misbehaved: auto-recover fixes some faults within seconds, so the only trace of an incident can otherwise be the one line saying it was fixed.
           **Hold the Stability header** to put every setting on the card back to the values below, after a confirmation. Use it when tuning has wandered and you want a known starting point — quicker than remembering which slider you moved.
@@ -1808,6 +1811,7 @@ views:
           | Trust dropout after | 5 s |
           | Wait at most | 5 s |
           | Drop scenario lock after | 180 s |
+          | Report failure after | 60 s |
           | Max volume | 0 % (no cap) |
           | Debug logging | off |
 

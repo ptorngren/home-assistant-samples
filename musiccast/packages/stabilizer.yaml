@@ -206,6 +206,70 @@ automation:
         target:
           entity_id: "{{ trigger.entity_id }}"
 
+  # Report an activation that never finished
+  # ----------------------------------------
+  # A grouping call that raises aborts scenario_toggle where it stands, so the mixer is
+  # never reached — and the mixer is where the "accepted but never started" check lives.
+  # Nothing downstream of the failure can report it, which is why an activation can fail
+  # leaving two players powered on, no scenario, and no other sign that anything happened.
+  # This watches from outside the scripts for exactly that shape.
+  #
+  # Separate from the guard release above on purpose: that one decides when a flag is safe
+  # to clear, this one decides when silence has lasted long enough to be worth telling
+  # someone about, and the second answer is much shorter than the first.
+  - id: musiccast_detect_activation_failed
+    alias: "MusicCast: Detect activation failure"
+    description: "Report a scenario activation that never completed."
+    mode: single
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      # NOTE: input_number states are float strings ("60.0") — float before int, or
+      # the int filter silently falls back to the default.
+      - trigger: state
+        entity_id: input_boolean.musiccast_activation_in_progress
+        to: 'on'
+        for: "{{ states('input_number.musiccast_activation_timeout') | float(60) | int }}"
+    conditions:
+      # The favorite sweep holds these flags for the length of a full run, minutes rather
+      # than the seconds a rebuild takes — the one long hold that means work, not failure.
+      - condition: template
+        value_template: "{{ not is_state('script.musiccast_verify_favorites', 'on') }}"
+    actions:
+      - variables:
+          target: "{{ states('input_text.musiccast_activation_target') }}"
+      - variables:
+          # The scenario's display name, so the message reads the way the dashboard does.
+          label: >-
+            {{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {})
+               .get(target, {}).get('name', target) }}
+          waited: "{{ states('input_number.musiccast_activation_timeout') | float(60) | int }}"
+      # Fixed notification_id so a retry replaces the notice instead of stacking up.
+      - action: persistent_notification.create
+        data:
+          notification_id: musiccast_activation_failed
+          title: >-
+            MusicCast: {{ label ~ ' did not start' if target not in blank_states
+                          else 'a scenario did not shut down' }}
+          message: >-
+            {% if target not in blank_states -%}
+            {{ label }} was still starting {{ waited }} s after it was tapped, so it has
+            failed: a device most likely refused to join the group. Tapping it again
+            usually works.
+            {%- else -%}
+            Shutting a scenario down has been running for {{ waited }} s and has not
+            finished, so a player is not answering.
+            {%- endif %}
+            Check the log for the device that did not answer; if it keeps happening,
+            restart that player from the MusicCast app.
+      - action: system_log.write
+        data:
+          message: >-
+            MusicCast: activation of '{{ target if target not in blank_states else '(teardown)' }}'
+            did not complete within {{ waited }} s — reporting it, since the aborted script cannot.
+          level: warning
+          logger: musiccast
+
   # Resume playback that something outside HA stopped
   # -------------------------------------------------
   # The transport-state counterpart of the auto-rejoin branch in
@@ -1117,6 +1181,10 @@ script:
             # Must outlast the longest scenario rebuild, so it is sized from measurement
             # rather than taste: a nine-player activation holds the lock for about 24 s.
             input_number.musiccast_scenario_guard_timeout: 180
+            # Comfortably past that same 24 s rebuild, so a slow activation is not reported
+            # as a failed one, and far short of the 180 s above: this decides when to speak,
+            # not when a flag is safe to clear.
+            input_number.musiccast_activation_timeout: 60
             # 0 = no cap. A ceiling is a property of one house's speakers and neighbours,
             # so the package ships without one rather than guessing a percentage.
             input_number.musiccast_max_volume: 0

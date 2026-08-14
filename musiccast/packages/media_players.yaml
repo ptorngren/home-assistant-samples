@@ -91,7 +91,8 @@ shell_command:
     ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with open(incl_path, 'w') as f:
         f.write('# MusicCast player list — single source of truth for group.musiccast_players and automation triggers\n')
-        f.write('# Edit this file and reload HA (Groups + Automations) when players are added or removed\n')
+        f.write('# Rewritten by every network scan — edits are lost. Exclude players by long-pressing\n')
+        f.write('# their tile in the Settings view, then reload Groups + Automations.\n')
         f.write('# NOTE: .include suffix (not .yaml) prevents HA package loader from treating this as a package definition\n')
         f.write('# Auto-updated by musiccast_toggle_exclude — ' + ts + '\n')
         for entity in entities:

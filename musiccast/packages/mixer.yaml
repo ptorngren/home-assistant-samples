@@ -673,6 +673,13 @@ script:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.musiccast_activation_in_progress
+          # Blank: this path raises the same flags as an activation, and a stale target
+          # would make a stalled shutdown report itself as a scenario that failed to start.
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.musiccast_activation_target
+            data:
+              value: ""
 
           - action: script.musiccast_teardown_group
             data:
@@ -708,6 +715,14 @@ script:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.musiccast_activation_in_progress
+          # Record what is being started before touching any device. If a grouping call
+          # raises, this script stops here and nothing downstream can report which
+          # scenario was meant to play — active_scenario still names the outgoing one.
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.musiccast_activation_target
+            data:
+              value: "{{ scenario }}"
 
           # Step 1: Tear down the currently active scenario (if any)
           # current_master/current_players use live group_members so ad-hoc linked players

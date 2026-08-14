@@ -72,6 +72,14 @@ input_text:
   musiccast_last_scenario:
     name: "MusicCast Last Scenario"
     max: 20
+  # The scenario activation is currently trying to start, written before any device is
+  # touched. It is the only record of the target while an activation is in flight:
+  # active_scenario still holds the outgoing scenario until the very last step, and
+  # last_scenario mirrors active_scenario, so neither can name an activation that
+  # never completed.
+  musiccast_activation_target:
+    name: "MusicCast Activation Target"
+    max: 20
   # Last non-blank playing-favorite caption/uri, kept so the favorite indicator can
   # be restored when a dropped scenario is re-activated by tapping it.
   musiccast_last_caption:
@@ -151,6 +159,18 @@ input_number:
     step: 30
     unit_of_measurement: s
     icon: mdi:timer-alert
+  # How long an activation may run before it is reported as failed. Shorter than the
+  # lock timeout above because the two answer different questions: that one asks when a
+  # flag is safe to clear, this one asks when silence has lasted long enough to be worth
+  # telling someone about. It has to exceed a legitimate rebuild — every join, settle and
+  # the mixer — so raise it if the report ever fires while a scenario is still starting.
+  musiccast_activation_timeout:
+    name: "MusicCast Report Failure After"
+    min: 15
+    max: 300
+    step: 15
+    unit_of_measurement: s
+    icon: mdi:bell-alert
   # The unit the settles between grouping steps are expressed in — unjoin, join and
   # stop each wait a documented multiple (0.5x, 1x, 2x). Distinct from the helper
   # above: this one covers grouping commands executing *before* playback starts, that
@@ -296,9 +316,13 @@ automation:
         target:
           entity_id: input_select.musiccast_scenario_editor_master
         data:
+          # Falls back to the '---' sentinel, which set_options above always includes.
+          # Before the first network scan the group holds no player that exists, so this
+          # list is empty and selecting from it would raise — the option would render
+          # blank, and a blank is not among the options.
           option: >
             {% set valid = expand('group.musiccast_players') | map(attribute='attributes.friendly_name') | list %}
-            {{ valid | first }}
+            {{ valid[0] if valid else '---' }}
 
   # Track the active scenario: snapshot the scenario name so a dropped scenario stays restorable,
   # and reset the per-player rejoin counts at each new session.
