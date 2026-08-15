@@ -39,6 +39,13 @@ group:
 shell_command:
   musiccast_network_scan: bash /config/packages/musiccast/media_players_writer.sh "{{ start_ip }}" "{{ end_ip }}" "{{ entities | tojson | base64_encode }}" "{{ output_csv }}" "{{ output_include }}"
 
+  # Ask the devices what group they think they are in. HA cannot answer this: it knows
+  # group_members, which is what it believes, while the role and group id live only on
+  # the device — and a player can hold a group id whose group no longer exists, then
+  # refuse every attempt to regroup it until it is restarted.
+  # Input: entities (list). Output on stdout: [{entity, role, group_id}, ...]
+  musiccast_group_state: bash /config/packages/musiccast/group_state_reader.sh "/config/packages/musiccast/data/media_players.csv" "{{ entities | tojson | base64_encode }}"
+
   # Toggle a player in/out of the exclude list (media_players.exclude)
   # Input: entity_id (e.g. media_player.peer_vanster)
   # Effect: adds if absent, removes if present — file created if missing

@@ -45,7 +45,7 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 
 ### Auto-Recovery
 
-A playing scenario can be disturbed from outside Home Assistant in two ways, and **Auto-Recovery** (toggle in the Settings view) handles both.
+A playing scenario can be disturbed from outside Home Assistant in two ways, and **Auto-Recovery** (toggle in the Settings view) handles both. ⚠️ **It ships switched off** — a new installation has to apply the shipped defaults once before any of this runs; see *Installation → Apply the Shipped Defaults*.
 
 **A player drops out of the group** — a device or network hiccup. The system rejoins it to its scenario automatically and keeps the current source, with no re-randomize.
 
@@ -110,11 +110,12 @@ certainly not load on anything older than roughly **2024.10** — it uses the mo
 advice is simply to be current.
 
 **It is developed and run on Home Assistant OS.** Every `shell_command`, every `command_line` sensor
-and all five scripts use absolute `/config/packages/musiccast/…` paths, and the scripts need a working
+and every script uses absolute `/config/packages/musiccast/…` paths, and the scripts need a working
 shell environment — among the tools they call are `bash`, `jq`, `python3`, `curl`, `base64`, `seq`,
 `xargs`, `mktemp`, `sort -V`, `find`, `date`, `awk`, `sed`, `cut` and `tr`. That names the ones worth
-checking on a non-HAOS install, not every coreutil the scripts touch. Container and venv Core installs are **untested rather
-than unsupported** — they may work if those tools are available and `/config` is the config directory,
+checking on a non-HAOS install, not every coreutil the scripts touch. Container and venv Core
+installs are **untested rather than unsupported** — they may work if those tools are available and
+`/config` is the config directory,
 but nothing here has been verified against them.
 
 ### Yamaha MusicCast Integration
@@ -194,6 +195,7 @@ config/
         ├── media_players_reader.sh
         ├── musiccast_presets_fetcher.sh
         ├── randomization_persistor.sh
+        ├── group_state_reader.sh
         └── data/
             ├── media_players.include   ← ships with a placeholder; copy it, do not skip it
             ├── scenarios.json          ← scenario metadata (created on first scenario)
@@ -260,10 +262,10 @@ effect, this is the first thing to check.
 
 ### 4. Apply the Shipped Defaults
 
-⚠️ **Do this before anything else, or the package will look broken.** Home Assistant does not give a
-new helper a value, so on a fresh install every setting sits at its minimum and **Auto-recover is
-off** — the recovery behaviour described above is present but disabled, and the timings are all at
-their lowest.
+⚠️ **Do this before anything else, or the package will look broken.** A helper with no stored value
+falls back to what Home Assistant considers empty — the minimum for a number, off for a switch — not to
+the value this package intends. So on a fresh install every timing sits at its lowest and
+**Auto-recover is off**: the recovery behaviour described above is present but disabled.
 
 Open the **Settings** view and **hold the Stability header card**. It offers to reset every setting to
 its default; accept. That one action turns Auto-recover on and sets every timing to the shipped value,

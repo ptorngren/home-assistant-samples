@@ -744,8 +744,10 @@ script:
           # Step 3: Wait for group_members attribute to propagate from hardware to HA
           # Without this delay, active_scenario would be committed before HA sees the updated
           # group_members, causing the UI to render an idle snapshot instead of linked state.
+          # Reads the helper rather than the `settle` variable defined at the top of this
+          # script: after the scenario_link call above, that variable no longer renders here.
           - delay:
-              seconds: "{{ settle * 2 }}"
+              seconds: "{{ (states('input_number.musiccast_device_settle') | float(1)) * 2 }}"
 
           # Step 4: Commit — triggers config-template-card re-render with accurate group state
           - action: input_text.set_value

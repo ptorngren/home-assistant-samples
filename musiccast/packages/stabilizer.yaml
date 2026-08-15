@@ -241,6 +241,45 @@ automation:
             {{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {})
                .get(target, {}).get('name', target) }}
           waited: "{{ states('input_number.musiccast_activation_timeout') | float(60) | int }}"
+          # The scenario's own players, so the probe below asks about the right devices.
+          # Falls back to the whole player group when the target is unknown, which is the
+          # teardown case.
+          suspects: >-
+            {%- set sc = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(target, {}) -%}
+            {{ sc.get('players', []) or (state_attr('group.musiccast_players', 'entity_id') or []) }}
+
+      # Now that something has gone wrong, ask the devices what group they think they are
+      # in. This is the one question Home Assistant cannot answer: it knows group_members,
+      # which is what it believes, while the role and group id live only on the device —
+      # and a player holding an id whose group no longer exists refuses every attempt to
+      # regroup it until it is restarted.
+      #
+      # Deliberately here rather than before the join: the phantom id is the wreckage of a
+      # failed handshake, not its cause, so a check running first sees nothing on a healthy
+      # system and cannot prevent the first failure. Asking after one costs nothing when
+      # everything works.
+      - action: shell_command.musiccast_group_state
+        data:
+          entities: "{{ suspects }}"
+        response_variable: group_state
+      # Parsed in one template on purpose: assigning stdout to a variable of its own lets
+      # Home Assistant coerce it to a native list, and from_json then receives a list and
+      # raises. Anything that is not a JSON list means "no information", not "nothing wrong".
+      - variables:
+          # A non-zero group id is the signature, and only that. `role: client` on its own is
+          # not evidence: idle players routinely report it while holding an all-zero id, so
+          # accusing on role would name healthy speakers alongside the stuck one.
+          culprits: >-
+            {%- set raw = group_state.stdout | default('', true) -%}
+            {%- set probed = (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) -%}
+            {%- set ns = namespace(found=[]) -%}
+            {%- for p in probed -%}
+              {%- if (p.group_id | default('') | replace('0', '') | length) > 0 -%}
+                {%- set ns.found = ns.found + [(state_attr(p.entity, 'friendly_name') or p.entity)] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.found }}
+
       # Fixed notification_id so a retry replaces the notice instead of stacking up.
       - action: persistent_notification.create
         data:
@@ -257,13 +296,20 @@ automation:
             Shutting a scenario down has been running for {{ waited }} s and has not
             finished, so a player is not answering.
             {%- endif %}
-            Check the log for the device that did not answer; if it keeps happening,
-            restart that player from the MusicCast app.
+            {% if culprits | length > 0 -%}
+            Still holding a group of their own: **{{ culprits | join(', ') }}**. A player stuck
+            that way refuses to be regrouped until it is restarted from the MusicCast app.
+            {%- else -%}
+            No player reports being stuck in a group, so check the log for the device that
+            did not answer.
+            {%- endif %}
       - action: system_log.write
         data:
           message: >-
             MusicCast: activation of '{{ target if target not in blank_states else '(teardown)' }}'
             did not complete within {{ waited }} s — reporting it, since the aborted script cannot.
+            {{ 'Players holding a group of their own: ' ~ (culprits | join(', ')) if culprits | length > 0
+               else 'No player reports being stuck in a group.' }}
           level: warning
           logger: musiccast
 
