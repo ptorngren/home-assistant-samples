@@ -158,9 +158,27 @@ with_underscores = re.sub(r'[\s\-]+', '_', ascii_name.lower())
 print(re.sub(r'[^a-z0-9_]', '', with_underscores).strip('_'))
 " "$NAME")
 
-        # Metadata first: sensor.musiccast_scenarios is built by globbing scenario_*.csv,
-        # so a CSV written before a failed metadata update becomes a scenario with no name
-        # or icon — visible, unusable, and left behind. Nothing exists until this succeeds.
+        # Refuse what cannot make a usable scenario, before anything is written. A blank
+        # name derives a blank id, which writes a "" key and a file literally called
+        # scenario_.csv; a blank master writes a CSV whose first line is ":0.25", giving a
+        # scenario nothing can play. Both are reachable from the editor, which passes its
+        # fields through untouched, and both leave junk that has to be cleared by hand.
+        # The name is checked through the derived id, so a name of only punctuation — which
+        # survives the field but derives to nothing — is caught with the empty one.
+        if [ -z "$SCENARIO_ID" ]; then
+            echo "Error: scenario name '${NAME}' gives no usable id; not created" >&2
+            exit 1
+        fi
+        if [ -z "$MASTER" ]; then
+            echo "Error: scenario '${NAME}' needs a master player; not created" >&2
+            exit 1
+        fi
+
+        # Metadata first, because meta_write is the step that can refuse: it aborts on a
+        # metadata file it cannot read. Ordered this way, that refusal leaves nothing at
+        # all; the other way round it would leave an orphan CSV, which sensor.
+        # musiccast_scenarios picks up by globbing scenario_*.csv and reports as a
+        # scenario the dashboard cannot show — the tiles are built from scenarios.json.
         meta_write create "$SCENARIO_ID" "$NAME" "$ICON" || exit 1
 
         # Create CSV with the master at DEFAULT_VOLUME if it does not already exist
@@ -198,11 +216,14 @@ except Exception as e:
         # delete <scenario_id>
         # Removes CSV file and entry from scenarios.json
         SCENARIO_ID="$2"
-        META_FILE="${BASE_DIR}/scenarios.json"
+
+        # Metadata first, as in create, and for the same reason: meta_write is the step
+        # that can refuse. Removing the CSV first would destroy the group and volumes and
+        # then abort on an unreadable metadata file, losing the scenario's contents while
+        # leaving its entry behind.
+        meta_write delete "$SCENARIO_ID" || exit 1
 
         rm -f "${BASE_DIR}/scenario_${SCENARIO_ID}.csv"
-
-        meta_write delete "$SCENARIO_ID"
         ;;
 
     rename)
@@ -210,6 +231,15 @@ except Exception as e:
         # Updates display name in scenarios.json; ID and CSV file are unchanged
         SCENARIO_ID="$2"
         NEW_NAME=$(echo "$3" | base64 -d)
+
+        # Same refusal as create: a blank name leaves a tile with nothing written on it.
+        # set_icon has no equivalent guard on purpose — a blank icon falls back to the
+        # dashboard's default and the scenario still works, so it is a cosmetic choice
+        # rather than an unusable state.
+        if [ -z "$NEW_NAME" ]; then
+            echo "Error: scenario '${SCENARIO_ID}' cannot be renamed to an empty name" >&2
+            exit 1
+        fi
 
         meta_write set "$SCENARIO_ID" "name=${NEW_NAME}"
         ;;

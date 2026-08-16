@@ -308,7 +308,11 @@ again.
 Open the **Settings** view:
 
 1. Tap the scenario management header card (top of the view)
-2. Enter a name (e.g., "Morning"), an icon (e.g., `mdi:coffee`), and select a master player
+2. Enter a name (e.g., "Morning"), an icon (e.g., `mdi:coffee`), and select a master player.
+   **The name and the master are both required** — a scenario without a name has nothing to show on its
+   button, and one without a master has nothing to play from. Saving without either changes nothing and
+   tells you which is missing, so you can open the editor again and complete it. The icon is optional
+   and falls back to a default.
 3. The scenario is created with a single-player default group
 4. Switch to **Now Playing** and tap the scenario to activate it
 5. Use the **Players** view to link additional players
@@ -740,8 +744,12 @@ failed — usually a member.
 **If it names players** — *"Still holding a group of their own: …"* — those players are stuck in a group
 that no longer exists. A player in that state refuses every attempt to regroup it, and **only restarting
 it from the MusicCast app clears it**; unjoining, standby and switching input all leave it stuck.
-Restart the named players, then tap the scenario again. Players that joined the group correctly are
-never named, so the list is the ones to act on.
+Restart the named players, then tap the scenario again. Players are judged against the group the master
+reports, so those that joined it correctly are not named.
+
+**If it says the master did not answer**, no player is judged at all — without the master's own group
+there is nothing to compare the others to. Check that the master is powered, on the network, and that
+its IP is current; re-run the network scan if it has changed.
 
 **If it says "No player reports being stuck in a group"**, the devices are all clean and the failure was
 something else — a player that did not answer in time, or a network hiccup. Then:

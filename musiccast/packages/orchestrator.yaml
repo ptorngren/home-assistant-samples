@@ -1178,6 +1178,37 @@ script:
             {{ expand('group.musiccast_players')
                | selectattr('attributes.friendly_name', 'eq', name)
                | map(attribute='entity_id') | first | default('') }}
+      # The persistor refuses a blank name or master, but a shell_command that exits
+      # non-zero only writes to the log — it does not raise — so the save would look like it
+      # worked while nothing had happened. Checking here turns that into a message naming the
+      # field. The persistor keeps its own guards: they defend callers this script does not own.
+      #
+      # The popup closes here as it does on success. Leaving it open does not survive contact
+      # with the notification: reading the notification dismisses the popup anyway, so the
+      # only thing a stop-without-close achieves is a message that describes a state the user
+      # is not in.
+      - if:
+          - condition: template
+            value_template: "{{ new_name | trim == '' or master_entity == '' }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: musiccast_scenario_editor_invalid
+              title: "MusicCast: scenario not saved"
+              message: >-
+                {% if new_name | trim == '' and master_entity == '' -%}
+                A scenario needs a name and a master player; neither was set.
+                {%- elif new_name | trim == '' -%}
+                A scenario needs a name.
+                {%- else -%}
+                **{{ new_name }}** needs a master player — the selection was still on `---`.
+                {%- endif %}
+                Nothing was changed. Open the editor again to fill it in.
+          - action: browser_mod.close_popup
+            data:
+              browser_id: "{{ browser_id }}"
+          - stop: "Scenario editor: name or master missing"
+
       - choose:
           - conditions: "{{ scenario_id == '' }}"
             sequence:
