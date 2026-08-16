@@ -266,9 +266,17 @@ automation:
         data:
           entities: "{{ suspects }}"
         response_variable: group_state
-      # Parsed in one template on purpose: assigning stdout to a variable of its own lets
-      # Home Assistant coerce it to a native list, and from_json then receives a list and
-      # raises. Anything that is not a JSON list means "no information", not "nothing wrong".
+      # Decoded once, here, and every consumer below reads the decoded list.
+      # ⚠️ It is the *parsed* result that is safe to hold, not the raw stdout: assigning stdout
+      # to a variable lets Home Assistant coerce the rendered text into a native list, and
+      # from_json then receives a list and raises. A list assigned to a variable has no such
+      # problem — it is already a list, and from_json never sees it twice.
+      # Anything that is not a JSON list means "no information", not "nothing wrong".
+      - variables:
+          probed: >-
+            {%- set raw = group_state.stdout | default('', true) -%}
+            {{ raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else [] }}
+
       # Two things are NOT evidence on their own, and each would name healthy speakers:
       #   `role: client` — idle players routinely report it while holding an all-zero id.
       #   a non-zero group id — that is also what a player that joined *this* group reports,
@@ -281,21 +289,15 @@ automation:
           # Nobody answering is not the same as everybody being clean. An empty result means
           # the probe learned nothing — no CSV to read IPs from, or no player on the network —
           # and saying "no player reports being stuck" would present that absence as a finding.
-          probe_empty: >-
-            {%- set raw = group_state.stdout | default('', true) -%}
-            {{ (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) | count == 0 }}
+          probe_empty: "{{ probed | count == 0 }}"
           # ⚠️ A master that did not answer leaves no reference group, and without one every
           # correctly-joined member looks wrong — the same false accusation this test exists
           # to prevent, reached by a different route. So silence is reported as silence.
           master_silent: >-
-            {%- set raw = group_state.stdout | default('', true) -%}
-            {%- set probed = (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) -%}
             {{ scenario_master != ''
                and (probed | selectattr('entity', 'eq', scenario_master) | list | count) == 0
                and (probed | count) > 0 }}
           culprits: >-
-            {%- set raw = group_state.stdout | default('', true) -%}
-            {%- set probed = (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) -%}
             {%- set master_seen = probed | selectattr('entity', 'eq', scenario_master) | list -%}
             {%- set ns = namespace(found=[]) -%}
             {%- if scenario_master == '' or master_seen | count > 0 -%}
