@@ -278,6 +278,12 @@ automation:
       # On the teardown path there is no master, and nothing should hold a group at all, so
       # the empty master makes every non-zero id a suspect — the same expression covers both.
       - variables:
+          # Nobody answering is not the same as everybody being clean. An empty result means
+          # the probe learned nothing — no CSV to read IPs from, or no player on the network —
+          # and saying "no player reports being stuck" would present that absence as a finding.
+          probe_empty: >-
+            {%- set raw = group_state.stdout | default('', true) -%}
+            {{ (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) | count == 0 }}
           # ⚠️ A master that did not answer leaves no reference group, and without one every
           # correctly-joined member looks wrong — the same false accusation this test exists
           # to prevent, reached by a different route. So silence is reported as silence.
@@ -326,6 +332,9 @@ automation:
             {% if culprits | length > 0 -%}
             Still holding a group of their own: **{{ culprits | join(', ') }}**. A player stuck
             that way refuses to be regrouped until it is restarted from the MusicCast app.
+            {%- elif probe_empty | bool -%}
+            No player answered when asked what group it is in, so nothing could be checked —
+            the players may be off the network, or their IP list may need a new scan.
             {%- elif master_silent | bool -%}
             The master itself did not answer, so the other players cannot be judged against it —
             check that it is powered and on the network, and that its IP is current.
@@ -339,8 +348,9 @@ automation:
             MusicCast: activation of '{{ target if target not in blank_states else '(teardown)' }}'
             did not complete within {{ waited }} s — reporting it, since the aborted script cannot.
             {{ 'Players holding a group of their own: ' ~ (culprits | join(', ')) if culprits | length > 0
-               else ('The master did not answer the probe, so members were not judged.' if master_silent | bool
-                     else 'No player reports being stuck in a group.') }}
+               else ('No player answered the probe, so nothing was checked.' if probe_empty | bool
+                     else ('The master did not answer the probe, so members were not judged.' if master_silent | bool
+                           else 'No player reports being stuck in a group.')) }}
           level: warning
           logger: musiccast
 

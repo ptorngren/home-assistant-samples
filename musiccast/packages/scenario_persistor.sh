@@ -198,6 +198,16 @@ print(re.sub(r'[^a-z0-9_]', '', with_underscores).strip('_'))
         SCENARIO_ID="$2"
         NEW_MASTER="$3"
 
+        # The same refusal as create and rename, and the one that matters most: this is the
+        # only write path that damages an *existing* scenario. An empty master writes a first
+        # line of ":0.25" and demotes the real master to a member, leaving a scenario that
+        # cannot play. The editor validates before calling, but these guards exist for the
+        # callers this script does not own.
+        if [ -z "$NEW_MASTER" ]; then
+            echo "Error: scenario '${SCENARIO_ID}' cannot be given an empty master" >&2
+            exit 1
+        fi
+
         python3 -c "
 import sys
 path, new_master, default_vol = sys.argv[1:]
