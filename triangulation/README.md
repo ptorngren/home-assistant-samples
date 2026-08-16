@@ -2,25 +2,29 @@
 
 Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room you're in. The system works by capturing a unique "fingerprint" of Bluetooth devices at each location, then matching live scans against those fingerprints to determine your position. It integrates seamlessly with Home Assistant automations and the screensaver system.
 
-**What you get:** A single `input_text` entity (`input_text.bt_device_charger_locations`) that reports the detected location, updated whenever your phone docks on a charger or manual trigger occurs. Use this in automations for location-aware actions.
+**What you get:** One `input_text` entity (`input_text.bt_device_charger_locations`) holding a JSON map of device → detected location, e.g. `{"my_phone": "kitchen"}`. It updates whenever a device docks on a charger, and clears that device's entry when it is unplugged. Automations read their own device's key out of the map — see *Using Location in Automations*.
 
 ---
 
 ## TL;DR – Quick Start
 
-**Setup takes ~10 minutes. Here's what you'll do:**
+**Installing takes ~10 minutes. Calibrating is the long part** — expect to revisit each room
+several times over the following days before detection is dependable (see *Setup Workflow*).
 
-1. Register the BT Triangulation dashboard in Home Assistant's `configuration.yaml`
-2. Copy the dashboard and package files to your `dashboards/` and `packages/` directories
-3. Reload packages in Home Assistant (Developer Tools → YAML → Packages)
-4. Open the BT Triangulation dashboard and enter your location names (e.g., "kitchen, garage, bedroom")
-5. Install HACS components if not already present (primarily `button-card`, `card-mod`, `browser-mod`)
-6. Configure your scan source:
+1. Install the HACS components (see Prerequisites) — the dashboard is built from them and renders
+   broken cards without them
+2. Register the BT Triangulation dashboard in Home Assistant's `configuration.yaml`
+3. Copy the dashboard and package files to your `dashboards/` and `packages/` directories
+4. Add the recorder exclusions (see Installation step 4)
+5. **Restart Home Assistant** — the package defines `shell_command` entries and a recorder filter,
+   neither of which a package reload picks up
+6. Open the BT Triangulation dashboard and enter your location names (e.g., "kitchen, garage, bedroom")
+7. Configure your scan source:
    - **For Android with Tasker:** Set up the "Phone Charging - BT Scan" task/profile to send Bluetooth data on charger connect
    - **For other sources:** Post JSON to the webhook endpoint (see Scan Sources section)
-7. Visit each location with your phone and capture fingerprints
-8. Review the "Scores for Latest Scan" table to validate detection accuracy
-9. Use `input_text.bt_device_charger_locations` in your automations for location-aware logic
+8. Visit each location with your phone and capture fingerprints
+9. Review the "Scores for Latest Scan" table to validate detection accuracy
+10. Read your device's entry from `input_text.bt_device_charger_locations` in your automations
 
 ---
 
@@ -28,65 +32,97 @@ Bluetooth triangulation uses beacon signal strength (RSSI) to detect which room 
 
 After setup, you'll have:
 
-- **Location entity:** `input_text.bt_device_charger_locations` — reports the detected location (e.g., "kitchen", "garage")
+- **Location entity:** `input_text.bt_device_charger_locations` — a JSON map of device → detected location, e.g. `{"my_phone": "kitchen", "kitchen_tablet": "kitchen"}`. One entity serves every device; each has its own key
 - **Dashboard:** View the latest BT signals reported via webhook, manage beacon fingerprints, and tune the algorithm
 - **Persistent fingerprints:** Automatically saved after each capture; survives Home Assistant restarts
 - **Beacon management:** Ignore unreliable beacons globally or per-location with a tap/hold gesture
 - **Scan history statistics:** Per-beacon signal history accumulated across captures and merges, powering the variance statistics (sample count and standard deviation)
 
-**Example automation using the location entity:**
+**Example automation using the location entity** — note that the state is a map, so the automation
+picks its device's key out of it rather than using the state directly:
 
 ```yaml
 automation:
-  - alias: "Different Scenarios by Location"
-    trigger:
-      platform: state
-      entity_id: input_text.bt_device_charger_locations
-    action:
-      service: script.set_screensaver_scenario
-      data:
-        scenario: "{{ states('input_text.bt_device_charger_locations') }}"
+  - alias: "Kitchen Lights on Arrival"
+    triggers:
+      - trigger: state
+        entity_id: input_text.bt_device_charger_locations
+    conditions:
+      - condition: template
+        value_template: >
+          {% set device = 'my_phone' %}
+          {{ (states('input_text.bt_device_charger_locations') | from_json({})).get(device) == 'kitchen' }}
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.kitchen
 ```
+
+Replace `my_phone` with your device's id — the `browser_id` your scan source posts, after the
+transform described under *Scan Sources*.
 
 ---
 
 ## Prerequisites
+
+### Home Assistant
+
+**This package tracks current Home Assistant.** It is developed and run on the latest stable release
+and adopts new syntax as HA introduces it, so **no minimum version is maintained or tested**. The
+practical advice is simply to be current.
+
+**It is developed and run on Home Assistant OS.** Every `shell_command` and `command_line` sensor
+uses absolute `/config/packages/triangulation/…` paths, and `bt_fingerprints_persistor.sh` needs a
+working shell environment — it calls `bash`, `python3` and `base64`. Container and venv Core installs
+are **untested rather than unsupported**: they may work if those tools are available and `/config` is
+the config directory, but nothing here has been verified against them.
 
 ### Required Files
 
 Ensure you have the triangulation package and dashboard in your Home Assistant config:
 
 ```
-H:/
+config/
 ├── dashboards/
-│   ├── bt_triangulation.yaml
-│   └── ...
-├── packages/
-│   └── triangulation/
-│       ├── bt_triangulation.yaml
-│       ├── bt_location_symmetric_ratio.yaml
-│       ├── data/
-│       │   └── ...
-│       └── ...
-└── www/
-    └── docs/
-        └── triangulation-README.md  (this file)
+│   └── bt_triangulation.yaml
+└── packages/
+    └── triangulation/
+        ├── bt_triangulation.yaml
+        ├── bt_location_symmetric_ratio.yaml
+        ├── bt_fingerprints_persistor.sh
+        └── data/                        (created on first write)
+            ├── bt_fingerprints.json
+            ├── bt_ignored.json
+            └── bt_statistics.json
 ```
+
+`bt_fingerprints_persistor.sh` is easy to overlook — every fingerprint read and write goes through
+it, so the package does nothing without it.
 
 ### Required HACS Components
 
-Install these via HACS (Settings → Devices & Services → HACS):
+**HACS itself is a prerequisite** — it is not part of Home Assistant and has to be installed first;
+see [hacs.xyz](https://hacs.xyz) for its own instructions. Once it is in place, HACS opens from the
+**sidebar**.
 
-- `button-card`
-- `card-mod`
-- `browser-mod`
-- `mushroom-template-card`
-- `mushroom-chips-card`
-- `mushroom-title-card`
-- `stack-in-card`
-- `slider-entity-row`
-- `auto-entities`
-- Optional: `config-template-card`, `scheduler-card`
+All seven are **frontend plugins** rather than integrations, so they are found under HACS →
+*Frontend* (in older HACS versions; current releases present one combined list). The exception is
+`browser-mod`, which is both — see the note below.
+
+| Component | Purpose |
+|---|---|
+| `button-card` | Beacon rows, location headers, every interactive card |
+| `decluttering-card` | Reusable card templates (reduces dashboard YAML size) |
+| `auto-entities` | Dynamic beacon and location tables |
+| `mushroom-template-card` | Status chips and summary tiles |
+| `stack-in-card` | Grouping cards into single bordered blocks |
+| `browser-mod` | Range Editor popup, capture confirmations, and the browser id that attributes a capture to the device that ran it |
+| `card-mod` | CSS styling for cards |
+
+⚠️ **`browser-mod` needs a second step the others do not.** It is an integration as well as a card, so
+after installing it from HACS you must also add it under **Settings → Devices & Services → Add
+Integration → Browser Mod**, and restart if prompted. Skipping this fails quietly: the dashboard
+loads and the tables work, but the popups never open.
 
 ---
 
@@ -112,8 +148,9 @@ The dashboard will be accessible at: `https://your-ha-url/dashboard-bt-triangula
 ### 2. Copy Dashboard & Package Files
 
 - Copy files from `dashboards/` to your `dashboards/` directory
-- Copy all files from `packages/triangulation/` to your `packages/triangulation/` directory
-  - The `data/` subdirectory will be created automatically after the first scan
+- Copy all files from `packages/triangulation/` to your `packages/triangulation/` directory,
+  including `bt_fingerprints_persistor.sh`
+  - The `data/` subdirectory is created by the persistor on its first write
 
 ### 3. Verify Packages Are Loaded
 
@@ -139,14 +176,18 @@ recorder:
 
 `sensor.bt_merge_statistics` holds the scan history, which is file-backed and simply too large to record. `sensor.bt_device_names` is a display lookup that grows without bound — a defect rather than a design trade-off, so the exclusion is a mitigation; see *Device name lookup grows without bound* under Known Limitations.
 
-**Note:** Recorder filters are read when the integration starts, so this change needs a full Home Assistant restart. Reloading packages (step 5) does not apply it.
+**Note:** Recorder filters are read when the integration starts, so this change needs a full Home Assistant restart — step 5. A package reload does not apply it.
 
-### 5. Reload Packages
+### 5. Restart Home Assistant
 
-In Home Assistant:
-- Go to Developer Tools → YAML
-- Click "Reload Packages"
-- Or restart Home Assistant entirely
+**A first install needs a full restart, not a package reload.** The package defines six
+`shell_command` entries, and those are read only at startup — reloading packages leaves every
+fingerprint read and write unavailable. The recorder exclusions from step 4 are read at startup
+too.
+
+Once the package is running, later edits to its automations, scripts and templates can be picked
+up with Developer Tools → YAML → Reload Packages. Editing the `shell_command` block itself always
+needs a restart.
 
 ---
 
@@ -157,9 +198,9 @@ The triangulation system consists of several YAML files that work together:
 ### `bt_triangulation.yaml` (Core Package)
 Main orchestrator that sets up the webhook endpoint and coordinate detection logic:
 - **`automation:bt_phone_charger_detect_location`** — Receives Tasker webhook with BT scan results, triggers location detection
-- **`automation:bt_phone_charger_clear_location`** — Clears location when phone unplugged from charger
-- **`input_text.bt_device_charger_locations`** — Stores detected location (e.g., "kitchen", "garage")
-- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip `_FKB` suffix)
+- **`automation:bt_phone_charger_clear_location`** — Removes a device's entry when it is unplugged; driven by the `phone_charger_disconnect` webhook (see *Scan Sources*)
+- **`input_text.bt_device_charger_locations`** — JSON map of device → detected location, e.g. `{"my_phone": "kitchen"}`. Capped at 255 characters, so keep device and location names short
+- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip a `_fkb` suffix — matched case-sensitively, so use lowercase in your browser ids)
 - **`script.bt_detect_charger_location`** — Coordinates location detection by calling matching algorithms
 
 **You should NOT need to edit this file.**
@@ -309,9 +350,10 @@ for (var i = 0; i < bt_address.length; i++) {
         rssi: parseInt(bt_signal_strength[i])
     });
 }
-var payload = JSON.stringify({ devices: devices });
+var payload = JSON.stringify({ browser_id: "[YOUR_DEVICE_ID]", devices: devices });
 ```
 - **Purpose:** Converts Tasker's internal variables into a structured JSON object. Loops through discovered devices, pairing MAC address, name, and signal strength (RSSI).
+- ⚠️ **`browser_id` identifies which device the scan came from**, and becomes that device's key in `input_text.bt_device_charger_locations`. Omit it and every source lands under `unknown`, so two devices overwrite each other. Use a stable, short id — `my_phone`, `kitchen_tablet`. The working version of this task is in `screensaver/docs/tasker-mobile.xml`.
 
 **Action 3: HTTP Request**
 - **Category:** `Net` → `HTTP Request`
@@ -339,7 +381,7 @@ var payload = JSON.stringify({ devices: devices });
 **Trigger Type:** `State` profile
 - **Trigger:** `State` → `Power` → `Source: Any` (detects charger connection)
 - **Entry Task:** Link to "Send BT Raw Data" task (above)
-- **Exit Task:** None (optional: could reset location to "unknown" when unplugged)
+- **Exit Task:** POST to the disconnect webhook, so the device's location is cleared when it is unplugged (see *The disconnect webhook* below). Without it, the last detected location persists indefinitely and automations keep believing the phone is still on that charger.
 
 **Note:** The task can (and should) be embedded in the profile that starts the screensaver as the last task after launching Fully Kiosk Browser.
 
@@ -351,6 +393,7 @@ Any system capable of sending JSON to Home Assistant's webhook system can be a s
 
 ```json
 {
+  "browser_id": "my_phone",
   "devices": [
     {
       "mac": "AA:BB:CC:DD:EE:FF",
@@ -367,6 +410,28 @@ Any system capable of sending JSON to Home Assistant's webhook system can be a s
 ```
 
 **Webhook URL:** `POST http://[YOUR_HA_IP]:8123/api/webhook/phone_charger_bt`
+
+**`browser_id` is required for multi-device use.** It becomes the device's key in
+`input_text.bt_device_charger_locations`; when it is missing the scan is filed under `unknown`, and
+a second device posting without one overwrites the first. A device id is derived from it by
+stripping a trailing `_fkb` — the pattern lives in `sensor.dashboard_logic_config` and exists so a
+tablet running Fully Kiosk Browser shares one entry with itself.
+
+#### The disconnect webhook
+
+Post this when a device leaves its charger, to remove its entry from the map:
+
+```json
+{
+  "browser_id": "my_phone",
+  "event": "power_disconnected"
+}
+```
+
+**Webhook URL:** `POST http://[YOUR_HA_IP]:8123/api/webhook/phone_charger_disconnect`
+
+Nothing else clears a location. Skip this and the map keeps reporting the last charger the device
+docked on, indefinitely.
 
 **Example:** Scan Bluetooth devices on a Linux machine and send to Home Assistant:
 
@@ -866,6 +931,14 @@ The main working view for capturing and curating location fingerprints. Place yo
 
 **Use this to:** Identify overlapping beacons (appearing in multiple locations with similar RSSI), detect location pairs that might confuse the algorithm, and manage global beacon ignores.
 
+### Guide
+
+**What it does:** Carries the same instructions as this README, in the dashboard itself — a quick
+start, then a card per view explaining every tap, double-tap and hold gesture available there.
+
+**Use this to:** Check what a gesture does while you are standing in the room with the phone,
+without going back to the README.
+
 ---
 
 ## Common Tasks
@@ -941,51 +1014,54 @@ Use the **"Clear Statistics"** button (next to "Clear Fingerprints") to reset al
 
 ## Using Location in Automations
 
-The detected location is stored in `input_text.bt_device_charger_locations`. Use this entity in your automations to trigger location-aware actions.
+Detected locations are stored in `input_text.bt_device_charger_locations` as a JSON map of
+device → location:
 
-### Example: Switch Screensaver Scenario by Location
+```json
+{"my_phone": "kitchen", "kitchen_tablet": "kitchen"}
+```
+
+⚠️ **The state is the whole map, never a bare location name.** A trigger written `to: "kitchen"`
+can never fire, and passing `states(...)` straight into a service call passes a JSON blob. Every
+automation has to pick its own device's key out of the map.
+
+### Example: Act when one device arrives at a location
+
+Triggering on the entity fires on *any* device's movement, so the condition compares the old and
+new maps and fires only when this device's entry newly became `garage`:
 
 ```yaml
 automation:
-  - alias: "Set Screensaver Scenario by Location"
-    trigger:
-      platform: state
-      entity_id: input_text.bt_device_charger_locations
-    action:
-      service: input_select.select_option
-      target:
-        entity_id: input_select.screensaver_scenario
-      data:
-        option: "{{ states('input_text.bt_device_charger_locations') }}"
+  - alias: "Garage Music on Arrival"
+    triggers:
+      - trigger: state
+        entity_id: input_text.bt_device_charger_locations
+    conditions:
+      - condition: template
+        value_template: >
+          {% set device = 'my_phone' %}
+          {% set old_map = (trigger.from_state.state if trigger.from_state else '{}') | from_json({}) %}
+          {% set new_map = (trigger.to_state.state if trigger.to_state else '{}') | from_json({}) %}
+          {{ new_map.get(device, '') == 'garage' and old_map.get(device, '') != 'garage' }}
+    actions:
+      - action: script.play_garage_radio
+    mode: single
 ```
 
-### Example: Adjust Media or Smart Home Actions
+Without the old-map half of the condition the automation re-fires every time *any* device docks
+anywhere, because the entity changes while your device's entry stays `garage`.
 
-```yaml
-automation:
-  - alias: "Play Location-Specific Music"
-    trigger:
-      platform: state
-      entity_id: input_text.bt_device_charger_locations
-      to: "kitchen"
-    action:
-      service: script.play_kitchen_radio
+### Example: Read a location anywhere else
 
-  - alias: "Bedroom Night Mode"
-    trigger:
-      platform: state
-      entity_id: input_text.bt_device_charger_locations
-      to: "bedroom"
-    action:
-      - service: light.turn_off
-        target:
-          entity_id: light.bedroom_lights
-      - service: input_number.set_value
-        target:
-          entity_id: input_number.bedroom_brightness
-        data:
-          value: 10
+In a template sensor, a card, or a condition, read the key directly:
+
+```jinja
+{% set device = 'my_phone' %}
+{{ (states('input_text.bt_device_charger_locations') | from_json({})).get(device, 'unknown') }}
 ```
+
+`from_json({})` supplies the fallback for an empty or malformed state, which is what you get before
+the first scan arrives.
 
 ---
 

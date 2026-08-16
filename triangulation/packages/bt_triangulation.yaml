@@ -129,7 +129,9 @@ shell_command:
   bt_ignored_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored "{{ json_content | to_json | base64_encode }}"'
   bt_ignored_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
   bt_statistics_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics "{{ json_content | to_json | base64_encode }}"'
-  bt_statistics_clear: "echo '{\"statistics\":[]}' > /config/packages/triangulation/data/bt_statistics.json"
+  # Wrapped in bash -c: without a template in the command, HA runs shell_command through exec
+  # rather than a shell, so && and > would be passed to mkdir as literal arguments.
+  bt_statistics_clear: 'bash -c "mkdir -p /config/packages/triangulation/data && echo ''{\"statistics\":[]}'' > /config/packages/triangulation/data/bt_statistics.json"'
 
 # ------------------------------------------------------------------
 # BT SENSORS (Command-line integration)

@@ -26,26 +26,39 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
            title: Screensaver
            icon: mdi:monitor-dashboard
            show_in_sidebar: true
-
-         dashboard-bt-triangulation:  # Triangulation: https://your-ha-url/dashboard-bt-triangulation
-           mode: yaml
-           filename: dashboards/bt_triangulation.yaml
-           title: BT Triangulation
-           icon: mdi:bluetooth
-           show_in_sidebar: true
      ```
+   - Register `dashboard-bt-triangulation` as well **only if you also install the triangulation
+     package** — a dashboard entry whose file is missing appears in the sidebar and errors when
+     opened. Its own README covers that setup.
    - **Main screensaver:** Accessible at `https://your-ha-url/dashboard-screensaver/home?kiosk`
      - Use `?kiosk` parameter to hide sidebar/header for clean display
 
 
 2. **Copy the dashboard**
-   - Import `screensaver.yaml` into your `dashboards/` directory.
+   - Import `dashboards/screensaver.yaml` into your `dashboards/` directory.
 
 3. **Copy package files to packages/ directory**
-   - Copy `common.yaml` and `screensaver_local.yaml` into your `packages/` directory
-   - `common.yaml` contains shared components (time/date sensor) used by multiple packages
-   - `screensaver_local.yaml` contains local/customizable sensors, automations and entity mappings
+   - Copy `screensaver_settings.yaml` and `screensaver_local.yaml` into your
+     `packages/screensaver/` directory — the first ships as-is, the second holds the
+     local/customizable sensors, automations and entity mappings
    - See the Triangulation project README for location detection package setup
+
+   ⚠️ **The clock needs `sensor.time`, which Home Assistant does not provide by default.** The
+   display reads `states['sensor.time']`, so without this the largest element on the screen is
+   simply blank — no error, nothing in the log. Add the `time_date` platform anywhere in your
+   configuration; a `packages/common.yaml` of your own is a good home for it, since other packages
+   tend to want the same sensor:
+
+   ```yaml
+   sensor:
+     - platform: time_date
+       display_options:
+         - 'time'
+         - 'date'
+   ```
+
+   Only `sensor.time` is read by the display — the date line is computed in the browser from its
+   own clock. `date` is included above because it costs nothing and other packages commonly want it.
 
 4. **Add packages directive to configuration.yaml**
    - If not already present, add this to your `configuration.yaml`:
@@ -63,24 +76,23 @@ This gives you a static, manually managed/always-on dashboard in Fully Kiosk:
 
 6. **Install required HACS components**
 
-   **Core (required for dashboard to function):**
-   - `button-card` — Custom button implementation with multiple features (tap actions, templates, styling)
-   - `card-mod` — CSS styling for Home Assistant cards
-   - `browser-mod` — Browser automation and device-aware actions (required for tap action routing)
-   - `decluttering-card` — Reusable card template system for reducing YAML duplication
+   **HACS itself is a prerequisite** — it is not part of Home Assistant and has to be installed
+   first; see [hacs.xyz](https://hacs.xyz) for its own instructions. Once it is in place, HACS
+   opens from the **sidebar**.
 
-   **UI Components (required for visual design):**
-   - `mushroom-template-card` — Template-based card with icon/state display
-   - `mushroom-chips-card` — Compact chip-based button design
-   - `mushroom-title-card` — Consistent title styling
-   - `stack-in-card` — Card grouping and layout control
-   - `slider-entity-row` — Inline slider for numeric values
-   - `auto-entities` — Dynamic entity list generation based on filters
+   The screensaver is deliberately built from few components — the whole display is button-card
+   and CSS. All four are required:
 
-   **Optional but used in this implementation:**
-   - `mini-media-player` — Compact media player display
-   - `config-template-card` — Jinja2 template support for complex cards
-   - `scheduler-card` — Automation scheduling interface
+   - `button-card` — every element on the display: clock, weather, temperature, tap targets
+   - `decluttering-card` — the card template each display element is stamped from
+   - `card-mod` — CSS styling, including the portrait/landscape layout switch
+   - `browser-mod` — supplies the Browser ID that makes tap actions device-aware
+
+   ⚠️ **`browser-mod` needs a second step the others do not.** It is an integration as well as a
+   card, so after installing it from HACS you must also add it under **Settings → Devices &
+   Services → Add Integration → Browser Mod**, and restart if prompted. Skipping it fails quietly:
+   the display renders, but every device reports the same identity and tap routing goes to the
+   wrong room.
 
 ➡️ At this point, the screensaver dashboard itself works.
 
@@ -137,10 +149,10 @@ To achieve **automatic activation, clean exit, and device-aware behavior**, addi
      - **Restrict to home** (if the phone also charges away, e.g. in a car): add a **State → Net → WiFi Connected** context so the profile fires only on your home network. Enter your home SSID in the field; if you have several home SSIDs sharing a prefix, use a wildcard (e.g. `p2r-*`), or list them separated by `/`. This keeps the home-tailored screensaver from launching away from home and lets you use the local Start URL (stable Browser ID). Alternatively, gate on reachability of the HA server IP for a name-independent "am I home" check.
    - **Exit handling:** Use Fully Kiosk REST API to cleanly exit screensaver
 
-13. **Reference configuration examples** (Recommended)
-   - `fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
-   - `tasker-mobile.xml` — Tasker profiles for the phone (wireless-charging activation + BT scan; import via Tasker)
-   - `tasker-kitchentablet.xml` — Tasker profiles for the kitchen tablet (always-on activation; import via Tasker)
+13. **Reference configuration examples** (Recommended) — all three are in `screensaver/docs/`
+   - `docs/fully-export.json` — Fully Kiosk Browser exported configuration (import via FKB settings)
+   - `docs/tasker-mobile.xml` — Tasker profiles for the phone (wireless-charging activation + BT scan; import via Tasker)
+   - `docs/tasker-kitchentablet.xml` — Tasker profiles for the kitchen tablet (always-on activation; import via Tasker)
 
 ➡️ This is what turns the dashboard into a *true screensaver* rather than a static wall display.
 ➡️ If you are not interested in Android automation, you can still use the dashboard as a clean, always-on wall display.
@@ -157,15 +169,20 @@ Time, date, temperature, weather, and 5-day forecast in a clean, minimalist layo
 
 ## Customization & Local Adaptation
 
-The screensaver system is split into two packages to separate generic/reusable logic from local/customizable settings:
+The screensaver ships two package files — one generic, one you adapt — plus one Home Assistant
+sensor you configure yourself:
 
 ## Package Structure
 
-### `common.yaml` (Shared / Reusable)
-Contains truly generic components used by multiple packages (screensaver, motorvarmare, etc.):
-- **`sensor.time_date`** — Current time and date (provides periodic update trigger for any package needing it)
+### `screensaver_settings.yaml` (Generic)
+Ships as-is:
+- **`input_select.screensaver_locale`** — date and alarm-time format; see *Locale Configuration*
 
-**You should NOT need to edit this file.**
+**You should NOT need to edit this file**, beyond adding a locale to the options list.
+
+### `sensor.time` (configured by you, not shipped)
+The clock reads `states['sensor.time']`. It comes from the built-in `time_date` platform, which is
+not enabled by default — see the ⚠️ note in installation step 3 for the four lines that provide it.
 
 ### `screensaver_local.yaml` (Local / Customizable)
 Contains sensors and automations specific to your setup that you will adapt:
@@ -182,8 +199,28 @@ Contains sensors and automations specific to your setup that you will adapt:
 1. **Temperature sensors:** Replace entity IDs to match your local sensors
 2. **Weather entity:** Change `weather.forecast_home` to your weather integration entity ID
 3. **Humidity & wind sensors:** Update to your local weather station entities
-4. **Tap actions:** Modify scenario names, time thresholds, and device mappings to match your setup
+4. **Tap actions:** Modify scenario names, time thresholds, and device mappings to match your setup — **or remove them; they require two other packages, see below**
 5. **Battery automation:** Customize or remove if not using kitchen tablet
+
+⚠️ **The shipped tap actions depend on the MusicCast and Triangulation packages.** They are the
+worked example from one real house, not a self-contained feature:
+
+| What it needs | From | Used for |
+|---|---|---|
+| `script.musiccast_scenario_toggle`, `script.musiccast_scenario_mixer`, `script.musiccast_adjust_volume` | MusicCast | the three tap gestures |
+| `sensor.musiccast_scenarios`, `input_text.musiccast_active_scenario` | MusicCast | deciding which scenario a tap applies to |
+| `input_text.bt_device_charger_locations`, `sensor.dashboard_logic_config` | Triangulation | routing the tap to the room the device is charging in |
+
+The gestures in `dashboards/screensaver.yaml` call three local wrapper scripts —
+`script.screensaver_tap`, `script.screensaver_double_tap` and `script.screensaver_hold`
+(`screensaver_local.yaml`) — and it is those wrappers, together with
+`script.screensaver_resolve_scenario`, that reach into MusicCast and Triangulation.
+
+**If you want only the wall display,** empty the three wrapper scripts of their MusicCast calls, or
+delete them along with the `tap_action` / `double_tap_action` / `hold_action` blocks in the
+dashboard. Everything else — clock, weather, temperature, battery — works on its own. Leaving them
+calling scripts you have not installed is the one thing not to do: HA resolves a missing script to
+nothing, so the taps fail silently and it looks like a broken display rather than a missing package.
 
 ## How to Adapt
 
@@ -199,9 +236,10 @@ Contains sensors and automations specific to your setup that you will adapt:
 
 3. **Location detection** is handled by the Triangulation package. See the Triangulation project README for setup and configuration.
 
-4. **`common.yaml`** — Contains shared components (like time/date sensor) used by multiple packages
-   - You should normally not need to edit this file
-   - If you already have a common/shared package file, you can merge `common.yaml` into it
+4. **`sensor.time`** — enable the `time_date` platform if you have not already (installation step 3).
+   The clock is blank without it.
+   - If you already have a common/shared package file, add the four lines there rather than
+     creating a new one
 
 ---
 
@@ -419,7 +457,7 @@ When the screensaver is active (phone on charger), the phone **remains locked**.
 This project includes exported configuration files to simplify setup on your devices:
 
 **1. Fully Kiosk Browser Configuration**
-- **File:** `fully-export.json`
+- **File:** `docs/fully-export.json`
 - **Purpose:** Pre-configured FKB settings including Remote Admin, Keep Screen On, Unlock Screen, and start URL
 - **How to import:**
   1. Open Fully Kiosk Browser
@@ -434,7 +472,7 @@ This project includes exported configuration files to simplify setup on your dev
 Two separate Tasker exports are provided for device-specific configurations:
 
 **For Mobile Phones:**
-- **File:** `tasker-mobile.xml`
+- **File:** `docs/tasker-mobile.xml`
 - **Purpose:** Ready-to-import Tasker profiles optimized for wireless charging activation and BT location detection
 - **How to import:**
   1. Open Tasker
@@ -468,7 +506,7 @@ Two separate Tasker exports are provided for device-specific configurations:
   - Verify exit task properly cleans up FKB and returns to home screen
 
 **For Wall-Mounted Tablets:**
-- **File:** `tasker-kitchentablet.xml`
+- **File:** `docs/tasker-kitchentablet.xml`
 - **Purpose:** Ready-to-import Tasker profiles optimized for always-on screensaver activation
 - **How to import:**
   1. Open Tasker
@@ -553,7 +591,7 @@ This is updated automatically when Tasker sends a new scan.
 **For Persistent Data (Fingerprints):**
 
 If you need data that survives Home Assistant restarts, the system uses **file-based storage with sensor attributes**:
-- Fingerprints: stored in `/config/packages/triangulation/data/bt_fingerprints.csv`
+- Fingerprints: stored in `/config/packages/triangulation/data/bt_fingerprints.json`
 - Accessed via: `state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')`
 - Read on HA startup and whenever referenced
 
@@ -714,12 +752,23 @@ Two independent Windows idle timers run side by side: the screensaver fires at *
 
 ### Locale Configuration
 
-The package defines an `input_select.screensaver_locale` helper with default value `en-US`. To customize:
+`packages/screensaver/screensaver_settings.yaml` defines an `input_select.screensaver_locale` helper,
+defaulting to `en-US`. To customize:
 
-1. **Via UI:** Settings → Devices & Services → Helpers → Screensaver Locale
-2. **Via YAML:** Edit `screensaver.yaml` to modify the `input_select.screensaver_locale` options list
+1. **Via UI:** Settings → Devices & Services → Helpers → *Set date format*
+2. **Via YAML:** edit the `options:` list in `packages/screensaver/screensaver_settings.yaml` to add tags,
+   then reload helpers (Developer Tools → YAML → Input selects). Any BCP 47 tag the browser knows
+   works — the value is passed straight to the browser's `Intl` API.
 
-The date display will reflect your selected locale immediately (e.g., "Monday 04 January" for en-US, "Måndag 04 januari" for sv-SE).
+The date display picks up the change on its next refresh, within a minute. Example: "Monday 04
+August" for `en-US`, "måndag 04 augusti" for `sv-SE`.
+
+⚠️ **The clock is not affected** — it stays 24-hour in every locale. See *The clock is always
+24-hour, whatever the locale* under Known Limitations.
+
+**Without the package** — a dashboard-only install — the helper does not exist, and the dashboard
+falls back to the `locale` anchor near the top of `dashboards/screensaver.yaml`. Edit that value
+instead.
 
 ### Adjusting Visual Hierarchy
 
@@ -743,22 +792,17 @@ Modify the keyframe animation durations in `card_mod`:
 
 ### Configuring Date Locale
 
-The screensaver includes an `input_select.screensaver_locale` helper to control date and time formatting. Supported locales include:
-- `en-US` (default)
-- `en-GB`
-- `sv-SE` (Swedish)
-- `da-DK` (Danish)
-- `no-NO` (Norwegian)
-- `de-DE` (German)
-- `fr-FR` (French)
-- And others
+The `input_select.screensaver_locale` helper controls date and alarm-time formatting — **not the
+clock**, which is always 24-hour (see Known Limitations). It ships with
+eleven options — `en-US` (default), `en-GB`, `da-DK`, `de-DE`, `es-ES`, `fi-FI`, `fr-FR`, `it-IT`,
+`nb-NO`, `nl-NL`, `sv-SE`.
 
-Change the locale via Home Assistant UI:
-1. Settings → Devices & Services → Helpers → Screensaver Locale
-2. Select your preferred locale
-3. The date display updates immediately
+Change it via Settings → Devices & Services → Helpers → *Set date format*. The display
+picks it up on its next refresh, within a minute.
 
-To add additional locales, edit the `input_select.screensaver_locale` helper options in `screensaver.yaml`.
+The list is only a convenience: the value goes straight to the browser's `Intl` API, so any BCP 47
+tag it recognises works. Add yours to `options:` in `packages/screensaver/screensaver_settings.yaml` and
+reload helpers. See *Locale Configuration* above for the dashboard-only fallback.
 
 ### Changing Sensor Sources
 
@@ -834,9 +878,24 @@ Check Home Assistant's entity registry:
 ## Known Limitations
 
 <details>
+<summary><strong>The clock is always 24-hour, whatever the locale</strong></summary>
+
+`input_select.screensaver_locale` changes the **date** and the **alarm time**, but not the big
+clock. The clock renders `sensor.time` from Home Assistant's `time_date` platform, which only ever
+emits `HH:MM` — the locale never reaches it. Selecting `en-US` gives you an American date above a
+24-hour time.
+
+Fixing it means formatting the time in the browser (`toLocaleTimeString`) and keeping `sensor.time`
+only as the per-minute refresh trigger. That is a small change on its own, but 12-hour locales then
+render `11:47 PM` where `23:47` used to fit, and the clock is the largest element on the screen at
+32vw — so the layout needs work at the same time. Not attempted yet.
+
+</details>
+
+<details>
 <summary><strong>Landscape: narrow windows fall back to single column</strong></summary>
 
-Landscape / wide screens are supported (see **"Desktop / Landscape Display"**). The two-column wide layout only activates above the configured aspect-ratio breakpoint (default width ≥ 1.5× height). A *narrow* landscape window — closer to square — intentionally falls back to the single-column portrait layout, because the viewport-relative fonts would otherwise overflow the half-width columns. Adjust the `landscape_breakpoint` anchor in `screensaver.yaml` if you want the switch to happen sooner or later.
+Landscape / wide screens are supported (see **"Desktop / Landscape Display"**). The two-column wide layout only activates above the configured aspect-ratio breakpoint (default width ≥ 1.5× height). A *narrow* landscape window — closer to square — intentionally falls back to the single-column portrait layout, because the viewport-relative fonts would otherwise overflow the half-width columns. Adjust the `landscape_breakpoint` anchor in `dashboards/screensaver.yaml` if you want the switch to happen sooner or later.
 
 </details>
 

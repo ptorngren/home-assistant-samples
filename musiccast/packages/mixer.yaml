@@ -19,9 +19,6 @@ shell_command:
   # Takes: scenario, csv_content (preset_num,state lines)
   musiccast_randomization_write: 'bash /config/packages/musiccast/randomization_persistor.sh write "{{ scenario }}" "{{ csv_content }}"'
 
-  # List all persisted randomization scenarios (CSV files in /config/packages/musiccast/data/)
-  musiccast_randomization_list: 'find /config/packages/musiccast/data -name "presets_*.csv" | xargs -I {} basename {} | sed "s/presets_//; s/.csv//" | jq -R -s -c "split(\"\\n\") | map(select(length > 0))"'
-
 # ================================================================
 # RANDOMIZATION STATE CONSTANTS
 # ================================================================

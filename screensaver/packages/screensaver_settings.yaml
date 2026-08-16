@@ -1,0 +1,24 @@
+# Screensaver - settings that ship as-is
+# Local adaptations (sensors, tap actions, entity mappings) live in screensaver_local.yaml;
+# the display itself is dashboards/screensaver.yaml.
+# ------------------------------------------------------------------
+
+input_select:
+  screensaver_locale:
+    name: "Set date format"
+    icon: mdi:translate
+    # BCP 47 tags passed straight to the browser's Intl API, so any tag the browser knows works -
+    # add your own here. The dashboard falls back to its `locale` anchor when this helper is
+    # missing, which is what a dashboard-only install gets.
+    options:
+      - en-US
+      - en-GB
+      - da-DK
+      - de-DE
+      - es-ES
+      - fi-FI
+      - fr-FR
+      - it-IT
+      - nb-NO
+      - nl-NL
+      - sv-SE

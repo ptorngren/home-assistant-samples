@@ -19,7 +19,8 @@ title: Screensaver Dashboard
 # -------------------------------------------------------------------------------------
 
 # Locale configuration
-# Edit this to change the date and time display format
+# Fallback only: input_select.screensaver_locale wins whenever it exists. This value is what a
+# dashboard-only install (no package) formats dates and alarm times with.
 locale: &locale sv-SE  # Swedish (Sweden)
 
 # Design constants - single source of truth for styling
@@ -140,7 +141,8 @@ decluttering_templates:
         # Current date with locale formatting
         date: >
           [[[
-            return new Date().toLocaleDateString(variables.locale, { weekday: 'long', day:
+            const locale = states['input_select.screensaver_locale']?.state || variables.locale;
+            return new Date().toLocaleDateString(locale, { weekday: 'long', day:
             '2-digit', month: 'long' });
           ]]]
         
@@ -225,7 +227,7 @@ decluttering_templates:
               if (alarmTime <= fiveMinutesFromNow) {
                 return '';
               }
-              const locale = variables.locale || 'en-US';
+              const locale = states['input_select.screensaver_locale']?.state || variables.locale || 'en-US';
               // Format as HH:MM (24-hour) in the device's locale
               const timeStr = alarmTime.toLocaleTimeString(locale, {
                 hour: '2-digit',
