@@ -308,7 +308,10 @@ script:
         then:
           - action: system_log.write
             data:
-              message: "MusicCast Preset Error: Empty response from {{ master_ip }}. Check player {{ player_name }} in sensor.musiccast_player_ips or run network scan."
+              # An address alone identifies no room, so it never appears without the entity id.
+              message: >-
+                MusicCast: no preset response from {{ master }} ({{ master_ip }}) — check its
+                entry in sensor.musiccast_player_ips, or re-run the network scan if its address changed.
               level: error
               logger: musiccast
           # No input type: nothing is playing, so the URI and the slot stay blank.
@@ -324,7 +327,7 @@ script:
           - action: input_boolean.turn_off
             target:
               entity_id: input_boolean.musiccast_scenario_updating
-          - stop: "No response from MusicCast device at {{ master_ip }}"
+          - stop: "No response from {{ master }} ({{ master_ip }})"
 
       # 4. Parse and select random valid preset
       - variables:
