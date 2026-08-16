@@ -735,13 +735,21 @@ Distinct from *"scenario could not start"* above, which fires when the **master*
 detected before anything is attempted. This one means the master answered and the grouping itself
 failed — usually a member.
 
-**Fix:**
+**The notification tells you which of two situations you are in.**
+
+**If it names players** — *"Still holding a group of their own: …"* — those players are stuck in a group
+that no longer exists. A player in that state refuses every attempt to regroup it, and **only restarting
+it from the MusicCast app clears it**; unjoining, standby and switching input all leave it stuck.
+Restart the named players, then tap the scenario again. Players that joined the group correctly are
+never named, so the list is the ones to act on.
+
+**If it says "No player reports being stuck in a group"**, the devices are all clean and the failure was
+something else — a player that did not answer in time, or a network hiccup. Then:
+
 1. Tap the scenario again — a group call that failed once often succeeds
-2. If it fails again, check the log for the device that did not answer; the warning beside this
-   notification names the scenario, and the entries above it name the device
-3. If the same player keeps failing, restart it from the MusicCast app. A player can hold a stale group
-   id that no longer exists, which blocks every attempt to group it, and only a device restart clears it
-4. If the message says *"a scenario did not shut down"* instead, the same applies to the teardown — a
+2. If it fails again, check the log: the warning beside this notification names the scenario, and the
+   entries above it name the device that did not answer
+3. If the message says *"a scenario did not shut down"* instead, the same applies to the teardown — a
    player did not confirm it had stopped
 
 </details>

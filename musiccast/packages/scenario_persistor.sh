@@ -11,12 +11,85 @@ CONTENT="$3"
 # Path configuration
 BASE_DIR="/config/packages/musiccast/data"
 FILE_PATH="${BASE_DIR}/scenario_${SCENARIO}.csv"
+META_FILE="${BASE_DIR}/scenarios.json"
 
 # Default volume for newly added players (HA scale 0.0–1.0)
 DEFAULT_VOLUME=0.25
 
 # Ensure directory exists
 mkdir -p "$BASE_DIR"
+
+# ----------------------------------------------------------------
+# scenarios.json — the one place that reads and writes the metadata file
+# ----------------------------------------------------------------
+# Every mutation goes through here so the two properties below hold for all of
+# them rather than for whichever branch was written most carefully.
+#
+#   Atomic. The JSON is serialised to a string, written to a temp file beside
+#   the target and moved into place with os.replace. Writing straight into
+#   open(path,'w') truncates the file before serialising, so anything that
+#   raises mid-dump — an unencodable value, a full disk — leaves the file cut
+#   off at that point. The reader then sees invalid JSON and every scenario
+#   disappears from the dashboard.
+#
+#   Loud about a file it cannot read. A missing file is a legitimate first run
+#   and starts an empty document; a file that exists but does not parse aborts
+#   and changes nothing. Treating the second case as "start over" turns one
+#   unreadable file into an erased one.
+#
+# Usage: meta_write <op> <scenario_id> [args…]
+#   create <id> <name> <icon>   add or replace an entry
+#   delete <id>                 remove an entry
+#   set    <id> <field=value>   update one field of an existing entry
+#
+# Values are passed as separate arguments rather than assembled into JSON by the
+# shell, so a quote or a brace in a scenario name cannot corrupt the document.
+meta_write() {
+    python3 -c '
+import json, os, sys, tempfile
+
+path, op, sid = sys.argv[1:4]
+value = sys.argv[4] if len(sys.argv) > 4 else None
+value2 = sys.argv[5] if len(sys.argv) > 5 else None
+
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"Error: {path} exists but does not parse ({e}); refusing to overwrite it",
+              file=sys.stderr)
+        sys.exit(1)
+else:
+    data = {"scenarios": {}}
+
+scenarios = data.setdefault("scenarios", {})
+
+if op == "create":
+    scenarios[sid] = {"name": value, "icon": value2}
+elif op == "delete":
+    scenarios.pop(sid, None)
+elif op == "set":
+    field, _, new = value.partition("=")
+    if sid in scenarios:
+        scenarios[sid][field] = new
+else:
+    print(f"Error: unknown op {op}", file=sys.stderr)
+    sys.exit(1)
+
+# Serialise first: a failure here must not have touched the file yet.
+payload = json.dumps(data, ensure_ascii=False, indent=2)
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".scenarios.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        f.write(payload)
+    os.replace(tmp, path)
+except Exception:
+    os.unlink(tmp)
+    raise
+' "$META_FILE" "$@"
+}
 
 case "$ACTION" in
     write)
@@ -73,7 +146,6 @@ case "$ACTION" in
         NAME=$(echo "$2" | base64 -d)
         ICON=$(echo "$3" | base64 -d)
         MASTER="$4"
-        META_FILE="${BASE_DIR}/scenarios.json"
 
         # Generate scenario_id: strip diacritics, lowercase, spaces and hyphens to
         # underscores, keep only a-z0-9_, trim leading/trailing underscores
@@ -86,24 +158,18 @@ with_underscores = re.sub(r'[\s\-]+', '_', ascii_name.lower())
 print(re.sub(r'[^a-z0-9_]', '', with_underscores).strip('_'))
 " "$NAME")
 
+        # Metadata first: sensor.musiccast_scenarios is built by globbing scenario_*.csv,
+        # so a CSV written before a failed metadata update becomes a scenario with no name
+        # or icon — visible, unusable, and left behind. Nothing exists until this succeeds.
+        meta_write create "$SCENARIO_ID" "$NAME" "$ICON" || exit 1
+
         # Create CSV with the master at DEFAULT_VOLUME if it does not already exist
         CSV_PATH="${BASE_DIR}/scenario_${SCENARIO_ID}.csv"
         if [ ! -f "$CSV_PATH" ]; then
             echo "${MASTER}:${DEFAULT_VOLUME}" > "$CSV_PATH"
         fi
 
-        # Add entry to scenarios.json
-        python3 -c "
-import json, sys
-path, sid, name, icon = sys.argv[1:]
-try:
-    data = json.load(open(path))
-except Exception:
-    data = {'scenarios': {}}
-data['scenarios'][sid] = {'name': name, 'icon': icon}
-json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
-print(sid)
-" "$META_FILE" "$SCENARIO_ID" "$NAME" "$ICON"
+        echo "$SCENARIO_ID"
         ;;
 
     set_master)
@@ -136,17 +202,7 @@ except Exception as e:
 
         rm -f "${BASE_DIR}/scenario_${SCENARIO_ID}.csv"
 
-        python3 -c "
-import json, sys
-path, sid = sys.argv[1:]
-try:
-    data = json.load(open(path))
-    data['scenarios'].pop(sid, None)
-    json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" "$META_FILE" "$SCENARIO_ID"
+        meta_write delete "$SCENARIO_ID"
         ;;
 
     rename)
@@ -154,20 +210,8 @@ except Exception as e:
         # Updates display name in scenarios.json; ID and CSV file are unchanged
         SCENARIO_ID="$2"
         NEW_NAME=$(echo "$3" | base64 -d)
-        META_FILE="${BASE_DIR}/scenarios.json"
 
-        python3 -c "
-import json, sys
-path, sid, new_name = sys.argv[1:]
-try:
-    data = json.load(open(path))
-    if sid in data['scenarios']:
-        data['scenarios'][sid]['name'] = new_name
-    json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" "$META_FILE" "$SCENARIO_ID" "$NEW_NAME"
+        meta_write set "$SCENARIO_ID" "name=${NEW_NAME}"
         ;;
 
     set_icon)
@@ -175,20 +219,8 @@ except Exception as e:
         # Updates icon field in scenarios.json; ID and CSV file are unchanged
         SCENARIO_ID="$2"
         NEW_ICON=$(echo "$3" | base64 -d)
-        META_FILE="${BASE_DIR}/scenarios.json"
 
-        python3 -c "
-import json, sys
-path, sid, new_icon = sys.argv[1:]
-try:
-    data = json.load(open(path))
-    if sid in data['scenarios']:
-        data['scenarios'][sid]['icon'] = new_icon
-    json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" "$META_FILE" "$SCENARIO_ID" "$NEW_ICON"
+        meta_write set "$SCENARIO_ID" "icon=${NEW_ICON}"
         ;;
 
     *)

@@ -124,11 +124,11 @@ input_boolean:
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
 shell_command:
-  bt_fingerprint_database_write: bash /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints {{ json_content | to_json | base64_encode }}
+  bt_fingerprint_database_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints "{{ json_content | to_json | base64_encode }}"'
   bt_fingerprint_database_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
-  bt_ignored_write: bash /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored {{ json_content | to_json | base64_encode }}
+  bt_ignored_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored "{{ json_content | to_json | base64_encode }}"'
   bt_ignored_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
-  bt_statistics_write: bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics {{ json_content | to_json | base64_encode }}
+  bt_statistics_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics "{{ json_content | to_json | base64_encode }}"'
   bt_statistics_clear: "echo '{\"statistics\":[]}' > /config/packages/triangulation/data/bt_statistics.json"
 
 # ------------------------------------------------------------------

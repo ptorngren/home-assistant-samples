@@ -28,10 +28,10 @@ shell_command:
   # create: derives scenario_id from name (strip diacritics, lowercase, spaces and
   # hyphens to underscores, keep only a-z0-9_, trim leading/trailing underscores)
   # name and icon are free text; master is an entity id.
-  musiccast_scenario_create: 'bash /config/packages/musiccast/scenario_persistor.sh create {{ name | base64_encode }} {{ icon | base64_encode }} "{{ master }}"'
+  musiccast_scenario_create: 'bash /config/packages/musiccast/scenario_persistor.sh create "{{ name | base64_encode }}" "{{ icon | base64_encode }}" "{{ master }}"'
   musiccast_scenario_delete: 'bash /config/packages/musiccast/scenario_persistor.sh delete "{{ scenario }}"'
-  musiccast_scenario_rename: 'bash /config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" {{ new_name | base64_encode }}'
-  musiccast_scenario_set_icon: 'bash /config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" {{ icon | base64_encode }}'
+  musiccast_scenario_rename: 'bash /config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" "{{ new_name | base64_encode }}"'
+  musiccast_scenario_set_icon: 'bash /config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" "{{ icon | base64_encode }}"'
   musiccast_scenario_set_master: 'bash /config/packages/musiccast/scenario_persistor.sh set_master "{{ scenario }}" "{{ master }}"'
 
 # ================================================================

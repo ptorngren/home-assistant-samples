@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 shell_command:
   # Fetch preset list from MusicCast device
-  musiccast_get_presets: "curl -s http://{{ ip }}/YamahaExtendedControl/v1/netusb/getPresetInfo"
+  musiccast_get_presets: 'curl -s "http://{{ ip }}/YamahaExtendedControl/v1/netusb/getPresetInfo"'
 
   # Read randomization state: CSV file with preset_num,state pairs
   # Returns JSON: {"1": "normal", "3": "locked", "5": "excluded"}
@@ -611,7 +611,6 @@ script:
       # stranding the guard. Act only on the ones that can answer.
       - variables:
           current_players: "{{ expand(current_players_all) | rejectattr('state', 'in', ['unavailable', 'unknown']) | map(attribute='entity_id') | list }}"
-          settle: "{{ states('input_number.musiccast_device_settle') | float(1) }}"
           # A list so an unreachable master becomes an empty target, which HA treats as
           # a no-op, instead of a service call that raises.
           current_master_target: >-
@@ -744,8 +743,8 @@ script:
           # Step 3: Wait for group_members attribute to propagate from hardware to HA
           # Without this delay, active_scenario would be committed before HA sees the updated
           # group_members, causing the UI to render an idle snapshot instead of linked state.
-          # Reads the helper rather than the `settle` variable defined at the top of this
-          # script: after the scenario_link call above, that variable no longer renders here.
+          # ⚠️ Reads the helper directly rather than holding it in a variable: a variable set
+          # before the scenario_link call above does not render in this step.
           - delay:
               seconds: "{{ (states('input_number.musiccast_device_settle') | float(1)) * 2 }}"
 

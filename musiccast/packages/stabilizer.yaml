@@ -247,6 +247,10 @@ automation:
           suspects: >-
             {%- set sc = (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(target, {}) -%}
             {{ sc.get('players', []) or (state_attr('group.musiccast_players', 'entity_id') or []) }}
+          # The group the activation was trying to build belongs to this player. Empty on the
+          # teardown path, where no group should exist at all.
+          scenario_master: >-
+            {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(target, {}).get('master', '') }}
 
       # Now that something has gone wrong, ask the devices what group they think they are
       # in. This is the one question Home Assistant cannot answer: it knows group_members,
@@ -265,16 +269,28 @@ automation:
       # Parsed in one template on purpose: assigning stdout to a variable of its own lets
       # Home Assistant coerce it to a native list, and from_json then receives a list and
       # raises. Anything that is not a JSON list means "no information", not "nothing wrong".
+      # Two things are NOT evidence on their own, and each would name healthy speakers:
+      #   `role: client` — idle players routinely report it while holding an all-zero id.
+      #   a non-zero group id — that is also what a player that joined *this* group reports,
+      #   and a join failing part-way through leaves exactly such players behind.
+      # What separates them is whose group it is: a member sharing the master's id belongs to
+      # the group being built, while a different id belongs to a group nothing here owns.
+      # On the teardown path there is no master, and nothing should hold a group at all, so
+      # the empty master makes every non-zero id a suspect — the same expression covers both.
       - variables:
-          # A non-zero group id is the signature, and only that. `role: client` on its own is
-          # not evidence: idle players routinely report it while holding an all-zero id, so
-          # accusing on role would name healthy speakers alongside the stuck one.
           culprits: >-
             {%- set raw = group_state.stdout | default('', true) -%}
             {%- set probed = (raw | trim | from_json if raw is string and (raw | trim)[:1] == '[' else []) -%}
+            {%- set master_id = (probed | selectattr('entity', 'eq', scenario_master)
+                                        | map(attribute='group_id') | first) | default('', true) -%}
             {%- set ns = namespace(found=[]) -%}
             {%- for p in probed -%}
-              {%- if (p.group_id | default('') | replace('0', '') | length) > 0 -%}
+              {%- set gid = p.group_id | default('') -%}
+              {%- if p.entity == scenario_master -%}
+                {%- if p.role | default('') == 'client' -%}
+                  {%- set ns.found = ns.found + [(state_attr(p.entity, 'friendly_name') or p.entity)] -%}
+                {%- endif -%}
+              {%- elif (gid | replace('0', '') | length) > 0 and gid != master_id -%}
                 {%- set ns.found = ns.found + [(state_attr(p.entity, 'friendly_name') or p.entity)] -%}
               {%- endif -%}
             {%- endfor -%}
