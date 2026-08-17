@@ -384,7 +384,7 @@ template:
           devices_by_mac: |
             {%- set placeholders = ['', 'unknown', 'undefined'] -%}
             {# `or {}` rather than `| default({})`: an absent attribute reads as
-               None, which default() does not replace (patterns.md Pattern 9). #}
+               None, and default() only replaces undefined. #}
             {%- set current_map_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') or {} -%}
             {%- set current_map = current_map_raw | from_json if current_map_raw is string else current_map_raw -%}
             {# Carry forward only real names. A placeholder held in the map is
@@ -446,7 +446,7 @@ script:
       - variables:
           fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
-          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
+          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
           global_ignored_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
 
       # Build map: location_name → beacons dict
@@ -564,7 +564,8 @@ script:
           current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
 
       - variables:
-          regex_matches: "{{ browser_id | regex_findall(transform_pattern) }}"
+          # ignorecase matches the dashboard, which applies the same pattern with the JS 'i' flag
+          regex_matches: "{{ browser_id | regex_findall(transform_pattern, ignorecase=True) }}"
 
       - variables:
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else browser_id }}"
@@ -965,6 +966,8 @@ script:
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          # Seeds the width of a new min/max entry, matching what the two reset paths use.
+          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
           location: "{{ state_attr('sensor.bt_location_array', 'locations')[location_index | int] | default('unknown') }}"
 
       - variables:
@@ -1026,7 +1029,11 @@ script:
                 {%- set ns2 = namespace(beacons={}) -%}
                 {%- for device in scan -%}
                   {%- if minmax_mode -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'min': device.rssi, 'max': device.rssi}}) -%}
+                    {# Seeded ±tolerance rather than collapsed to a point: min/max matching is strict,
+                       so a point matches only on exact RSSI equality and a freshly captured location
+                       would find nothing until several merges had widened it. The same width the
+                       beacon and location reset paths use. Merges narrow or widen it from here. #}
+                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'min': device.rssi - rssi_tolerance, 'max': device.rssi + rssi_tolerance}}) -%}
                   {%- else -%}
                     {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'rssi': device.rssi}}) -%}
                   {%- endif -%}
@@ -1098,6 +1105,8 @@ script:
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           rssi_only: "{{ rssi_only | default(false) | bool }}"
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
+          # Seeds the width of an entry that has no range yet, matching capture and the reset paths.
+          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
 
       - variables:
           # Filter scan: exclude weak signals, globally ignored beacons, and ghost beacons (if toggle is ON)
@@ -1155,11 +1164,17 @@ script:
                     {%- if minmax_mode -%}
                       {# Min/max mode: all entries written as min/max #}
                       {%- if 'min' in existing_beacon -%}
+                        {# Already a range: widen it only if this scan falls outside. #}
                         {%- set new_min = [existing_beacon.min, scan_rssi] | min -%}
                         {%- set new_max = [existing_beacon.max, scan_rssi] | max -%}
                       {%- else -%}
-                        {%- set new_min = scan_rssi -%}
-                        {%- set new_max = scan_rssi -%}
+                        {# No range yet — a beacon new to this location, or a mean entry being
+                           converted. Seeded ±tolerance rather than collapsed to a point: min/max
+                           matching is strict, so a point matches only on exact RSSI equality and
+                           the beacon would sit in the fingerprint contributing nothing until a
+                           later scan happened to differ. Same width as capture and the resets. #}
+                        {%- set new_min = scan_rssi - rssi_tolerance -%}
+                        {%- set new_max = scan_rssi + rssi_tolerance -%}
                       {%- endif -%}
                       {%- set beacon_data = {'min': new_min, 'max': new_max} -%}
                     {%- else -%}
@@ -1280,7 +1295,7 @@ script:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
           current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           mac_upper: "{{ mac | upper }}"
-          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
+          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
       - variables:
@@ -1531,8 +1546,13 @@ script:
     mode: single
     sequence:
       - variables:
+          # Stands in for a malformed context string. Reads the live helper rather than a literal,
+          # so a suggested range is the same width as every other seeding path.
+          tolerance_default: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+
+      - variables:
           ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
-          tolerance_val: "{{ ctx[2] | int(10) if ctx | length > 2 else 10 }}"
+          tolerance_val: "{{ ctx[2] | int(tolerance_default) if ctx | length > 2 else tolerance_default }}"
           fp_min: "{{ ctx[3] | float(0) if ctx | length > 3 else 0 }}"
           fp_max: "{{ ctx[4] | float(0) if ctx | length > 4 else 0 }}"
           mid: "{{ ((fp_min + fp_max) / 2) | round | int }}"
@@ -1754,7 +1774,7 @@ script:
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(10) }}"
+          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
           current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
@@ -1935,6 +1955,58 @@ script:
         data:
           message: "Recorded merge statistics for location {{ location_index }}: {{ scan_map | length }} beacons from scan"
           level: debug
+
+  bt_reset_detection_defaults:
+    alias: "BT: Reset detection settings to defaults"
+    mode: single
+    sequence:
+      - variables:
+          # Every setting on the Settings view's algorithm card belongs in this table, and the
+          # numbers match the `| int(…)` fallbacks at every site that reads these helpers, so a
+          # reset and an unreadable helper produce the same detection behaviour.
+          #
+          # ⚠️ Three documents quote these same values and must agree: the README's Algorithm
+          # Settings section, the Guide view's defaults table, and this map. A setting missing
+          # here is skipped silently — the card offers to reset "every setting below".
+          #
+          # These helpers deliberately carry no `initial:`, which would re-apply on every
+          # restart and discard tuning. Without one they start at their minimum instead, and
+          # for the tolerance that minimum is 0 — an exact-match requirement that finds
+          # nothing. Pressing this once is what makes a fresh install work.
+          defaults:
+            input_number.bt_location_detection_rssi_tolerance: 5
+            input_number.bt_location_detection_weak_signal_threshold: -95
+
+      - repeat:
+          for_each: "{{ defaults | dictsort }}"
+          sequence:
+            - action: input_number.set_value
+              target:
+                entity_id: "{{ repeat.item[0] }}"
+              data:
+                value: "{{ repeat.item[1] }}"
+
+      # The card's four switches are settings like the rest: ghost signals filtered out and min/max
+      # fingerprints on — each beacon then carries its own tolerance, which beats one global ±N
+      # chosen to suit every beacon at once. Random MACs and distance weighting off; the latter
+      # failed verification and remains unreliable.
+      - action: input_boolean.turn_on
+        target:
+          entity_id:
+            - input_boolean.bt_filter_zero_rssi_signals
+            - input_boolean.bt_fingerprint_minmax_mode
+      - action: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.bt_include_random_macs
+            - input_boolean.bt_distance_weighted_scoring
+
+      # Fingerprints, location names and the ignore lists are not settings and are untouched.
+      - action: system_log.write
+        data:
+          message: "BT Triangulation: detection settings restored to package defaults"
+          level: info
+          logger: bt_triangulation
 
   bt_report_beacon_status:
     alias: "BT: Report beacon status"
@@ -2251,7 +2323,7 @@ automation:
       - variables:
           current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
-          regex_matches: "{{ trigger.json.browser_id | regex_findall(transform_pattern) }}"
+          regex_matches: "{{ trigger.json.browser_id | regex_findall(transform_pattern, ignorecase=True) }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else trigger.json.browser_id }}"
 
       - if:

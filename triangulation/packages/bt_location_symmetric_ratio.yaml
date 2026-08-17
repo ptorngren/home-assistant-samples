@@ -36,7 +36,7 @@ script:
         {{ ns.map }}
 
       # Algorithm parameters
-      rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int }}"
+      rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
       distance_weighted_scoring: "{{ states('input_boolean.bt_distance_weighted_scoring') | bool(false) }}"
 
       # Symmetric ratio denominator: count of beacons in current scan that are active (non-ignored) and known
@@ -198,5 +198,5 @@ script:
             known_beacons_in_scan: "{{ known_beacons_in_scan }}"
             unknown_beacons_in_scan: "{{ unknown_beacons_in_scan }}"
 
-      - stop: "Match Ratio complete"
+      - stop: "Symmetric Ratio complete"
         response_variable: result

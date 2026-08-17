@@ -115,7 +115,7 @@ script:
           # Transform browser_id to device_id by stripping FKB suffix (e.g., peers_mobil_fkb → peers_mobil)
           # Pattern read from sensor.dashboard_logic_config (single source of truth)
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
-          regex_matches: "{{ browser_id | regex_findall(transform_pattern) }}"
+          regex_matches: "{{ browser_id | regex_findall(transform_pattern, ignorecase=True) }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else '' }}"
           charger_location: >
             {% set mapping = states('input_text.bt_device_charger_locations') | from_json %}

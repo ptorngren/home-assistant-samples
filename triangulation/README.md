@@ -18,7 +18,9 @@ several times over the following days before detection is dependable (see *Setup
 4. Add the recorder exclusions (see Installation step 4)
 5. **Restart Home Assistant** — the package defines `shell_command` entries and a recorder filter,
    neither of which a package reload picks up
-6. Open the BT Triangulation dashboard and enter your location names (e.g., "kitchen, garage, bedroom")
+6. Open the BT Triangulation dashboard, enter your location names (e.g., "kitchen, garage, bedroom"),
+   and **hold the "Algorithm Settings" header on the Settings view** to apply the shipped defaults —
+   without this, Signal Tolerance sits at 0 and nothing ever matches
 7. Configure your scan source:
    - **For Android with Tasker:** Set up the "Phone Charging - BT Scan" task/profile to send Bluetooth data on charger connect
    - **For other sources:** Post JSON to the webhook endpoint (see Scan Sources section)
@@ -189,6 +191,18 @@ Once the package is running, later edits to its automations, scripts and templat
 up with Developer Tools → YAML → Reload Packages. Editing the `shell_command` block itself always
 needs a restart.
 
+### 6. Apply the shipped defaults
+
+Open the **Settings** view and **hold the "Algorithm Settings" header**, then confirm.
+
+⚠️ **Do this before capturing any fingerprints.** The tuning helpers ship without stored values, so
+until you press this they sit at their *minimums* — and the minimum for Signal Tolerance is `0`,
+meaning a beacon matches only on an exact RSSI equality that real radios never produce. Detection
+returns nothing and no error explains why.
+
+The same hold restores the defaults later, if tuning goes somewhere unhelpful. It changes only the
+six settings on that card — fingerprints, location names and the ignore lists are untouched.
+
 ---
 
 ## Package Structure
@@ -200,7 +214,7 @@ Main orchestrator that sets up the webhook endpoint and coordinate detection log
 - **`automation:bt_phone_charger_detect_location`** — Receives Tasker webhook with BT scan results, triggers location detection
 - **`automation:bt_phone_charger_clear_location`** — Removes a device's entry when it is unplugged; driven by the `phone_charger_disconnect` webhook (see *Scan Sources*)
 - **`input_text.bt_device_charger_locations`** — JSON map of device → detected location, e.g. `{"my_phone": "kitchen"}`. Capped at 255 characters, so keep device and location names short
-- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip a `_fkb` suffix — matched case-sensitively, so use lowercase in your browser ids)
+- **`sensor.dashboard_logic_config`** — Configuration for browser_id transformation (regex pattern, e.g., to strip a `_fkb` suffix; matching ignores case, so `_FKB` works too)
 - **`script.bt_detect_charger_location`** — Coordinates location detection by calling matching algorithms
 
 **You should NOT need to edit this file.**
@@ -721,7 +735,7 @@ If a specific device proves persistently volatile, globally ignore it rather tha
 
 ## Min/Max Mode
 
-Min/Max mode is an alternative fingerprint strategy that stores the observed **signal range** for each beacon rather than a single mean value. Enable it in Algorithm Settings → **Min/Max Mode** toggle.
+Min/Max mode is the **default** fingerprint strategy: it stores the observed **signal range** for each beacon rather than a single mean value, so tolerance becomes a per-beacon property instead of one global number chosen to suit every beacon at once. Toggle it in Algorithm Settings → **Min/Max Mode**; see *Mean Mode* below for the alternative.
 
 ### Why Min/Max?
 
@@ -733,9 +747,9 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 
 ### How It Works
 
-**Capture** (hold location header): writes `{"min": rssi, "max": rssi}` — a collapsed single point. Expands with subsequent merges.
+**Capture** (hold location header): writes `{"min": rssi − tolerance, "max": rssi + tolerance}` — seeded to the same width the reset paths use, so a location matches from its first capture. Merges expand it when a scan falls outside, and *Reset all* narrows it once statistics justify tighter bounds.
 
-**Merge** (double-tap location header): mode-driven — writes all beacons in the format defined by the current Min/Max mode toggle, converting any entries in the old format. In min/max mode: existing min/max entries expand bounds; existing mean entries convert to a collapsed `{min, max}` point. In mean mode: all entries are written as mean RSSI from the current scan.
+**Merge** (double-tap location header): mode-driven — writes all beacons in the format defined by the current Min/Max mode toggle, converting any entries in the old format. In min/max mode: existing min/max entries expand their bounds only if the scan falls outside them; everything without a range yet — a beacon new to this location, or a mean entry being converted — is seeded `[scan ± tolerance]`, the same width capture uses. In mean mode: all entries are written as mean RSSI from the current scan.
 
 **Matching**: scan RSSI must fall within `[min, max]`. RSSI tolerance setting is ignored for these entries.
 
@@ -749,13 +763,13 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 
 - **Tap** (RSSI update only) and **double-tap** (merge) are both mode-driven — they convert all beacons in the location to the current mode's format. The only difference is that tap only updates existing beacons while merge also adds new ones.
 - Individual beacon row tap (`bt_beacon_merge`) is format-preserving — it does not convert format, to avoid creating a mixture within a location.
-- A transient mixture of formats within a location may exist after switching modes until each location has been merged at least once. Both formats match correctly in the meantime.
+- A transient mixture of formats within a location may exist after switching modes until each location has been merged at least once. Both formats match in the meantime: mean entries against the global tolerance, min/max entries against their stored bounds.
 - **Capture** (hold) also converts everything at once, but replaces the entire fingerprint from the current scan.
 
 ### Recommended Workflow for Min/Max Mode
 
-1. Enable Min/Max Mode toggle in Algorithm Settings
-2. Hold each location header to capture from scratch (single-point entries)
+1. Confirm the Min/Max Mode toggle is ON in Algorithm Settings — it is the shipped default
+2. Hold each location header to capture from scratch. Each beacon is seeded as `[scan − tolerance, scan + tolerance]`, the same width the reset paths use, so a freshly captured location matches immediately instead of waiting for merges to widen a collapsed point
 3. Return to each location repeatedly and tap the header to merge (expand bounds from repeated scans), until the ranges appear stable across visits
 4. Check Beacon Breakdown: FP column shows `min/max` ranges; Δ shows 0 when matched
 5. Monitor the nσ column — as samples accumulate across merges, a high standard deviation flags beacons with inconsistent signal and narrows your ignore candidates
@@ -766,7 +780,7 @@ Min/Max solves this by capturing the actual observed range. Once a beacon has be
 
 Min/Max mode is preferred — it handles signal variance more robustly by capturing observed bounds rather than a drifting average. Use mean mode if you prefer simplicity or have very stable beacon signals.
 
-1. Make sure Min/Max Mode toggle is OFF in Algorithm Settings
+1. Turn the Min/Max Mode toggle OFF in Algorithm Settings — it ships ON
 2. Hold each location header to capture from scratch (initial mean from current scan)
 3. Return to each location and tap the header to merge — each merge nudges the stored mean halfway toward the new scan value, dampening outliers
 4. Check Beacon Breakdown: FP column shows a single RSSI value; Δ shows deviation from the stored mean
@@ -908,9 +922,24 @@ The main working view for capturing and curating location fingerprints. Place yo
    - **Hold a beacon row** to reset that beacon from the current scan. In **mean mode**: collapses to the current scan RSSI (no-op if absent). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan).
    - Use this to diagnose why a location scores below expected, or why the wrong location wins
 3. **Adjust algorithm parameters** in Algorithm Settings:
+   - **Hold the card header** to restore every setting below to its default, after confirming. The
+     shipped values are:
+
+     | Setting | Default |
+     |---|---|
+     | Signal Tolerance (±) | 5 dBm |
+     | Weak Signal Threshold | -95 dBm |
+     | Ignore Ghost Signals (0 dBm) | on |
+     | Min/Max Fingerprint Mode | on |
+     | Distance-Weighted Scoring | off |
+     | Include Random MACs | off |
+
+     These are the values the algorithm falls back to when a helper cannot be read, so a reset and a
+     missing helper behave identically. Fingerprints, location names and the ignore lists are not
+     settings and are left alone. ⚠️ **A fresh install must do this once** — see installation step 6.
    - **Weak Signal Threshold** — Exclude very weak beacons that are unreliable (lower = stricter; higher = more lenient)
    - **Signal Tolerance (±)** — How closely scan signal strength must match fingerprint (±N dBm; lower = stricter matching; higher = more forgiving of signal variance). Only applies to mean-RSSI entries; min/max entries use strict bounds and ignore this setting.
-   - **Min/Max Mode** — When ON, new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean. See Min/Max Mode section below. When OFF (default), standard running-mean behavior. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
+   - **Min/Max Mode** — When ON (default), new captures and merges store observed signal bounds (`min`/`max`) instead of a running mean, so each beacon carries its own tolerance. See Min/Max Mode section below. When OFF, standard running-mean behavior matched against the global Signal Tolerance. Switching the toggle does not convert existing entries — they keep matching via their stored format until recaptured.
    - **Distance-Weighted Scoring** — When ON, each beacon's match contribution is a continuous quality score (0.0–1.0) based on how centered the scan RSSI is within the fingerprint range: midpoint = 1.0, edges = 0.0, outside = 0. When OFF (default), binary matching — in range = 1, out of range = 0. Adds scoring resolution within ranges and can break ties between locations that share beacons at different RSSI levels. **Caveat:** Natural RSSI volatility means scan values often land near the edges of min/max ranges, not at midpoints — weighted scoring penalizes this and can produce worse results than binary matching. Recommended: leave OFF unless you have very stable beacon signals with narrow ranges.
    - **Ignore Ghost Signals (0 dBm)** — Toggle controls whether 0 dBm beacons are included during fingerprint capture. ON = ignore (recommended), OFF = capture
    - **Include Random MACs** — Toggle controls whether rotating/privacy-mode MAC addresses are included in scan processing. OFF (default) = exclude rotating MACs (iPhones, Android privacy mode) — they won't appear in Latest BT Scan or All Active Beacons. ON = include all MACs; rotating MACs appear in amber italic so they can be identified. See "Random MAC Filtering" section for details.
@@ -1462,6 +1491,7 @@ for mac, beacon in fingerprint.beacons.items():
 | `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
 | `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
 | `script.bt_report_beacon_status` | Per-location beacon report with signal statistics and warnings | (none) |
+| `script.bt_reset_detection_defaults` | Restore the six Algorithm Settings to the package defaults (hold the card header). Touches no fingerprints, location names or ignore lists | (none) |
 
 ### Service Call Examples
 

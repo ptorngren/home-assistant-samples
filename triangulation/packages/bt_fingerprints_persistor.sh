@@ -32,38 +32,56 @@ case "$ACTION" in
                 exit 1
                 ;;
         esac
-        # Decode base64 content and write to file
-        # base64_encode preserves newlines and special characters safely
-        case "$DATA_TYPE" in
-            fingerprints)
-                echo "$CONTENT" | base64 -d | python3 -c "
-import json, sys
+        # Decode base64 content and write to file.
+        # base64_encode preserves newlines and special characters safely.
+        #
+        #   Atomic. The document is sorted and serialised to a string first, written to a temp
+        #   file beside the target and moved into place with os.replace. Redirecting into the
+        #   target truncates it before python starts, so a malformed payload or a missing key
+        #   leaves an empty file - and these files are weeks of room-by-room calibration.
+        #
+        #   Loud about a file it cannot read. A missing or empty file is a legitimate first run.
+        #   A file that exists and does not parse aborts the write: the writers rebuild the whole
+        #   document from a sensor that reads this file, so overwriting it after a failed read
+        #   replaces real data with an empty document.
+        echo "$CONTENT" | base64 -d | python3 -c '
+import json, os, sys, tempfile
+
+path, kind = sys.argv[1:3]
+
+if os.path.exists(path) and os.path.getsize(path) > 0:
+    try:
+        with open(path) as f:
+            json.load(f)
+    except Exception as e:
+        print(f"Error: {path} exists but does not parse ({e}); refusing to overwrite it",
+              file=sys.stderr)
+        sys.exit(1)
+
 data = json.load(sys.stdin)
-data['fingerprints'].sort(key=lambda fp: fp['loc'])
-for fp in data['fingerprints']:
-    fp['beacons'] = dict(sorted(fp['beacons'].items()))
-print(json.dumps(data, indent=2, ensure_ascii=False))
-" > "$FILE_PATH"
-                ;;
-            ignored)
-                echo "$CONTENT" | base64 -d | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-data['ignored'].sort()
-print(json.dumps(data, indent=2, ensure_ascii=False))
-" > "$FILE_PATH"
-                ;;
-            statistics)
-                echo "$CONTENT" | base64 -d | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-data['statistics'].sort(key=lambda s: s['loc'])
-for s in data['statistics']:
-    s['beacons'] = dict(sorted(s['beacons'].items()))
-print(json.dumps(data, indent=2, ensure_ascii=False))
-" > "$FILE_PATH"
-                ;;
-        esac
+
+if kind == "fingerprints":
+    data["fingerprints"].sort(key=lambda fp: fp["loc"])
+    for fp in data["fingerprints"]:
+        fp["beacons"] = dict(sorted(fp["beacons"].items()))
+elif kind == "ignored":
+    data["ignored"].sort()
+elif kind == "statistics":
+    data["statistics"].sort(key=lambda s: s["loc"])
+    for s in data["statistics"]:
+        s["beacons"] = dict(sorted(s["beacons"].items()))
+
+payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".bt_", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        f.write(payload)
+    os.replace(tmp, path)
+except Exception:
+    os.unlink(tmp)
+    raise
+' "$FILE_PATH" "$DATA_TYPE"
         ;;
 
     read)

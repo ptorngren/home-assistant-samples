@@ -48,8 +48,8 @@ decluttering_templates:
         template: |
           {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
           {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int -%}
-          {%- set rssi_match_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int -%}
+          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) -%}
+          {%- set rssi_match_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
           {# Color scheme (injected via decluttering variables from _colors anchors) #}
           {%- set color_beacon_rssi_match = "[[color_rssi_match]]" -%}
           {%- set color_beacon_in_scan = "[[color_in_scan]]" -%}
@@ -1114,17 +1114,33 @@ views:
                     - font-size: 12px
 
       # Algorithm Settings
-      - type: entities
-        title: "Algorithm Settings"
-        show_header_toggle: false
-        entities:
-          - input_number.bt_location_detection_weak_signal_threshold
-          - entity: input_number.bt_location_detection_rssi_tolerance
-            name: "Signal Tolerance (±)"
-          - input_boolean.bt_fingerprint_minmax_mode
-          - input_boolean.bt_distance_weighted_scoring
-          - input_boolean.bt_filter_zero_rssi_signals
-          - input_boolean.bt_include_random_macs
+      # The header owns the reset because it is the only element spanning the whole card.
+      # Hold rather than tap, with a confirmation: a reset discards tuning that can represent
+      # weeks of calibration.
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "Algorithm Settings"
+            secondary: "Hold to reset every setting below to its default"
+            icon: mdi:tune
+            layout: horizontal
+            tap_action:
+              action: none
+            hold_action:
+              action: perform-action
+              perform_action: script.bt_reset_detection_defaults
+              confirmation:
+                text: Reset every detection setting to the package defaults?
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - input_number.bt_location_detection_weak_signal_threshold
+              - entity: input_number.bt_location_detection_rssi_tolerance
+                name: "Signal Tolerance (±)"
+              - input_boolean.bt_fingerprint_minmax_mode
+              - input_boolean.bt_distance_weighted_scoring
+              - input_boolean.bt_filter_zero_rssi_signals
+              - input_boolean.bt_include_random_macs
 
       # Scores for Latest Scan - Location Scoring
       - type: custom:stack-in-card
@@ -1404,11 +1420,23 @@ views:
           **How to use:**
           - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). ⚠️ **Maintain order** — fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints. Once defined, keep the order fixed (renaming is OK); if you must reorder, recapture all fingerprints from scratch.
           - **Action Buttons**: **Load Fingerprints** reloads fingerprint data from file. **Clear Fingerprints** and **Clear Statistics** reset the respective data.
+          - **Hold the "Algorithm Settings" header** to restore all six settings below to their defaults, after confirming. ⚠️ **Do this once on a new install** — the settings ship with no stored values and start at their minimums, and a Signal Tolerance of 0 matches nothing at all, so detection stays empty with nothing to explain why. Defaults:
+
+            | Setting | Default |
+            |---|---|
+            | Signal Tolerance (±) | 5 dBm |
+            | Weak Signal Threshold | -95 dBm |
+            | Ignore Ghost Signals (0 dBm) | on |
+            | Min/Max Fingerprint Mode | on |
+            | Distance-Weighted Scoring | off |
+            | Include Random MACs | off |
+
+            Only these six change — fingerprints, location names and the ignore lists are untouched.
           - Adjust **Weak Signal Threshold** to ignore weak beacons when capturing fingerprints (used to keep anchors stable; not used during matching)
           - Adjust **Signal Tolerance** (±, dBm). **Mean mode:** scan RSSI must be within ±tolerance of the fingerprint value to count as a match. **Min/Max mode:** matching uses stored bounds (tolerance not applied to matching); tolerance sets the initial range on reset (`[scan ± tolerance]`) and triggers the wavy-underline warning when the stored range exceeds 2× tolerance.
           - Toggle **Min/Max Fingerprint Mode** to switch between two fingerprint strategies:
-            - **OFF (default):** Each beacon stores a single running-mean RSSI. Capture overwrites; merge averages the new scan into the stored value. Matching uses ±RSSI Match Tolerance.
-            - **ON:** Each beacon stores a `[min, max]` range. Capture starts as a collapsed point; each merge expands the range if the new scan falls outside. Matching is strict — scan RSSI must fall within `[min, max]`, no tolerance applied. Produces per-beacon adaptive tolerance (stable beacons stay narrow; volatile ones widen naturally). Mode is data-driven: existing `rssi` entries continue to use tolerance matching until recaptured.
+            - **OFF:** Each beacon stores a single running-mean RSSI. Capture overwrites; merge averages the new scan into the stored value. Matching uses ±RSSI Match Tolerance.
+            - **ON (default):** Each beacon stores a `[min, max]` range. Capture seeds `[scan ± tolerance]`; each merge expands the range if the new scan falls outside. Matching is strict — scan RSSI must fall within `[min, max]`, no tolerance applied. Produces per-beacon adaptive tolerance (stable beacons stay narrow; volatile ones widen naturally). Mode is data-driven: existing `rssi` entries continue to use tolerance matching until recaptured.
           - Toggle **Distance-Weighted Scoring** to switch between two scoring modes:
             - **OFF (default):** Binary matching — a beacon either matches or doesn't.
             - **ON:** Continuous quality score per beacon based on how centered the scan RSSI is within the fingerprint range. Adds resolution and breaks ties between similar locations.

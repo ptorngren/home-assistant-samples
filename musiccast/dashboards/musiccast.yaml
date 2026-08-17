@@ -1335,8 +1335,7 @@ views:
             icon: mdi:tune
             show_label: true
             # The anchor has to be handed to the JS through a card-level variables block:
-            # a YAML anchor is resolved at parse time and is invisible to templates
-            # (patterns.md Pattern 10).
+            # a YAML anchor is resolved at parse time and is invisible to templates.
             variables:
               idle_border: *idle_border
               active_border: *active_border
