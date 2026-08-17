@@ -162,7 +162,7 @@ command_line:
       value_template: "{% if value_json.fingerprints %}ready{% else %}empty{% endif %}"
       scan_interval: 86400   # effectively never — see POLLING above
       # Reads fingerprints from file and wraps in JSON object for attributes extraction
-      # Refreshed by script.bt_write_fingerprints after every write, and at HA startup
+      # Refreshed by script.bt_persist_write after every write, and at HA startup
       # Dashboard/scripts access via: state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
 
@@ -175,7 +175,7 @@ command_line:
       value_template: "{% if value_json.ignored %}{{ value_json.ignored | length }}{% else %}0{% endif %}"
       scan_interval: 86400   # effectively never — see POLLING above
       # Reads globally excluded beacon MACs from file (supports 100+ beacons)
-      # Refreshed by script.bt_beacon_toggle_global_ignored after every write
+      # Refreshed by script.bt_persist_write after every write
       # Stores as JSON array in attributes: state_attr('sensor.bt_ignored_beacons', 'ignored')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
 
@@ -188,7 +188,7 @@ command_line:
       value_template: "{% if value_json.statistics %}{{ value_json.statistics | length }}{% else %}0{% endif %}"
       scan_interval: 86400   # effectively never — see POLLING above
       # Per-beacon RSSI sample history from capture/merge operations (file-backed, unlimited size)
-      # Refreshed by script.bt_record_merge_statistics and script.bt_clear_statistics after every write
+      # Refreshed by script.bt_persist_write after every write, and by script.bt_clear_statistics
       # Format: statistics[].loc + beacons{MAC: [[rssi, timestamp], ...]} — null rssi = beacon absent in that session
       # Dashboard access: state_attr('sensor.bt_merge_statistics', 'statistics')
 
@@ -822,14 +822,10 @@ script:
             ignored: "{{ current_list | reject('equalto', beacon_mac) | list if is_ignored else current_list + [beacon_mac] }}"
 
       # Write updated list to file
-      - action: shell_command.bt_ignored_write
+      - action: script.bt_persist_write
         data:
+          data_type: ignored
           json_content: "{{ updated_list }}"
-
-      # Refresh sensor to pick up changes
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.bt_ignored_beacons
 
       # Log the action
       - action: system_log.write
@@ -1942,14 +1938,10 @@ script:
             {%- endif -%}
             {{ {'statistics': ns.stat_list} }}
 
-      - action: shell_command.bt_statistics_write
+      - action: script.bt_persist_write
         data:
+          data_type: statistics
           json_content: "{{ updated_statistics }}"
-
-      # Refresh sensor to pick up changes
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.bt_merge_statistics
 
       - action: system_log.write
         data:
@@ -2188,6 +2180,62 @@ script:
         target:
           entity_id: sensor.bt_fingerprint_database_file
 
+  bt_persist_write:
+    alias: "BT: Write data file"
+    description: "Write one of the three JSON data files and refresh the sensor that reads it. Reports a refused write and aborts the caller."
+    # The persistor refuses to overwrite a target that exists but does not parse, and exits 1.
+    # Without checking that, the sensor re-reads the unchanged file and the dashboard redraws
+    # identically, so a refused edit looks exactly like a successful one - and the file needs
+    # manual repair before any further write can land. A persistent notification waits until
+    # acknowledged, unlike a popup, which only reaches a dashboard someone is already looking at.
+    # `error: true` propagates the failure to the caller, so it cannot go on to log success or
+    # show a confirmation toast for a write that did not happen.
+    mode: queued
+    max: 25
+    fields:
+      data_type:
+        description: "Which file to write: fingerprints, ignored or statistics"
+        example: "fingerprints"
+      json_content:
+        description: "Complete document for that file"
+    sequence:
+      - variables:
+          targets:
+            fingerprints:
+              cmd: shell_command.bt_fingerprint_database_write
+              sensor: sensor.bt_fingerprint_database_file
+            ignored:
+              cmd: shell_command.bt_ignored_write
+              sensor: sensor.bt_ignored_beacons
+            statistics:
+              cmd: shell_command.bt_statistics_write
+              sensor: sensor.bt_merge_statistics
+
+      - action: "{{ targets[data_type].cmd }}"
+        data:
+          json_content: "{{ json_content }}"
+        response_variable: write_result
+
+      - if: "{{ write_result.returncode != 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: "bt_write_failed_{{ data_type }}"
+              title: "Triangulation: write failed"
+              message: >-
+                **bt_{{ data_type }}.json** was not written. The file needs manual repair before
+                anything can be written to it again — until then every edit is discarded silently.
+                {% if write_result.stderr %}
+
+                `{{ write_result.stderr | trim }}`{% endif %}
+          # `stop` does not render templates, so the file name lives in the notification only.
+          - stop: "Data file write refused"
+            error: true
+
+      - action: homeassistant.update_entity
+        target:
+          entity_id: "{{ targets[data_type].sensor }}"
+
   bt_write_fingerprints:
     alias: "BT: Write fingerprints to file"
     description: "Write fingerprints JSON string to file and refresh sensor. Single write path for all fingerprint writers."
@@ -2195,12 +2243,10 @@ script:
       fingerprints_json:
         description: "Fingerprints as JSON string (already serialized)"
     sequence:
-      - action: shell_command.bt_fingerprint_database_write
+      - action: script.bt_persist_write
         data:
+          data_type: fingerprints
           json_content: "{{ fingerprints_json }}"
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.bt_fingerprint_database_file
 
   bt_clear_fingerprints:
     alias: "BT: Clear fingerprints"
