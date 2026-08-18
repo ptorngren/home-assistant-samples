@@ -59,10 +59,11 @@ case "$ACTION" in
         #   empty sensor produces a document holding the ONE location it touched, which is not empty and
         #   would otherwise be accepted over five real ones.
         #
-        #   Removing entries is rare and always deliberate, so the caller says so. Two do: clearing the
-        #   fingerprint database, and restoring a beacon from the global ignore list, which is the one
-        #   routine shrink in the package. Nothing shrinks statistics through here - bt_clear_statistics
-        #   bypasses this script by design.
+        #   Removing entries is rare and always deliberate, so the caller says so. Three do: clearing
+        #   the fingerprint database, restoring a beacon from the global ignore list - the one routine
+        #   shrink in the package - and repairing the location map, which drops a deleted room from the
+        #   fingerprints and its history from the statistics. bt_clear_statistics bypasses this script
+        #   by design and needs no flag.
         echo "$CONTENT" | base64 -d | python3 -c '
 import json, os, sys, tempfile
 

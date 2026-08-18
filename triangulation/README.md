@@ -187,23 +187,11 @@ recorder:
 fingerprint read and write unavailable. The recorder exclusions from step 4 are read at startup
 too.
 
-⚠️ **Upgrading from a version before 2026-08-18 also resets two Algorithm Settings.** Two helpers were
-renamed for consistency — `bt_location_detection_rssi_tolerance` → **`bt_rssi_tolerance`** and
-`bt_location_detection_weak_signal_threshold` → **`bt_weak_signal_threshold`**. Home Assistant treats a
-renamed helper as a new entity, and these deliberately carry no `initial:` (so a restart never discards
-your tuning), which means they start at their **minimum**: a tolerance of `0` matches nothing, so
-detection returns no location until you set them. Your previous values are not lost, just stranded on
-the two old entities — read them in Developer Tools → States before deleting them, or simply
-**hold the *Algorithm Settings* header once** to run `script.bt_reset_detection_defaults`, which
-restores all six settings to the shipped defaults. This is the same trap as a fresh install; see
-installation step 6.
-
-⚠️ **Upgrading an existing install needs the same restart whenever the `shell_command:` block
-changed.** Those command strings are fixed at startup, so a reload leaves Home Assistant calling the
-previous version of a command. The symptom is narrow and confusing rather than loud: after the write
+⚠️ **Any change to the `shell_command:` block needs a restart, not a reload.** Those command strings are fixed at startup, so a reload leaves Home
+Assistant calling the previous version of a command. The symptom is narrow and confusing rather than loud: after the write
 guard gained its `allow-shrink` argument, everything kept working except **Clear Fingerprints**, which
 was refused every time because the flag never reached the persistor. If one gesture stops working
-after an upgrade and the rest are fine, restart before investigating anything else.
+and the rest are fine, restart before investigating anything else.
 
 Once the package is running, later edits to its automations, scripts and templates can be picked
 up with Developer Tools → YAML → Reload Packages. Editing the `shell_command` block itself always
@@ -249,14 +237,21 @@ Analyzes fingerprints using the Symmetric Ratio algorithm:
 - **`bt_fingerprints.json`** — Stores learned Bluetooth signal signatures for each location
 - **`bt_ignored.json`** — Beacons explicitly marked as unreliable or too noisy
 
+💾 **Keep `data/` under version control.** These files are weeks of room-by-room calibration that
+nothing can regenerate — a fingerprint is a recording of how one place looked on one day. Committing
+them costs a few kilobytes and turns every destructive gesture into something you can read and undo:
+*Repair* deleting a room, *Clear Fingerprints*, a hand-edit gone wrong. `git diff` on the file is also
+the clearest description of what any of those actually did.
+
 Both files use JSON format. Example `bt_fingerprints.json`:
 ```json
-{"fingerprints":[
-{"loc":0,"beacons":{
+{"locations_at_write":["office","kitchen"],
+"fingerprints":[
+{"loc":0,"name":"office","beacons":{
 "AA:BB:CC:DD:EE:FF":{"rssi":-65},
 "11:22:33:44:55:66":{"rssi":-74,"ignored":true}
 }},
-{"loc":1,"beacons":{
+{"loc":1,"name":"kitchen","beacons":{
 "AA:BB:CC:DD:EE:FF":{"rssi":-82}
 }}
 ]}
@@ -857,7 +852,41 @@ Visit the **BT Location Calibration** dashboard at `/dashboard-bt-triangulation`
 3. Enter comma-separated location names (e.g., `office, kitchen, garage, bedroom`)
 4. Press Enter to save
 
-⚠️ **Important:** Location order is permanent. Once you capture fingerprints, changing the order will corrupt all data. Renaming locations is OK, but don't reorder them.
+⚠️ **Important:** fingerprints are stored by **position** in this list, so the order matters after you
+have captured anything.
+
+- **Renaming a location is free** — the name lives only in this list, and the fingerprint follows its
+  position.
+- **Reordering or removing one re-points every later fingerprint**, because index 2 is simply whatever
+  is third in the list.
+
+Neither passes unnoticed. The fingerprint file records the location list it was last written against,
+and **`sensor.bt_location_map_status`** — shown as *Location mapping* directly beneath the list —
+compares that list with the current one:
+
+| Status | Meaning | What happens |
+|---|---|---|
+| `ok` | names and positions agree | normal |
+| `renamed` | a name changed in place | accepted; detection continues |
+| `reordered` | the same names, different order | detection **stops**, with a notification naming what moved |
+| `deleted` | a location is gone from the list | detection **stops**; that fingerprint is orphaned |
+| `ambiguous` | several changed at once | detection **stops** — too unclear to repair automatically |
+| `unknown` | nothing recorded to compare against, or the file could not be read | normal — the next write records the list |
+
+**Press *Repair*** — the tile that appears under *Location Names* while the map needs it — and the stored
+data is brought into line with the list: every fingerprint whose name is still listed moves to that
+name's new position, and a fingerprint whose name is gone is **deleted along with the room**, statistics
+included. That is the point of the feature: the list is yours to reorder and prune, and the data follows.
+A `git diff` of `data/bt_fingerprints.json` shows exactly what moved and what went.
+
+Repair acts on `reordered` and `deleted` only. On `ambiguous` it refuses and says why: when several
+names change at once, a rename and a deletion look identical from the data's side, and guessing would
+throw away a room you only renamed. Put the list back and make one change at a time.
+
+On `reordered`, `deleted` and `ambiguous`, **capturing, merging and editing beacons are refused as
+well** — those write to a location by its position, and doing that against a shifted list is the one
+thing no later repair can undo. Each refusal leaves a notification naming what was dropped. Fix the list
+first, capture after. `ok`, `renamed` and `unknown` write normally.
 
 ### Step 2: Capture Fingerprints at Each Location
 
@@ -949,10 +978,15 @@ The main working view for capturing and curating location fingerprints. Place yo
 
 **How to use:**
 
-1. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan:
+1. **Location & Calibration Setup** — the location list and the state of its mapping:
+   - **Location Names** — comma-separated, in the order fingerprints are stored against (see Step 1)
+   - **Location mapping** — `ok` / `renamed` / `reordered` / `deleted` / `ambiguous`. Anything but the
+     first two means the list no longer matches the stored fingerprints: detection stops and fingerprint
+     edits are refused until it is repaired. See *Step 1* for the table and the recovery.
+2. **Scores for Latest Scan** — Shows how each location's fingerprint matches the current scan:
    - **matched/fp-total [known-in-scan]** — matched beacons over fingerprint total; brackets show how many known beacons were present in the scan
    - **Score** — symmetric ratio: (matched/fp) × (matched/scan) — higher is better
-2. **Beacon Breakdown** — Per-beacon detail for the top N scoring locations (use the slider to choose N). Columns: MAC · FP · Scan · Δ · nσ · Name
+3. **Beacon Breakdown** — Per-beacon detail for the highest-scoring locations — **Top locations** sets how many. Columns: MAC · FP · Scan · Δ · nσ · Name
    - FP column shows `min/max` range for min/max entries, or a single value for mean entries; **underlined with a wavy warning-color line** when the min/max range exceeds 2 × RSSI tolerance — indicates high signal variance; beacon may be unreliable and reduce detection accuracy
    - Δ column: for mean entries, absolute deviation from stored RSSI; for min/max entries, distance outside the bounds (0 when matched)
    - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections. Missing rate and intermittent flag are shown in the Beacon Status report, not in this column.
@@ -963,7 +997,7 @@ The main working view for capturing and curating location fingerprints. Place yo
    - **Double-tap a beacon row** to open the Range Editor — directly edit the min/max bounds for that beacon. Pre-filled from the fingerprint. An "Apply midpoint X dBm:" button trims the range to a symmetrical window around the current centre (no scan needed). An "Apply P10/P90" button sets the range to the 10th/90th percentile of accumulated scan history (enabled when ≥ 10 samples exist; disabled when bounds already match). Min/max are auto-swapped if inverted.
    - **Hold a beacon row** to reset that beacon from the current scan. In **mean mode**: collapses to the current scan RSSI (no-op if absent). In **min/max mode**: resets range to `[scan − tolerance, scan + tolerance]` (no-op if absent from scan).
    - Use this to diagnose why a location scores below expected, or why the wrong location wins
-3. **Adjust algorithm parameters** in Algorithm Settings:
+4. **Adjust algorithm parameters** in Algorithm Settings:
    - **Hold the card header** to restore every setting below to its default, after confirming. The
      shipped values are:
 
@@ -1437,17 +1471,22 @@ total_score: 0.727  # (12/15) × (12/16.5) = 0.8 × 0.909 = 0.727
 **File:** `packages/triangulation/data/bt_fingerprints.json`
 
 ```json
-{"fingerprints":[
-  {"loc":0,"beacons":{
+{"locations_at_write":["office","kitchen"],
+ "fingerprints":[
+  {"loc":0,"name":"office","beacons":{
     "AA:BB:CC:DD:EE:FF":{"min":-70,"max":-60},
     "11:22:33:44:55:66":{"rssi":-72,"ignored":true}
   }},
-  {"loc":1,"beacons":{
+  {"loc":1,"name":"kitchen","beacons":{
     "AA:BB:CC:DD:EE:FF":{"min":-85,"max":-75}
   }}
 ]}
 ```
 
+- `loc` is the index into the location list; `name` is what that index held when the entry was written
+- `locations_at_write` is the whole list at that moment — comparing it with the current list is what
+  `sensor.bt_location_map_status` reports, and `name` is what *Repair* moves an entry by. Neither is
+  used for matching
 - Per-location ignores are stored inline as `"ignored": true` on the beacon entry
 - Beacons can use either mean (`"rssi"`) or range (`"min"`/`"max"`) format; both can coexist within a location
 

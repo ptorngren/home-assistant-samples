@@ -183,12 +183,14 @@ decluttering_templates:
               {%- if fp.beacons is not none -%}
                 {%- for mac, beacon in fp.beacons.items() -%}
                   {%- set mac_upper = mac | upper -%}
+                  {#- format branch: see BEACON ENTRY FORMATS in packages/triangulation/bt_triangulation.yaml -#}
                   {%- set rssi = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
                   {%- set is_locally_ignored = beacon.get('ignored', false) -%}
                   {%- set is_globally_ignored = mac_upper in global_list -%}
                   {%- set is_weak_signal = rssi == 0 or rssi < weak_threshold -%}
                   {%- set is_in_scan = mac_upper in ns_scan.scan_map -%}
                   {%- set scan_rssi = ns_scan.scan_map.get(mac_upper, 0) if is_in_scan else 0 -%}
+                  {#- format branch: see BEACON ENTRY FORMATS in packages/triangulation/bt_triangulation.yaml -#}
                   {%- if is_in_scan and 'min' in beacon -%}
                     {%- set is_rssi_match = scan_rssi >= beacon.min and scan_rssi <= beacon.max -%}
                   {%- elif is_in_scan -%}
@@ -948,6 +950,7 @@ decluttering_templates:
                   {%- set mac_upper = mac | upper -%}
                   {%- if mac_upper not in global_ignored -%}
                     {%- set is_locally_ignored = beacon.get('ignored', false) -%}
+                    {#- format branch: see BEACON ENTRY FORMATS in packages/triangulation/bt_triangulation.yaml -#}
                     {%- set fp_rssi = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
                     {%- set fp_display = (beacon.min | string ~ "/" ~ beacon.max | string) if 'min' in beacon else (fp_rssi | string) -%}
                     {%- set is_high_span = ('min' in beacon) and (((beacon.max | int(0)) - (beacon.min | int(0))) | abs) > (2 * tolerance) -%}
@@ -956,6 +959,7 @@ decluttering_templates:
                     {%- set bname = names_map.get(mac_upper, '?') -%}
                     {%- set merge_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_merge", "data": {"location_index": loc_idx, "mac": mac_upper, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
                     {%- set reset_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_reset_minmax", "data": {"location_index": loc_idx, "mac": mac_upper, "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"}} -%}
+                    {#- format branch: see BEACON ENTRY FORMATS in packages/triangulation/bt_triangulation.yaml -#}
                     {%- set fp_min = beacon.min if 'min' in beacon else (fp_rssi - tolerance) -%}
                     {%- set fp_max = beacon.max if 'max' in beacon else (fp_rssi + tolerance) -%}
                     {%- set range_edit_tap = {"action": "perform-action", "perform_action": "script.bt_beacon_range_editor_open", "data": {"browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]", "location_index": loc_idx, "mac": mac_upper, "beacon_name": bname, "current_min": fp_min, "current_max": fp_max, "tolerance": tolerance}} -%}
@@ -973,6 +977,7 @@ decluttering_templates:
                     {%- else -%}
                       {%- set stats_val = '' -%}
                     {%- endif -%}
+                    {#- format branch: see BEACON ENTRY FORMATS in packages/triangulation/bt_triangulation.yaml -#}
                     {%- set is_match = (scan_rssi >= beacon.min and scan_rssi <= beacon.max) if ('min' in beacon and is_in_scan) else ((scan_rssi - fp_rssi) | abs <= tolerance) if is_in_scan else false -%}
                     {%- set diff = ([0, beacon.min - scan_rssi, scan_rssi - beacon.max] | max) if ('min' in beacon and is_in_scan) else ((scan_rssi - fp_rssi) | abs) if is_in_scan else 0 -%}
                     {%- set lt = [{"text-decoration": "line-through"}] -%}
@@ -1075,14 +1080,33 @@ views:
                 name: "Location Names"
                 icon: mdi:map-marker-multiple
 
+          # Fingerprints are stored by position in the list above, so renaming is free but removing or
+          # reordering re-points them. This tile carries the verdict on the right and the repair on the
+          # left, and exists only while there is a repair to make: `ok` is the normal state, and
+          # `renamed` is accepted - detection continues - so neither takes up screen space.
+          - type: conditional
+            conditions:
+              - entity: sensor.bt_location_map_status
+                state_not: "ok"
+              - entity: sensor.bt_location_map_status
+                state_not: "renamed"
+            card:
+              type: tile
+              entity: sensor.bt_location_map_status
+              name: "Repair"
+              icon: mdi:wrench
+              tap_action:
+                action: perform-action
+                perform_action: script.bt_repair_location_map
+
           - type: horizontal-stack
             cards:
               # Load from file button (medium risk)
               - type: custom:button-card
-                name: "Load Fingerprints"
+                name: "Restore Locations"
                 tap_action:
                   action: perform-action
-                  perform_action: script.bt_load_fingerprints_from_file
+                  perform_action: script.bt_restore_locations
                 styles:
                   card:
                     - background-color: *color_info
@@ -1222,7 +1246,7 @@ views:
           - type: entities
             entities:
               - entity: input_number.bt_diagnostic_location_count
-                name: "Locations to show"
+                name: "Top locations"
             card_mod:
               style: |
                 ha-card {
@@ -1420,8 +1444,8 @@ views:
           **What it does:** Define your locations and tune the detection algorithm. Configure location names, adjust algorithm parameters, and review how well each location's fingerprint matches the current scan.
 
           **How to use:**
-          - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). ⚠️ **Maintain order** — fingerprints are calculated from location indices. Changing the order will corrupt captured fingerprints. Once defined, keep the order fixed (renaming is OK); if you must reorder, recapture all fingerprints from scratch.
-          - **Action Buttons**: **Load Fingerprints** reloads fingerprint data from file. **Clear Fingerprints** and **Clear Statistics** reset the respective data.
+          - **Location Names**: Enter comma-separated names (`office, kitchen, garage` etc). Fingerprints are stored by **position** in this list, so **renaming is free** — but reordering or removing a name re-points every later fingerprint, so detection stops until the data is brought into line. A **Repair** tile appears under the list while that is the case, carrying the verdict on the right. One press applies the list to the data: every fingerprint whose name is still listed moves to its new position, and a fingerprint whose name is gone is deleted with the room, statistics included. On `ambiguous` — several names changed at once — Repair refuses and says why: a rename and a deletion are indistinguishable from the data's side, so make one change at a time. After a rename, some cards keep the previous names, or show a blank row, until the next scan — dock the phone and they catch up.
+          - **Action Buttons**: **Restore Locations** re-reads the fingerprint file and puts the location list back to the one those fingerprints were written against — the way back after restoring a data file, since the names live in a helper rather than in the file. **Clear Fingerprints** and **Clear Statistics** reset the respective data.
           - **Hold the "Algorithm Settings" header** to restore all six settings below to their defaults, after confirming. ⚠️ **Do this once on a new install** — the settings ship with no stored values and start at their minimums, and a Signal Tolerance of 0 matches nothing at all, so detection stays empty with nothing to explain why. Defaults:
 
             | Setting | Default |
@@ -1449,7 +1473,7 @@ views:
             - **`5/8`** — 5 of this location's 8 fingerprint beacons were found in the scan
             - **`[6]`** — 6 known beacons (across all locations) were present in the scan
             - **`0.5`** = Score `(matched/fingerprint) × (matched/known)` — higher is better (1 is perfect)
-          - Use **Beacon Breakdown** (below Scores) to see per-beacon match detail for the top N scoring locations. Use the slider to choose how many locations to compare. Columns: MAC · FP · Scan · Δ · nσ · Name
+          - Use **Beacon Breakdown** (below Scores) to see per-beacon match detail for the top N scoring locations. **Top locations** sets how many to compare. Columns: MAC · FP · Scan · Δ · nσ · Name
             - FP column shows `min/max` for min/max entries, or a single value for mean entries; **underlined with a wavy warning-color line** when the min/max range exceeds 2 × RSSI tolerance — indicates high signal variance, beacon may reduce detection accuracy
             - Δ column: for mean entries, absolute deviation from stored RSSI; for min/max entries, distance outside the bounds (0 when matched)
             - nσ column: sample count and standard deviation from captured merge/reset history (e.g. `14σ3` = 14 samples, stddev 3 dBm). Empty until data is collected. **Wavy underline** when σ > tolerance/2 — the 95% confidence interval of the signal exceeds the full matching window; beacon may cause missed detections.

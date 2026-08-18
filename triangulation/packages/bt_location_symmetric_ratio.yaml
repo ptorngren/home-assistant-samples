@@ -94,6 +94,7 @@ script:
               {# Check if it exists in current scan #}
               {%- if fp_mac in current_scan_map -%}
                 {%- set current_rssi = current_scan_map[fp_mac] -%}
+                {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                 {%- if 'min' in beacon -%}
                   {# Min/max entry #}
                   {%- if distance_weighted_scoring -%}
@@ -169,6 +170,40 @@ script:
         {%- endif -%}
 
     sequence:
+      # Fingerprints are keyed by location index, so a list that has been reordered or had an entry
+      # removed makes every later fingerprint belong to a different room - and scoring it would report a
+      # confidently wrong location rather than fail. sensor.bt_location_map_status compares the list the
+      # database was written against with the current one; a rename is accepted and scoring continues,
+      # anything else stops here.
+      - if: "{{ states('sensor.bt_location_map_status') in ['reordered', 'deleted', 'ambiguous'] }}"
+        then:
+          - action: system_log.write
+            data:
+              message: >-
+                BT: location map is {{ states('sensor.bt_location_map_status') }} - scoring refused.
+                Moved: {{ state_attr('sensor.bt_location_map_status', 'moved') }};
+                missing: {{ state_attr('sensor.bt_location_map_status', 'missing') }}
+              level: error
+          - action: persistent_notification.create
+            data:
+              notification_id: bt_location_map_stale
+              title: "Triangulation: location map changed"
+              # Short by design: this reaches a phone, where the job is to say detection stopped and
+              # where to fix it. What moved where is on the Settings view - the Repair tile carries the
+              # verdict, and its more-info holds the per-location detail.
+              message: >-
+                The location list no longer matches the stored fingerprints ({{
+                states('sensor.bt_location_map_status') }}), so detection is stopped rather than
+                reporting the wrong room. Press **Repair** under *Location Names* on the Settings view,
+                or put the names back the way they were.
+          - stop: "location map stale"
+
+      # Whichever route repaired the map - the names put back, or the re-key script - the notice goes
+      # with it. Dismissing an absent notification is a no-op, so the healthy path pays nothing.
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: bt_location_map_stale
+
       # Build the result
       - variables:
           detected_location: "{{ best_location_info.location }}"

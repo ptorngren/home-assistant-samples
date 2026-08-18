@@ -133,7 +133,9 @@ shell_command:
     "{{ json_content | to_json | base64_encode }}" {{ 'allow-shrink' if allow_shrink | default(false) | bool(false) else '' }}
   bt_ignored_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
   # No flag: nothing shrinks statistics through the persistor - bt_clear_statistics bypasses it.
-  bt_statistics_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics "{{ json_content | to_json | base64_encode }}"'
+  bt_statistics_write: >-
+    bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics
+    "{{ json_content | to_json | base64_encode }}" {{ 'allow-shrink' if allow_shrink | default(false) | bool(false) else '' }}
   # Wrapped in bash -c: without a template in the command, HA runs shell_command through exec
   # rather than a shell, so && and > would be passed to mkdir as literal arguments.
   #
@@ -171,16 +173,59 @@ command_line:
       command: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
       json_attributes:
         - fingerprints
+        # The location list this document was last written against - what makes a change to that list
+        # classifiable rather than guessable. See BT Location Map Status.
+        - locations_at_write
       value_template: "{% if value_json.fingerprints %}ready{% else %}empty{% endif %}"
       scan_interval: 86400   # effectively never — see POLLING above
       # Reads fingerprints from file and wraps in JSON object for attributes extraction
       # Refreshed by script.bt_persist_write after every write, and at HA startup
       # Dashboard/scripts access via: state_attr('sensor.bt_fingerprint_database_file', 'fingerprints')
       # Pattern: File + Sensor Attributes (unlimited data, no 255-char limit)
+      #
+      # ------------------------------------------------------------------
+      # BEACON ENTRY FORMATS - read this before touching any `'min' in beacon` branch
+      # ------------------------------------------------------------------
+      # A beacon inside a fingerprint is stored in one of two shapes, and both are live at once:
+      #   {"min": -75, "max": -46}   a range, written by captures and merges in Min/Max mode
+      #   {"rssi": -65}              a mean, written in Mean mode
+      # Switching the mode does not convert existing entries, so one location can hold both. Either
+      # may also carry "ignored": true.
+      #
+      # Every reader therefore branches on `'min' in beacon`, and each derives something different:
+      # the mean, the span, a display string, the match bounds, or the distance outside the range.
+      # That branch is open-coded at roughly fifteen sites, here and in dashboards/bt_triangulation.yaml.
+      #
+      # It is deliberate, not an oversight. A shared Jinja macro does work - `custom_templates/` is
+      # reachable from dashboard templates as well as from here, measured 2026-08-18 - but that
+      # directory must live at the config root, outside this package. It would need its own sync rule,
+      # its own install step, and a missing file would break cards rather than degrade them. For
+      # fifteen short branches that trade is not worth it.
+      #
+      # Adding a third format means updating every site: grep for `'min' in beacon` in this file, in
+      # bt_location_symmetric_ratio.yaml and in dashboards/bt_triangulation.yaml.
+      #
+      # ------------------------------------------------------------------
+      # LOCATION ENTRY SHAPE - `loc`, `name`, and the document's `locations_at_write`
+      # ------------------------------------------------------------------
+      #   {"locations_at_write": ["peer", "kok", ...],
+      #    "fingerprints": [{"loc": 1, "name": "kok", "beacons": {...}}, ...]}
+      #
+      # `loc` is the index into sensor.bt_location_array, which is where every reader looks a name up.
+      # `name` is what that index resolved to when the entry was written, and `locations_at_write` is
+      # the whole list at that moment. Neither is read while scoring - they exist so a change to the
+      # location list can be CLASSIFIED rather than guessed at: comparing the recorded list against the
+      # current one separates a rename (harmless) from a reorder or a deletion, which silently re-point
+      # every later fingerprint. sensor.bt_location_map_status is the only place that comparison runs;
+      # scripts and cards read its verdict.
+      #
+      # Either key can be absent: an entry without `name` and a document without `locations_at_write`
+      # both mean "not classifiable", which reads as `unknown` - never a wrong verdict. Writers preserve
+      # an existing `name` rather than refreshing it: the disagreement IS the evidence.
 
   - sensor:
       name: "BT Ignored Beacons"
-      unique_id: bt_ignored
+      unique_id: bt_ignored_beacons
       command: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
       json_attributes:
         - ignored
@@ -216,6 +261,80 @@ template:
         state: "ready"
         attributes:
           browser_id_transform_pattern: "^(.+?)(?:_fkb)?$"
+
+      # ------------------------------------------------------------------
+      # Location map status - one verdict, read by everything that scores
+      # ------------------------------------------------------------------
+      # Fingerprints are keyed by location INDEX, and the names live in a free-text row on the Settings
+      # view. Renaming a location is therefore free, which is the common edit - but removing or
+      # reordering one shifts every later index, and each fingerprint silently becomes another room's.
+      #
+      # The document records the array as it stood at its last write (`locations_at_write`, see BEACON
+      # ENTRY FORMATS). Comparing that list with the array now classifies any disagreement, and this
+      # sensor is the only place the comparison is made: scripts and cards read the verdict rather than
+      # re-deriving it. Comparing list to list rather than inferring from the entries is what makes the
+      # verdict independent of how many locations have been captured.
+      #
+      #   ok        every recorded name is still at its recorded index - appending one changes nothing
+      #   renamed   one recorded name is gone from the array, the count is unchanged - scoring continues
+      #   reordered the names all exist, at different indices - indices are stale, scoring must stop
+      #   deleted   a name is gone and the array is shorter - that entry is orphaned
+      #   ambiguous several changed at once - refuse and ask, never guess
+      #   unknown   nothing recorded to compare against, or the database is unreadable - never `ok`
+      - name: "BT Location Map Status"
+        unique_id: bt_location_map_status
+        icon: mdi:map-marker-check
+        state: >
+          {%- set locations = state_attr('sensor.bt_location_array', 'locations') or [] -%}
+          {%- set before = state_attr('sensor.bt_fingerprint_database_file', 'locations_at_write') -%}
+          {%- if state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') is none -%}
+            unknown
+          {%- elif before is none -%}
+            {#- Written before the list was recorded, or never written at all. Nothing to compare
+                against, so say so rather than guess - the next write records it. -#}
+            unknown
+          {%- else -%}
+            {%- set ns = namespace(moved=[], gone=[]) -%}
+            {%- for name in before -%}
+              {%- if name in locations -%}
+                {%- if locations.index(name) != before.index(name) -%}
+                  {%- set ns.moved = ns.moved + [name] -%}
+                {%- endif -%}
+              {%- else -%}
+                {%- set ns.gone = ns.gone + [name] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {#- Comparing the list against the list it was written against, rather than inferring from
+                the entries: exact, and independent of how many locations have been captured. Appending
+                a location moves nothing, so it stays `ok`. -#}
+            {%- if ns.moved | length == 0 and ns.gone | length == 0 -%}ok
+            {%- elif ns.gone | length > 0 and locations | length < before | length -%}deleted
+            {%- elif ns.gone | length == 0 -%}reordered
+            {%- elif ns.gone | length == 1 and ns.moved | length == 0 -%}renamed
+            {%- else -%}ambiguous
+            {%- endif -%}
+          {%- endif -%}
+        attributes:
+          moved: >
+            {%- set locations = state_attr('sensor.bt_location_array', 'locations') or [] -%}
+            {%- set before = state_attr('sensor.bt_fingerprint_database_file', 'locations_at_write') or [] -%}
+            {%- set ns = namespace(m=[]) -%}
+            {%- for name in before if name in locations and locations.index(name) != before.index(name) -%}
+              {%- set ns.m = ns.m + [{'name': name, 'stored_at': before.index(name), 'now_at': locations.index(name)}] -%}
+            {%- endfor -%}
+            {{ ns.m }}
+          missing: >
+            {%- set locations = state_attr('sensor.bt_location_array', 'locations') or [] -%}
+            {%- set before = state_attr('sensor.bt_fingerprint_database_file', 'locations_at_write') or [] -%}
+            {%- set ns = namespace(g=[]) -%}
+            {%- for name in before if name not in locations -%}
+              {%- set ns.g = ns.g + [{'name': name, 'stored_at': before.index(name),
+                                      'index_now_holds': locations[before.index(name)] if before.index(name) < locations | length else none}] -%}
+            {%- endfor -%}
+            {{ ns.g }}
+          unstamped: >
+            {{ (state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [])
+               | rejectattr('name', 'defined') | map(attribute='loc') | list }}
 
       # Active Known Beacons - single source of truth for which beacons are active
       # A beacon is active if it appears non-ignored in at least one location fingerprint
@@ -257,6 +376,7 @@ template:
                 {%- for mac, beacon in fp.beacons.items() -%}
                   {%- if not beacon.get('ignored', false) -%}
                     {%- set mac_upper = mac | upper -%}
+                    {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                     {%- set rssi_val = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
                     {%- set span = (beacon.max - beacon.min) if 'min' in beacon else 0 -%}
                     {%- set is_high_span = span > 2 * rssi_tolerance -%}
@@ -1746,6 +1866,7 @@ script:
                     {%- set p90 = sorted_vals[(s_count * 0.9) | int] | int -%}
                     {%- set reset_beacon = {'min': p10, 'max': p90} -%}
                   {%- else -%}
+                    {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                     {%- set mid = ((beacon.min + beacon.max) / 2) | round | int if 'min' in beacon else beacon.rssi | int -%}
                     {%- set reset_beacon = {'min': mid - tolerance, 'max': mid + tolerance} -%}
                   {%- endif -%}
@@ -1839,6 +1960,7 @@ script:
           raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           global_ignored: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
           current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          locations: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
           ts: "{{ now().timestamp() | int }}"
 
       # Every beacon not in the fingerprint database is dropped from the statistics below, so an
@@ -1874,6 +1996,12 @@ script:
             {%- endfor -%}
             {{ ns.macs }}
 
+      # The `name` on a statistics entry is a forensic breadcrumb, not an input: nothing in the package
+      # reads it, and this document carries no `locations_at_write`, so no verdict is derived from it.
+      # It is written for whoever opens bt_statistics.json on disk or feeds it to an external tool, where
+      # a bare `loc` is meaningless without the location list that produced it. Statistics are
+      # regenerable by re-merging, which is why they are classified for a reader's benefit rather than
+      # guarded like the fingerprints.
       - variables:
           updated_statistics: |
             {%- set ns = namespace(stat_list=[], found=false) -%}
@@ -1897,7 +2025,10 @@ script:
                     {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
                   {%- endif -%}
                 {%- endfor -%}
-                {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
+                {%- set stamp = entry.name if 'name' in entry
+                                else (locations[location_index | int] if location_index | int < locations | length else none) -%}
+                {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'name': stamp, 'beacons': ns2.beacons}
+                                                       if stamp else {'loc': location_index | int, 'beacons': ns2.beacons}] -%}
               {%- else -%}
                 {%- set ns.stat_list = ns.stat_list + [entry] -%}
               {%- endif -%}
@@ -1909,7 +2040,9 @@ script:
                   {%- set ns2.beacons = ns2.beacons | combine({mac_upper: [[rssi, ts]]}) -%}
                 {%- endif -%}
               {%- endfor -%}
-              {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
+              {%- set stamp = locations[location_index | int] if location_index | int < locations | length else none -%}
+              {%- set ns.stat_list = ns.stat_list + [{'loc': location_index | int, 'name': stamp, 'beacons': ns2.beacons}
+                                                     if stamp else {'loc': location_index | int, 'beacons': ns2.beacons}] -%}
             {%- endif -%}
             {{ {'statistics': ns.stat_list} }}
 
@@ -2011,6 +2144,7 @@ script:
               {%- for mac, beacon in fp.beacons.items() -%}
                 {%- set mac_upper = mac | upper -%}
                 {%- if mac_upper not in global_list -%}
+                  {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                   {%- set rssi = ((beacon.min + beacon.max) / 2) | int if 'min' in beacon else beacon.rssi -%}
                   {%- set ns.total = ns.total + 1 -%}
                   {%- if beacon.get('ignored', false) -%}
@@ -2023,6 +2157,7 @@ script:
                       {%- set ns.active = ns.active + 1 -%}
                     {%- endif -%}
                     {%- set bname = names_map.get(mac_upper, '?') -%}
+                    {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                     {%- set fp_display = (beacon.min | string ~ '/' ~ beacon.max | string ~ ' dBm') if 'min' in beacon else (rssi | string ~ ' dBm') -%}
                     {%- set fp_span = ((beacon.max | int(0)) - (beacon.min | int(0))) | abs if 'min' in beacon else 0 -%}
                     {%- set is_wide = fp_span > 2 * tolerance -%}
@@ -2086,6 +2221,7 @@ script:
                       {%- set high_sigma = s_stddev > (tolerance / 2) -%}
                       {%- set high_drift = (s_drift | abs) > tolerance -%}
                       {# Flag if fp bounds extend beyond observed stat range #}
+                      {#- format branch: see BEACON ENTRY FORMATS, above the fingerprint database sensor -#}
                       {%- if 'min' in beacon -%}
                         {%- set ns_rm.min_gap = (s_min | int) - (beacon.min | int) -%}
                         {%- set ns_rm.max_gap = (beacon.max | int) - (s_max | int) -%}
@@ -2151,14 +2287,208 @@ script:
           message: "{{ validation_report }}"
           level: info
 
-  bt_load_fingerprints_from_file:
-    alias: "BT: Load fingerprints from file"
-    description: "Refresh BT fingerprints sensor from file backup"
+  bt_repair_location_map:
+    alias: "BT: Repair location mapping"
+    description: "Make the stored data match the location list: an entry whose name is still listed moves to its index, an entry whose name is gone is removed."
+    mode: single
     sequence:
-      # Force sensor to re-read current file contents
+      # The feature exists so a location list can be reordered AND pruned, so the repair applies the
+      # list to the data rather than arguing with it: an entry whose stored name is still in the list
+      # moves to that index, and an entry whose name is gone goes with the room. Deleting a word from a
+      # comma-separated field is deliberate - there is no checkbox to slip on - and the data file is in
+      # git if it was not.
+      #
+      # Fingerprints and statistics are both keyed by index, so both are re-keyed. Leaving statistics
+      # behind would silently attach one room's signal history to its neighbour.
+      #
+      # `renamed` and `ambiguous` are refused, and that is not timidity: from an entry's side a rename
+      # and a deletion are the same event - its name is no longer in the list. `renamed` is safe only
+      # because nothing else moved. Under `ambiguous` something else did, so applying the rule would
+      # delete a room that was merely renamed.
+      - variables:
+          verdict: "{{ states('sensor.bt_location_map_status') }}"
+
+      - if: "{{ verdict not in ['reordered', 'deleted'] }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: bt_repair_refused
+              title: "Triangulation: nothing repaired"
+              message: >-
+                The location map is **{{ verdict }}**.
+                {%- if verdict == 'ok' %} Nothing needs repairing.
+                {%- elif verdict == 'renamed' %} A rename is accepted on its own - detection keeps
+                working, and the name is picked up on the next write.
+                {%- elif verdict == 'unknown' %} The fingerprint file records no location list to compare
+                against. Press **Restore Locations** if you have just restored or hand-edited a data
+                file.
+                {%- else %} Several names changed at once, so a rename cannot be told from a deletion
+                and repairing would risk discarding a room you only renamed. Put the list back, then
+                make one change at a time. {%- endif %}
+          - stop: "nothing to repair"
+
+      # Both file sensors are read on demand, so either can be holding what the file said hours ago -
+      # after a restore from backup, or after an earlier repair the other sensor never saw. Re-keying
+      # from a stale read rebuilds the whole document from it, which is how a write ends up shrinking a
+      # file nobody meant to shrink. Refreshed here, before anything is read.
       - action: homeassistant.update_entity
         target:
-          entity_id: sensor.bt_fingerprint_database_file
+          entity_id:
+            - sensor.bt_fingerprint_database_file
+            - sensor.bt_merge_statistics
+            - sensor.bt_ignored_beacons
+
+      - variables:
+          locations: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+          current: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+
+      - if: "{{ current is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: repair refused - the fingerprint database could not be read"
+              level: error
+          - stop: "database unreadable"
+
+      # An entry with no stored name can be neither placed nor judged gone - it is not a deletion, it is
+      # an unknown. Repairing around it would move its neighbours and leave it pointing at whatever
+      # index it happens to hold.
+      - variables:
+          unstamped: |
+            {%- set ns = namespace(list=[]) -%}
+            {%- for fp in current if 'name' not in fp -%}
+              {%- set ns.list = ns.list + [fp.loc] -%}
+            {%- endfor -%}
+            {{ ns.list }}
+
+      - if: "{{ unstamped | length > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: bt_repair_refused
+              title: "Triangulation: repair refused"
+              message: >-
+                {{ unstamped | length }} fingerprint(s) carry no stored location name — at index
+                {{ unstamped | join(', ') }} — so they can be neither moved nor judged gone, and
+                **nothing was changed**. Add a `"name"` that appears in *Location Names* to each of them
+                in `data/bt_fingerprints.json`, then press **Restore Locations** to re-read it.
+          - action: system_log.write
+            data:
+              message: "BT: repair refused - unstamped entries at {{ unstamped }}, nothing changed"
+              level: error
+          - stop: "unstamped entries"
+
+      - variables:
+          kept: |
+            {%- set ns = namespace(list=[]) -%}
+            {%- for fp in current if fp.name in locations -%}
+              {%- set ns.list = ns.list + [{'loc': locations.index(fp.name), 'name': fp.name, 'beacons': fp.beacons}] -%}
+            {%- endfor -%}
+            {{ ns.list }}
+          dropped: |
+            {%- set ns = namespace(list=[]) -%}
+            {%- for fp in current if fp.name not in locations -%}
+              {%- set ns.list = ns.list + [fp.name] -%}
+            {%- endfor -%}
+            {{ ns.list }}
+          # Statistics are diagnostic and regenerable by re-merging, so an entry that cannot be placed is
+          # dropped rather than guarded over: keeping it would mean keeping a wrong index.
+          stats_kept: |
+            {%- set ns = namespace(list=[]) -%}
+            {%- set stats = state_attr('sensor.bt_merge_statistics', 'statistics') or [] -%}
+            {%- for s in stats if 'name' in s and s.name in locations -%}
+              {%- set ns.list = ns.list + [{'loc': locations.index(s.name), 'name': s.name, 'beacons': s.beacons}] -%}
+            {%- endfor -%}
+            {{ ns.list }}
+
+      - variables:
+          stats_before: "{{ (state_attr('sensor.bt_merge_statistics', 'statistics') or []) | length }}"
+
+      - action: script.bt_persist_write
+        data:
+          data_type: fingerprints
+          json_content: "{{ {'locations_at_write': locations, 'fingerprints': kept} }}"
+          allow_shrink: "{{ dropped | length > 0 }}"
+        response_variable: write_result
+
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
+
+      - if: "{{ stats_before | int > 0 }}"
+        then:
+          - action: script.bt_persist_write
+            data:
+              data_type: statistics
+              json_content: "{{ {'statistics': stats_kept} }}"
+              allow_shrink: "{{ stats_kept | length < stats_before | int }}"
+
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: bt_location_map_stale
+
+      - action: system_log.write
+        data:
+          message: >-
+            BT: location map repaired - {{ kept | length }} fingerprint(s) re-keyed to
+            {{ locations | join(', ') }}
+            {{- ', dropped ' ~ (dropped | join(', ')) if dropped | length > 0 else '' }};
+            statistics {{ stats_before }} -> {{ stats_kept | length }}
+          level: info
+
+  bt_restore_locations:
+    alias: "BT: Restore locations"
+    description: "Re-read the fingerprint file and put the location list back to the one it was written against."
+    mode: single
+    sequence:
+      # The names live in input_text.bt_calibration_locations, whose value is in .storage - not in the
+      # data files. Restoring bt_fingerprints.json from a backup therefore leaves the list untouched and
+      # the two disagreeing, with nothing to reconcile them; a restart makes it worse by faithfully
+      # restoring the edited helper. The file records the list it was written against, so it holds the
+      # answer.
+      #
+      # The file is re-read FIRST, which is the opposite of the obvious order: the names come out of the
+      # file, so a sensor still holding the previous contents would restore the previous names.
+      # Statistics are restored from backup alongside the fingerprints, and their sensor is read on
+      # demand too - so it is refreshed here as well, or the next repair rebuilds that file from a read
+      # taken before the restore.
+      - action: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.bt_fingerprint_database_file
+            - sensor.bt_merge_statistics
+            - sensor.bt_ignored_beacons
+
+      - variables:
+          recorded: "{{ state_attr('sensor.bt_fingerprint_database_file', 'locations_at_write') or [] }}"
+          current_names: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+
+      # A document written before the list was recorded has nothing to restore from. Saying so beats
+      # writing an empty list over a healthy one.
+      - if: "{{ recorded | length == 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: >-
+                BT: restore locations - the fingerprint file records no location list, so the names are
+                left as they are
+              level: warning
+          - stop: "nothing recorded to restore from"
+
+      # `', '.join` matches the parser, which splits on `,` and trims - so a restore of an unchanged
+      # list writes the same string back.
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.bt_calibration_locations
+        data:
+          value: "{{ recorded | join(', ') }}"
+
+      - action: system_log.write
+        data:
+          message: >-
+            BT: locations restored from the fingerprint file - {{ current_names | join(', ') }}
+            -> {{ recorded | join(', ') }}
+          level: info
 
   bt_persist_write:
     alias: "BT: Write data file"
@@ -2200,7 +2530,8 @@ script:
               cmd: shell_command.bt_statistics_write
               sensor: sensor.bt_merge_statistics
 
-      # The fingerprints and ignored commands read `allow_shrink`; the statistics one ignores it.
+      # All three commands read `allow_shrink`: statistics shrink when Repair removes a deleted room's
+      # history along with its fingerprint.
       - action: "{{ targets[data_type].cmd }}"
         data:
           json_content: "{{ json_content }}"
@@ -2288,6 +2619,9 @@ script:
           # `| int(-1)` turns an absent or non-numeric index into -1, which means "every location" -
           # but only for the two verbs that have an every-location meaning.
           target_loc: "{{ location_index | default(-1) | int(-1) }}"
+          # For the name stamp below. Empty when the array is unreadable, which simply means no stamp
+          # is written - never a wrong one.
+          locations: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
 
       # Every verb except `clear` carries the untouched part of the document across from `current`, so
       # an unreadable sensor would replace a healthy file with an empty database. `none` is the
@@ -2322,6 +2656,41 @@ script:
           - stop: "location_index required"
             response_variable: write_result
 
+      # An index is only meaningful while the location list still matches the one the fingerprints were
+      # written against. Reordered or shortened, index 2 belongs to another room, and a write lands in
+      # that room's entry where no later re-key can undo it - unlike scoring, which merely reports.
+      # Guarded here rather than in each caller because this is the one point every index-scoped write
+      # passes through. A write with no index trusts none: `clear` empties the document, and the
+      # every-location verbs act on all of them, so both are let through.
+      - if: >-
+          {{ target_loc >= 0
+             and states('sensor.bt_location_map_status') in ['reordered', 'deleted', 'ambiguous'] }}
+        then:
+          # A refusal the user cannot see is a button that does nothing. This notice stays until it is
+          # dismissed: unlike the scorer's, which describes a condition that detection re-checks on
+          # every scan, this one records an edit that was dropped - and repairing the list does not put
+          # that edit back.
+          - action: persistent_notification.create
+            data:
+              notification_id: bt_write_refused_stale_map
+              title: "Triangulation: edit not saved"
+              message: >-
+                **{{ op }}** at location index {{ target_loc }} was not written. The location list no
+                longer matches the stored fingerprints (**{{ states('sensor.bt_location_map_status') }}**),
+                so that index may belong to a different room than the one you pressed. Press **Repair**
+                under *Location Names* on the Settings view, then make the edit again.
+          - action: system_log.write
+            data:
+              message: >-
+                BT: location map is {{ states('sensor.bt_location_map_status') }} - {{ op }} at index
+                {{ target_loc }} refused, that index may belong to another room. Repair the list first.
+              level: error
+          - variables:
+              write_result:
+                ok: false
+          - stop: "location map stale"
+            response_variable: write_result
+
       - variables:
           # Toggle direction. Scoped to one location it flips that entry; across all locations any
           # still-active entry means "ignore everywhere", so a mixed set collapses to fully ignored
@@ -2339,10 +2708,23 @@ script:
             {%- endfor -%}
             {{ ns.active }}
 
+      # The recorded list is what makes a later change to the location list classifiable, so only a
+      # write made while the mapping holds may refresh it. Index-scoped writes are refused above when it
+      # does not, which leaves the every-location verbs: they touch all entries or none, so they are
+      # safe to perform, but stamping the current list under them would erase the very disagreement the
+      # sensor reports and bless the wrong mapping. They carry the recorded list through instead.
+      # `clear` is exempt because an empty document has no mapping to lose.
+      - variables:
+          locations_stamp: >-
+            {{ locations
+               if op == 'clear'
+                  or states('sensor.bt_location_map_status') not in ['reordered', 'deleted', 'ambiguous']
+               else state_attr('sensor.bt_fingerprint_database_file', 'locations_at_write') or locations }}
+
       - variables:
           mutated: |
             {%- if op == 'clear' -%}
-              {{ {'fingerprints': []} }}
+              {{ {'locations_at_write': locations_stamp, 'fingerprints': []} }}
             {%- else -%}
               {%- set ns = namespace(fp_list=[]) -%}
               {%- for fp in current -%}
@@ -2372,13 +2754,18 @@ script:
                     {%- endif -%}
                     {# remove_beacon: the matching entry is simply not carried over #}
                   {%- endfor -%}
-                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                  {%- set stamp = fp.name if 'name' in fp
+                                  else (locations[fp.loc | int] if fp.loc | int < locations | length else none) -%}
+                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'name': stamp, 'beacons': ns2.beacons}
+                                                     if stamp else {'loc': fp.loc, 'beacons': ns2.beacons}] -%}
                 {%- endif -%}
               {%- endfor -%}
               {%- if op == 'replace_location' -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': target_loc, 'beacons': beacons}] -%}
+                {%- set stamp = locations[target_loc] if target_loc < locations | length else none -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': target_loc, 'name': stamp, 'beacons': beacons}
+                                                   if stamp else {'loc': target_loc, 'beacons': beacons}] -%}
               {%- endif -%}
-              {{ {'fingerprints': ns.fp_list} }}
+              {{ {'locations_at_write': locations_stamp, 'fingerprints': ns.fp_list} }}
             {%- endif -%}
 
       # A mutation that changes nothing - toggling a beacon at a location it is not in, removing one
