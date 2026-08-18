@@ -29,19 +29,31 @@ template:
       # - If difference ≥ 2°C: Show "min° | max°" format for awareness of sun exposure
       #
       # This pattern maintains a minimalist display while providing context when meaningful
+      # The state is the number, so this graphs and keeps long-term statistics like any temperature.
+      # `low`, `high` and `split` carry the presentation question - the display decides whether to show
+      # one value or two, which is a display decision and does not belong in the state.
       - name: "Screensaver Display Temperature"
         unique_id: screensaver_display_temperature
+        device_class: temperature
+        unit_of_measurement: "°C"
+        state_class: measurement
         availability: >
-          {{ states('sensor.garage_framsidan_temperature') | float(none) is not none
-             and states('sensor.relax_baksidan_temperature') | float(none) is not none }}
-        state: |
-          {% set f = states('sensor.garage_framsidan_temperature') | float %}
-          {% set b = states('sensor.relax_baksidan_temperature') | float %}
-          {% if (f - b) | abs < 2 %}
-            [{{ ((f + b) / 2) | round(1) }}]
-          {% else %}
-            [{{ [f, b] | min | round(1) }}, {{ [f, b] | max | round(1) }}]
-          {% endif %}
+          {{ has_value('sensor.garage_framsidan_temperature')
+             and has_value('sensor.relax_baksidan_temperature') }}
+        state: >
+          {{ ((states('sensor.garage_framsidan_temperature') | float
+               + states('sensor.relax_baksidan_temperature') | float) / 2) | round(1) }}
+        attributes:
+          low: >
+            {{ [states('sensor.garage_framsidan_temperature') | float,
+                states('sensor.relax_baksidan_temperature') | float] | min | round(1) }}
+          high: >
+            {{ [states('sensor.garage_framsidan_temperature') | float,
+                states('sensor.relax_baksidan_temperature') | float] | max | round(1) }}
+          # 2 degrees apart is where the two sides stop agreeing enough to average honestly.
+          split: >
+            {{ (states('sensor.garage_framsidan_temperature') | float
+                - states('sensor.relax_baksidan_temperature') | float) | abs >= 2 }}
 
       # Weather description from forecast entity (mapped to local language)
       - name: "Screensaver Display Weather"
@@ -78,7 +90,7 @@ template:
       - name: "Screensaver Display Humidity"
         unique_id: screensaver_display_humidity
         unit_of_measurement: '%'
-        availability: "{{ states('sensor.relax_baksidan_humidity') | float(none) is not none }}"
+        availability: "{{ has_value('sensor.relax_baksidan_humidity') }}"
         state: "{{ states('sensor.relax_baksidan_humidity') | float }}"
 
       - name: "Screensaver Display Wind Speed"
@@ -112,13 +124,18 @@ script:
     sequence:
       - variables:
           current_hour: "{{ now().hour }}"
-          # Transform browser_id to device_id by stripping FKB suffix (e.g., peers_mobil_fkb → peers_mobil)
-          # Pattern read from sensor.dashboard_logic_config (single source of truth)
-          transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
-          regex_matches: "{{ browser_id | regex_findall(transform_pattern, ignorecase=True) }}"
+          # Transform browser_id to device_id by stripping FKB suffix (e.g., peers_mobil_fkb → peers_mobil).
+          # Read from this package's own sensor, which owns the pattern and already follows the
+          # triangulation value where that package is installed too - so this file no longer carries a
+          # copy of the expression, and the dashboard and the tap cannot drift apart.
+          transform_pattern: "{{ state_attr('sensor.screensaver_display_config', 'browser_id_transform_pattern') }}"
+          regex_matches: "{{ browser_id | regex_findall(transform_pattern, ignorecase=True) if transform_pattern else [] }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else '' }}"
+          # from_json({}) rather than a bare from_json: after a restart the helper reads `unknown`
+          # until state restore completes, and parsing that raises - which leaves the tap doing
+          # nothing at all, since the scenario never resolves.
           charger_location: >
-            {% set mapping = states('input_text.bt_device_charger_locations') | from_json %}
+            {% set mapping = states('input_text.bt_device_charger_locations') | from_json({}) %}
             {{ mapping.get(device_id, 'unknown') }}
             
           # Time-based scenario thresholds for mobile
@@ -148,6 +165,11 @@ script:
               {% elif charger_location == 'peer' %}
                 peer
               {% elif charger_location == 'sovrum' %}
+                {# The bedroom is for sleeping, and a tap there is usually the phone being picked up
+                   rather than a deliberate gesture, so it must never start anything loud. That is why
+                   this branch is shaped differently from the generic one below: the day slot resolves
+                   to godnatt instead of peer, and between 22:00 and 06:00 it resolves to nothing at
+                   all. Deliberate - do not "fix" it to match the others. #}
                 {% if mobile_is_morning %}godmorgon{% elif mobile_is_day %}godnatt{% else %}unknown{% endif %}
               {% elif charger_location not in ['unknown', 'unavailable', None, ''] %}
                 {% if mobile_is_morning %}godmorgon{% elif mobile_is_day %}peer{% else %}godnatt{% endif %}
@@ -310,7 +332,7 @@ automation:
         id: starta
       - trigger: time_pattern
         minutes: "/5"
-    action:
+    actions:
       - choose:
           - conditions:
               - condition: trigger
@@ -379,7 +401,7 @@ automation:
       # Skip if garage is already active — toggle would turn it OFF
       - condition: template
         value_template: "{{ states('input_text.musiccast_active_scenario') != 'garage' }}"
-    action:
+    actions:
       - action: script.musiccast_scenario_toggle
         data:
           scenario: garage

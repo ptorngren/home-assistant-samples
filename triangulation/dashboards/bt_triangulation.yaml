@@ -46,22 +46,22 @@ decluttering_templates:
             }
       filter:
         template: |
-          {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') | default([]) -%}
-          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) -%}
-          {%- set rssi_match_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
+          {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') or [] -%}
+          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') or [] -%}
+          {%- set weak_threshold = states('input_number.bt_weak_signal_threshold') | int(-95) -%}
+          {%- set rssi_match_tolerance = states('input_number.bt_rssi_tolerance') | int(5) -%}
           {# Color scheme (injected via decluttering variables from _colors anchors) #}
           {%- set color_beacon_rssi_match = "[[color_rssi_match]]" -%}
           {%- set color_beacon_in_scan = "[[color_in_scan]]" -%}
           {%- set color_location_header_bg = "[[location_header_bg]]" -%}
           {# Get latest scan data for matching against fingerprints #}
-          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
+          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') or [] -%}
           {%- set ns_scan = namespace(scan_map={}) -%}
           {%- for scan_dev in scan_devices -%}
             {%- set ns_scan.scan_map = ns_scan.scan_map | combine({scan_dev.mac | upper: scan_dev.rssi}) -%}
           {%- endfor -%}
           {# Get device names mapping for displaying friendly names alongside MACs #}
-          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') or {} -%}
           {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
           {# Build active scan map: beacons above threshold and not globally ignored #}
           {%- set ns_active = namespace(map={}) -%}
@@ -81,9 +81,9 @@ decluttering_templates:
           {# Get known beacon count for context #}
           {%- set known_in_scan = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
           {# Extract fingerprints into named variable #}
-          {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') | default([]) -%}
+          {%- set fingerprints_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
           {# Build MAC → active-location-count map for overlap highlighting (from sensor) #}
-          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') or '{}' -%}
           {%- set mac_locs_data = mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw -%}
           {%- set ns_overlap = namespace(mac_loc_count={}) -%}
           {%- for mac, data in mac_locs_data.items() -%}
@@ -293,7 +293,7 @@ decluttering_templates:
                     },
                     "tap_action": {
                       "action": "perform-action",
-                      "perform_action": "script.bt_beacon_toggle_location_ignored",
+                      "perform_action": "script.bt_beacon_toggle_ignored",
                       "data": {
                         "location_index": location_index,
                         "mac": mac
@@ -308,7 +308,7 @@ decluttering_templates:
                     },
                     "double_tap_action": {
                       "action": "perform-action",
-                      "perform_action": "script.bt_beacon_remove_from_fingerprint",
+                      "perform_action": "script.bt_beacon_remove_from_fingerprints",
                       "data": {
                         "location_index": location_index,
                         "mac": mac
@@ -334,9 +334,9 @@ decluttering_templates:
             }
       filter:
         template: |
-          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') | default([]) -%}
-          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set weak_threshold = states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) -%}
+          {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') or [] -%}
+          {%- set global_list = state_attr('sensor.bt_ignored_beacons', 'ignored') or [] -%}
+          {%- set weak_threshold = states('input_number.bt_weak_signal_threshold') | int(-95) -%}
 
           {# Partition into valid and weak/ghost buckets #}
           {%- set ns = namespace(valid=[], weak=[]) -%}
@@ -360,7 +360,7 @@ decluttering_templates:
             {%- set device_name = device.name | default('unknown') -%}
             {%- set is_globally_ignored = mac in global_list -%}
             {%- set is_weak_signal = rssi_value == 0 or rssi_value < weak_threshold -%}
-            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') or '{}' -%}
             {%- set active_known_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
             {%- set is_known = mac in active_known_beacons -%}
             {%- set first_octet = mac.split(':')[0] | int(base=16) -%}
@@ -458,8 +458,8 @@ decluttering_templates:
             }
       filter:
         template: |
-          {%- set ignored_list = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) -%}
-          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set ignored_list = state_attr('sensor.bt_ignored_beacons', 'ignored') or [] -%}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') or {} -%}
           {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
           {%- for mac in ignored_list | sort -%}
             {{
@@ -531,13 +531,13 @@ decluttering_templates:
             }
       filter:
         template: |
-          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') | default({}) -%}
+          {%- set device_names_raw = state_attr('sensor.bt_device_names', 'devices_by_mac') or {} -%}
           {%- set device_names = device_names_raw | from_json if device_names_raw is string else device_names_raw -%}
           {# Color scheme (injected via decluttering variables from _colors anchors) #}
           {%- set color_beacon_overlap = "[[color_overlap]]" -%}
           {%- set color_beacon_discriminated = "[[color_discriminated]]" -%}
           {# Load active beacons with discriminator from sensor (single source of truth) #}
-          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+          {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') or '{}' -%}
           {%- set mac_locs = mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw -%}
           {# Render button-cards sorted by MAC #}
           {%- for mac in mac_locs.keys() | sort -%}
@@ -594,12 +594,12 @@ decluttering_templates:
                 },
                 "tap_action": {
                   "action": "perform-action",
-                  "perform_action": "script.bt_beacon_toggle_all_locations_ignored",
+                  "perform_action": "script.bt_beacon_toggle_ignored",
                   "data": {"mac": mac}
                 },
                 "double_tap_action": {
                   "action": "perform-action",
-                  "perform_action": "script.bt_beacon_remove_from_all_fingerprints",
+                  "perform_action": "script.bt_beacon_remove_from_fingerprints",
                   "data": {"mac": mac}
                 },
                 "hold_action": {
@@ -849,7 +849,7 @@ decluttering_templates:
           {%- set scores_raw = state_attr('sensor.bt_location_scores', 'location_scores') or {} -%}
           {%- set scores = scores_raw | from_json if scores_raw is string else scores_raw -%}
           {%- set top_n = states('input_number.bt_diagnostic_location_count') | int(2) -%}
-          {%- set tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
+          {%- set tolerance = states('input_number.bt_rssi_tolerance') | int(5) -%}
           {%- set fp_raw = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
           {%- set scan_devices = state_attr('sensor.bt_latest_scan_full', 'devices') or [] -%}
           {%- set global_ignored = (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list -%}
@@ -1027,7 +1027,7 @@ views:
               {%- set known = state_attr('sensor.bt_location_scores', 'known_beacons_in_scan') | int(0) -%}
               {%- set unknown = state_attr('sensor.bt_location_scores', 'unknown_beacons_in_scan') | int(0) -%}
               Latest BT Scan ({{ known }}+{{ unknown }})
-            secondary: "{{ state_attr('sensor.bt_latest_scan_full', 'timestamp') | default('No scan yet') }}"
+            secondary: "{{ state_attr('sensor.bt_latest_scan_full', 'timestamp') or 'No scan yet' }}"
             card_mod:
               style: |
                 ha-card {
@@ -1134,8 +1134,8 @@ views:
           - type: entities
             show_header_toggle: false
             entities:
-              - input_number.bt_location_detection_weak_signal_threshold
-              - entity: input_number.bt_location_detection_rssi_tolerance
+              - input_number.bt_weak_signal_threshold
+              - entity: input_number.bt_rssi_tolerance
                 name: "Signal Tolerance (±)"
               - input_boolean.bt_fingerprint_minmax_mode
               - input_boolean.bt_distance_weighted_scoring
@@ -1311,7 +1311,9 @@ views:
         cards:
           - type: custom:mushroom-template-card
             primary: |
-              {%- set ignored_count = state_attr('sensor.bt_ignored_beacons', 'ignored') | default([]) | length -%}
+              {# Parenthesised because `|` binds tighter than `or`: without them this reads as
+                 `state_attr(…) or ([] | length)` and prints the list, or 0 when there is none. #}
+              {%- set ignored_count = (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | length -%}
               Globally Ignored ({{ ignored_count }})
             card_mod:
               style: |
@@ -1501,6 +1503,7 @@ views:
                - 🟢 Green: beacon has unique RSSI in every location where it appears → excellent discriminator (helps distinguish locations)
                - White: beacon RSSI similar in some locations but unique in others → medium discriminator (can help in some pairs)
              - **Tap any beacon** to locally ignore it in all locations simultaneously (beacon stays in fingerprints but ignored in scoring)
+               - ⚠️ **This cannot be undone from this table.** A beacon counts as active only while it is non-ignored somewhere, so ignoring it everywhere drops it out of this list. To bring it back, tap its row per location in **Fingerprint Details** (Triangulation view), which toggles one location at a time. Nothing is lost either way — the RSSI ranges are untouched, only the ignored flag changes.
              - **Double-tap any beacon** to permanently remove it from all location fingerprints where it appears (beacon disappears from this list)
              - **Hold any beacon** to mark it globally ignored (removed from all fingerprints and future captures)
              - Useful for bulk management of overlapping beacons or quickly cleaning up beacon distribution

@@ -187,6 +187,24 @@ recorder:
 fingerprint read and write unavailable. The recorder exclusions from step 4 are read at startup
 too.
 
+⚠️ **Upgrading from a version before 2026-08-18 also resets two Algorithm Settings.** Two helpers were
+renamed for consistency — `bt_location_detection_rssi_tolerance` → **`bt_rssi_tolerance`** and
+`bt_location_detection_weak_signal_threshold` → **`bt_weak_signal_threshold`**. Home Assistant treats a
+renamed helper as a new entity, and these deliberately carry no `initial:` (so a restart never discards
+your tuning), which means they start at their **minimum**: a tolerance of `0` matches nothing, so
+detection returns no location until you set them. Your previous values are not lost, just stranded on
+the two old entities — read them in Developer Tools → States before deleting them, or simply
+**hold the *Algorithm Settings* header once** to run `script.bt_reset_detection_defaults`, which
+restores all six settings to the shipped defaults. This is the same trap as a fresh install; see
+installation step 6.
+
+⚠️ **Upgrading an existing install needs the same restart whenever the `shell_command:` block
+changed.** Those command strings are fixed at startup, so a reload leaves Home Assistant calling the
+previous version of a command. The symptom is narrow and confusing rather than loud: after the write
+guard gained its `allow-shrink` argument, everything kept working except **Clear Fingerprints**, which
+was refused every time because the flag never reached the persistor. If one gesture stops working
+after an upgrade and the rest are fine, restart before investigating anything else.
+
 Once the package is running, later edits to its automations, scripts and templates can be picked
 up with Developer Tools → YAML → Reload Packages. Editing the `shell_command` block itself always
 needs a restart.
@@ -261,6 +279,30 @@ Example `bt_ignored.json`:
 ```
 
 These files are updated automatically when you capture fingerprints or manage beacons in the dashboard. Do not edit manually unless you know what you're doing.
+
+#### When a write is refused
+
+Every write goes through `bt_fingerprints_persistor.sh`, which replaces each file atomically and
+refuses four things outright. A refusal raises a **Triangulation: write failed** notification naming
+the reason, and the script that asked for the edit stops instead of reporting success — nothing on disk
+changes.
+
+- **The file exists but does not parse.** Repair or delete it. Every edit rebuilds the whole document
+  from a sensor that reads this file, so overwriting a file that could not be read would replace real
+  data with an empty one.
+- **The target parses but is not a document of that kind**, or **the payload is not an object holding
+  the expected list.** Both mean something other than this package wrote the file, or asked to.
+- **The write holds fewer entries than the file already does** — fewer locations in the fingerprint
+  database, or fewer beacons on the ignore list. That is what an edit looks like when the sensor could
+  not read its file: if it refreshed while the file was briefly unavailable, it reports an empty list
+  while the file on disk is intact. Two callers are exempt because removing entries is their purpose,
+  and they say so explicitly: clearing the fingerprint database, and restoring a beacon from the global
+  ignore list.
+
+After repairing a file, call `homeassistant.update_entity` on the sensor that reads it
+(`sensor.bt_fingerprint_database_file`, `sensor.bt_ignored_beacons`, `sensor.bt_merge_statistics`).
+These are `command_line` sensors that only re-read on demand, so restoring a file does not by itself
+refresh what Home Assistant holds — and until it does, the next edit is built from the stale copy.
 
 ---
 
@@ -956,6 +998,7 @@ The main working view for capturing and curating location fingerprints. Place yo
 - **Location Cross-Reference Matrix** — Scores each location's fingerprint against every other location to identify which pairs are confused (high scores = similar beacons = ambiguity risk). Scores are directional (A→B ≠ B→A — expected) and scores use point-in-range matching: the row location's midpoint RSSI is tested against the column location's range, mirroring real detection. **Tap any non-diagonal cell** to open the drill-down detail view below the matrix; tap a diagonal cell to close it. Note: matrix scores are fingerprint-vs-fingerprint — a high matrix score means *risk* of confusion, not that detection is currently failing. Live detection (Scores for Latest Scan) compares actual scan RSSIs against fingerprints and can correctly separate two locations even when their matrix score is high, as long as the real-world signal values differ. A high matrix score with correct live detection typically means the stored ranges are wider than necessary — recapturing with fewer merged scans would narrow the ranges and reduce the matrix score.
 - **Confusion Matrix Drill-Down** — Appears below the matrix when a cell is selected. Shows each beacon causing the overlap: name, row location range, col location range, and overlap extent. Numbers within the overlap zone are highlighted in amber. Note: green cells may still have overlapping beacons (low score = few overlaps relative to total, not zero); amber/red cells have enough overlap to risk confusion. Tap a diagonal cell to dismiss.
 - **All Active Beacons** — Complete list of beacons across all locations with indicators showing where each beacon appears; color-coded by discriminator quality: 🟢 green = strong discriminator (RSSI differs well across locations), 🔴 red = weak discriminator (similar RSSI in all locations — ambiguous), no color = neutral. Beacons with rotating/privacy-mode MACs are shown in amber italic when the "Include Random MACs" toggle is ON.
+  > **Tapping a beacon here ignores it at *every* location, and that cannot be undone from this table.** A beacon counts as active only while it is non-ignored somewhere, so once it is ignored everywhere it drops out of this list. To bring it back, tap its row per location in **Fingerprint Details** (Triangulation view), which toggles the local ignore one location at a time. Nothing is lost either way — the fingerprint entries and their RSSI ranges are untouched, only the ignored flag changes.
 - **Globally Ignored Beacons** — Centralized view of all beacons marked as globally ignored with quick toggle to restore them
 
 **Use this to:** Identify overlapping beacons (appearing in multiple locations with similar RSSI), detect location pairs that might confuse the algorithm, and manage global beacon ignores.
@@ -1487,8 +1530,8 @@ for mac, beacon in fingerprint.beacons.items():
 
 | Script | Purpose | Input |
 |--------|---------|-------|
-| `script.bt_beacon_toggle_location_ignored` | Toggle beacon ignored status at specific location (single-tap) | location_index, mac |
-| `script.bt_beacon_remove_from_fingerprint` | Remove beacon entirely from specific location's fingerprint (double-tap) | location_index, mac |
+| `script.bt_beacon_toggle_ignored` | Toggle beacon ignored status. With `location_index`, at that location only (single-tap); without it, at every location | mac, location_index (optional) |
+| `script.bt_beacon_remove_from_fingerprints` | Remove beacon from one location's fingerprint (double-tap), or from every location when `location_index` is omitted | mac, location_index (optional) |
 | `script.bt_beacon_toggle_global_ignored` | Toggle beacon ignored status globally across all locations (long-press) | mac |
 | `script.bt_report_beacon_status` | Per-location beacon report with signal statistics and warnings | (none) |
 | `script.bt_reset_detection_defaults` | Restore the six Algorithm Settings to the package defaults (hold the card header). Touches no fingerprints, location names or ignore lists | (none) |
@@ -1497,15 +1540,24 @@ for mac, beacon in fingerprint.beacons.items():
 
 **Toggle beacon ignored status for specific location (single-tap):**
 ```yaml
-service: script.bt_beacon_toggle_location_ignored
+service: script.bt_beacon_toggle_ignored
 data:
   location_index: 0
   mac: "AA:BB:CC:DD:EE:FF"
 ```
 
+**Toggle beacon ignored status at every location** — omit `location_index`. If the beacon is still
+active anywhere it becomes ignored everywhere; only once every entry is ignored does the toggle clear
+them:
+```yaml
+service: script.bt_beacon_toggle_ignored
+data:
+  mac: "AA:BB:CC:DD:EE:FF"
+```
+
 **Remove beacon from specific location's fingerprint (double-tap):**
 ```yaml
-service: script.bt_beacon_remove_from_fingerprint
+service: script.bt_beacon_remove_from_fingerprints
 data:
   location_index: 0
   mac: "AA:BB:CC:DD:EE:FF"

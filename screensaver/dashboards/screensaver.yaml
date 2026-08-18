@@ -70,6 +70,25 @@ decluttering_templates:
         font_temp: '[[font_temp]]'
         font_temp_small: '[[font_temp_small]]'
         # browser_id is resolved dynamically at runtime via JavaScript from browser_mod localStorage
+        #
+        # The device-aware fields below all need the same browser_id -> entity_id transform, so it is
+        # resolved once here and read as `variables.device_ids`. Returns {} when the browser id or the
+        # config sensor is missing, which is what a dashboard-only install gets: every field that
+        # depends on the device then renders empty and the rest of the display is unaffected.
+        device_ids: |
+          [[[
+            const browserId = localStorage.getItem('lovelace-player-device-id');
+            const cfg = states['sensor.screensaver_display_config']?.attributes;
+            if (!browserId || !cfg?.browser_id_transform_pattern) return {};
+
+            // Case-insensitive: browser ids are named by hand, so `_FKB` must strip like `_fkb`.
+            const regex = new RegExp(cfg.browser_id_transform_pattern, 'i');
+            return {
+              key: browserId.replace(regex, '$1'),
+              alarm: cfg.alarm_id_replacement ? browserId.replace(regex, cfg.alarm_id_replacement) : '',
+              battery: cfg.battery_level_replacement ? browserId.replace(regex, cfg.battery_level_replacement) : ''
+            };
+          ]]]
       card_mod:
         style: >
           /* Animation testing multipliers: adjust both speed AND size (use to debug and verify) */
@@ -151,11 +170,23 @@ decluttering_templates:
           [[[ return states['sensor.time']?.state ?? ''; ]]]
         
         # Temperature display with conditional font sizing
-        # State is always an array: [avg] or [lo, hi], allowing for any number of temperatures
+        # The state is the mean; `split` says the two sides disagree enough to show both, and then
+        # `low`/`high` are what to show. Falls back to the mean alone if the attributes are missing.
         temp: |
           [[[
             try {
-              const temps = JSON.parse(states['sensor.screensaver_display_temperature']?.state);
+              const s = states['sensor.screensaver_display_temperature'];
+              const a = s?.attributes ?? {};
+              // `unavailable` and `unknown` are designed states here - the sensor is unavailable
+              // whenever either source sensor is - so the state is only usable once it parses as a
+              // number. Without this check the display reads "unavailable°".
+              const mean = Number.parseFloat(s?.state);
+              if (!Number.isFinite(mean) && !(a.split === true && a.low != null && a.high != null)) {
+                return '--°';
+              }
+              const temps = (a.split === true && a.low != null && a.high != null)
+                ? [a.low, a.high]
+                : [mean];
               const tempDisplay = temps.map(t => `${t}°`).join(' / ');
               const charLimit = parseInt(variables.char_limit);
               const fontSize = tempDisplay.length > charLimit ? variables.font_temp_small : variables.font_temp;
@@ -196,21 +227,9 @@ decluttering_templates:
         # Companion App provides alarm time in ISO 8601 format (e.g., "2026-01-30T07:30:00")
         alarm: |
           [[[
-            // Get browser_id from browser_mod
-            const browserId = localStorage.getItem('lovelace-player-device-id');
-            if (!browserId) return '';
+            const alarmSensorId = variables.device_ids.alarm;
+            if (!alarmSensorId) return '';
 
-            // Fetch transformation rules from config sensor (defined in local package)
-            const configSensor = states['sensor.dashboard_logic_config'];
-            if (!configSensor?.attributes) return '';
-
-            const pattern = configSensor.attributes.browser_id_transform_pattern;
-            const replacement = configSensor.attributes.alarm_id_replacement;
-            if (!pattern || !replacement) return '';
-
-            // Apply regex transformation to construct sensor entity_id (case-insensitive)
-            const regex = new RegExp(pattern, 'i');
-            const alarmSensorId = browserId.replace(regex, replacement);
             const alarmState = states[alarmSensorId]?.state;
 
             // Silently return empty if sensor not found or unavailable
@@ -249,34 +268,22 @@ decluttering_templates:
         # Falls back to whichever is present: "location:84%" (both) / "84%" (no location) / "location" (no battery).
         charger_location: |
           [[[
-            // Get browser_id from browser_mod localStorage
-            const browserId = localStorage.getItem('lovelace-player-device-id');
-            if (!browserId) return '';
+            const ids = variables.device_ids;
 
-            // Fetch transformation rules from config sensor (same as alarm display)
-            const configSensor = states['sensor.dashboard_logic_config'];
-            const pattern = configSensor?.attributes?.browser_id_transform_pattern;
-            if (!pattern) return '';
-
-            // Apply regex to transform from browser_id to mapping key (e.g. by stripping Fully Kiosk Browser suffix)
-            const regex = new RegExp(pattern, 'i');
-            const mappingKey = browserId.replace(regex, '$1');
-
-            // Read device-to-location JSON mapping from helper
+            // Location: the charger mapping is a triangulation helper, so this half stays empty on a
+            // screensaver-only install while the battery half below still works.
             let location = '';
             const mappingJson = states['input_text.bt_device_charger_locations']?.state;
-            if (mappingJson) {
+            if (ids.key && mappingJson) {
               try {
-                const loc = JSON.parse(mappingJson)[mappingKey];
+                const loc = JSON.parse(mappingJson)[ids.key];
                 if (loc && loc !== 'unknown') location = loc;
               } catch (e) { /* ignore malformed mapping */ }
             }
 
-            // Resolve battery charge level (device-agnostic, same Browser ID transform)
             let charge = '';
-            const replacement = configSensor.attributes.battery_level_replacement;
-            if (replacement) {
-              const batteryLevel = states[browserId.replace(regex, replacement)]?.state;
+            if (ids.battery) {
+              const batteryLevel = states[ids.battery]?.state;
               if (batteryLevel && batteryLevel !== 'unavailable' && batteryLevel !== 'unknown') {
                 charge = `${batteryLevel}%`;
               }

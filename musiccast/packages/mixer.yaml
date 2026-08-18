@@ -290,7 +290,7 @@ script:
           master: "{{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {}).get('master', '') }}"
           player_name: "{{ master.replace('media_player.', '') }}"
       - variables:
-          master_ip: "{{ (state_attr('sensor.musiccast_player_ips', 'by_entity') | default({})).get(player_name, 'unknown') }}"
+          master_ip: "{{ (state_attr('sensor.musiccast_player_ips', 'by_entity') or {}).get(player_name, 'unknown') }}"
 
       # 2. Fetch presets from device
       - action: shell_command.musiccast_get_presets
@@ -788,7 +788,7 @@ script:
 
       - variables:
           preset_info: >
-            {% set all_presets = state_attr('sensor.musiccast_media_player_presets', 'presets') | default({}) %}
+            {% set all_presets = state_attr('sensor.musiccast_media_player_presets', 'presets') or {} %}
             {{ all_presets.get(master, []) }}
 
       - variables:

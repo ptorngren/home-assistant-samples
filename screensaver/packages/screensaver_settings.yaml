@@ -3,6 +3,29 @@
 # the display itself is dashboards/screensaver.yaml.
 # ------------------------------------------------------------------
 
+template:
+  - sensor:
+      # How the display turns the browser it is running in into the entities belonging to that
+      # device, so one dashboard shows the right alarm and battery on every screen it is opened on.
+      # The browser id comes from browser_mod's localStorage; the pattern's capture group is
+      # substituted into each replacement.
+      - name: "Screensaver Display Config"
+        unique_id: screensaver_display_config
+        state: "ready"
+        attributes:
+          # A kiosk browser often registers under a decorated id - Fully Kiosk Browser appends
+          # `_fkb` - while the Companion App names its sensors after the plain device. The pattern
+          # strips the decoration; matching ignores case, so `_FKB` works too.
+          #
+          # Triangulation maps the same browser ids to charger locations, so its value wins wherever
+          # both packages are installed and there is one pattern to maintain. The fallback is what a
+          # screensaver-only install uses, and it is the same expression triangulation ships.
+          browser_id_transform_pattern: >-
+            {{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern')
+               or '^(.+?)(?:_fkb)?$' }}
+          alarm_id_replacement: "sensor.$1_next_alarm"
+          battery_level_replacement: "sensor.$1_battery_level"
+
 input_select:
   screensaver_locale:
     name: "Set date format"

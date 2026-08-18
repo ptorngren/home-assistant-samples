@@ -37,13 +37,8 @@ input_text:
     # 2. Mapping is repopulated by every webhook (BT scan), so brief reset on restart doesn't matter
     # 3. Edge case (HA restart with phone on charger) is rare and self-corrects on next BT scan
 
-input_button:
-  bt_capture_fingerprint:
-    name: "Capture BT Fingerprint"
-    # Manual trigger to capture current RSSI values to fingerprint database
-
 input_number:
-  bt_location_detection_weak_signal_threshold:
+  bt_weak_signal_threshold:
     name: "Weak Signal Threshold"
     unit_of_measurement: "dBm"
     min: -105
@@ -55,7 +50,7 @@ input_number:
     # NOTE: No 'initial:' to prevent forced resets on HA restart
     # Helper starts empty, so user must set this value manually in the UI unless the algorithm uses a default value
 
-  bt_location_detection_rssi_tolerance:
+  bt_rssi_tolerance:
     name: "RSSI Match Tolerance"
     unit_of_measurement: "dBm"
     min: 0
@@ -124,13 +119,30 @@ input_boolean:
 # Shell commands for file-based persistence (fingerprint database and BT scan data)
 # Note: Using | base64_encode filter to safely preserve multiline content and special characters in device names
 shell_command:
-  bt_fingerprint_database_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints "{{ json_content | to_json | base64_encode }}"'
+  # `allow-shrink` reaches the persistor only when the caller means to remove entries. Without it the
+  # persistor refuses any write holding fewer entries than the file already does, which is what a
+  # document rebuilt from a sensor that could not read its file looks like.
+  bt_fingerprint_database_write: >-
+    bash /config/packages/triangulation/bt_fingerprints_persistor.sh write fingerprints
+    "{{ json_content | to_json | base64_encode }}" {{ 'allow-shrink' if allow_shrink | default(false) | bool(false) else '' }}
   bt_fingerprint_database_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read fingerprints'
-  bt_ignored_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored "{{ json_content | to_json | base64_encode }}"'
+  # Restoring a beacon from the global ignore list is the one routine shrink in the package, so this
+  # command carries the flag too.
+  bt_ignored_write: >-
+    bash /config/packages/triangulation/bt_fingerprints_persistor.sh write ignored
+    "{{ json_content | to_json | base64_encode }}" {{ 'allow-shrink' if allow_shrink | default(false) | bool(false) else '' }}
   bt_ignored_read: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh read ignored'
+  # No flag: nothing shrinks statistics through the persistor - bt_clear_statistics bypasses it.
   bt_statistics_write: 'bash /config/packages/triangulation/bt_fingerprints_persistor.sh write statistics "{{ json_content | to_json | base64_encode }}"'
   # Wrapped in bash -c: without a template in the command, HA runs shell_command through exec
   # rather than a shell, so && and > would be passed to mkdir as literal arguments.
+  #
+  # The one write that deliberately bypasses the persistor, and so has neither the atomic temp-file
+  # write nor the refusal guard. That is the point: the persistor refuses to overwrite a file that
+  # does not parse, which would make a corrupt statistics file permanently unclearable - and clearing
+  # it is exactly the repair. A truncating redirect is safe here because the payload is a fixed
+  # literal that cannot fail to serialise, and the data is regenerable by re-merging.
+  # Do not route this through script.bt_persist_write.
   bt_statistics_clear: 'bash -c "mkdir -p /config/packages/triangulation/data && echo ''{\"statistics\":[]}'' > /config/packages/triangulation/data/bt_statistics.json"'
 
 # ------------------------------------------------------------------
@@ -195,14 +207,15 @@ command_line:
 # Computed sensors (Template integration)
 template:
   - sensor:
-      # Configuration for dashboard transformation logic (regex-based device ID mapping)
+      # How a browser id becomes the device key used in the charger-location mapping: a kiosk browser
+      # registers under a decorated id (Fully Kiosk Browser appends `_fkb`) and the pattern's capture
+      # group is the plain device. Read by the detection and disconnect scripts, by the screensaver's
+      # tap routing, and by sensor.screensaver_display_config where that package is installed too.
       - name: "Dashboard Logic Config"
         unique_id: dashboard_logic_config
         state: "ready"
         attributes:
           browser_id_transform_pattern: "^(.+?)(?:_fkb)?$"
-          alarm_id_replacement: "sensor.$1_next_alarm"
-          battery_level_replacement: "sensor.$1_battery_level"
 
       # Active Known Beacons - single source of truth for which beacons are active
       # A beacon is active if it appears non-ignored in at least one location fingerprint
@@ -233,7 +246,7 @@ template:
             {%- set global_ignored = (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list -%}
             {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
             {%- set locations_list = state_attr('sensor.bt_location_array', 'locations') or [] -%}
-            {%- set rssi_tolerance = states('input_number.bt_location_detection_rssi_tolerance') | int(5) -%}
+            {%- set rssi_tolerance = states('input_number.bt_rssi_tolerance') | int(5) -%}
             {%- set total_locations = locations_list | length -%}
             {# Pass 1: Build mac_locs with locs, rssi_list, and high_span per beacon #}
             {# high_span: true if any fingerprint entry for this MAC has max-min > 2*tolerance (unstable range) #}
@@ -321,8 +334,8 @@ template:
   # Webhook-triggered sensor for latest BT scan (replaces file-based storage)
   # Stores complete scan data in memory via attributes (16KB+ capacity, no disk I/O)
   # Triggered directly by Tasker webhook - data flows: webhook → template sensor attributes → dashboard
-  - trigger:
-      - platform: webhook
+  - triggers:
+      - trigger: webhook
         webhook_id: phone_charger_bt
         allowed_methods:
           - POST
@@ -359,7 +372,7 @@ template:
           # Counts all captured devices including RSSI=0; filtering is applied at usage level by toggle
           known_beacons_in_scan: |
             {%- set ns = namespace(count=0) -%}
-            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') | default('{}') -%}
+            {%- set mac_locs_raw = state_attr('sensor.bt_active_known_beacons', 'mac_locs') or '{}' -%}
             {%- set active_beacons = (mac_locs_raw | from_json if mac_locs_raw is string else mac_locs_raw).keys() | list -%}
             {%- set devices = state_attr('sensor.bt_latest_scan_full', 'devices') or [] -%}
             {%- for device in devices -%}
@@ -446,7 +459,7 @@ script:
       - variables:
           fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
-          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          rssi_tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
           global_ignored_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
 
       # Build map: location_name → beacons dict
@@ -561,7 +574,9 @@ script:
       # Transform browser_id to device_id by stripping FKB suffix
       - variables:
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
-          current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
+          # `from_json({})` is the whole guard: states() returns the string 'unknown' rather than an
+          # undefined value, so a `default` filter here could never fire.
+          current_mapping: "{{ states('input_text.bt_device_charger_locations') | from_json({}) }}"
 
       - variables:
           # ignorecase matches the dashboard, which applies the same pattern with the JS 'i' flag
@@ -593,215 +608,113 @@ script:
 # ------------------------------------------------------------------
 # AUTOMATIONS
 # ------------------------------------------------------------------
-  bt_beacon_toggle_location_ignored:
-    alias: "BT: Toggle beacon ignored at location"
-    description: "Toggle beacon ignored status for a specific location (tap action)"
+  bt_beacon_toggle_ignored:
+    alias: "BT: Toggle beacon ignored"
+    description: "Toggle a beacon's locally ignored flag at one location, or at every location when location_index is omitted."
+    mode: queued
+    max: 25
     fields:
-      location_index:
-        description: "Location index"
-        example: "0"
       mac:
         description: "Beacon MAC address to toggle"
         example: "AA:BB:CC:DD:EE:FF"
-    sequence:
-      - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
-          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
-          location_idx: "{{ location_index | int(-1) }}"
-          beacon_mac: "{{ mac | upper }}"
-          location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
-
-      - if: "{{ location_idx >= 0 }}"
-        then:
-          # Process fingerprints and toggle ignored status for this beacon at this location
-          - variables:
-              updated_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- set ns2 = namespace(beacons={}) -%}
-                  {%- for mac, beacon in fp.beacons.items() -%}
-                    {%- set was_ignored = beacon.get('ignored', false) -%}
-                    {%- if fp.loc | int == location_idx and mac | upper == beacon_mac -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set toggled = {'min': beacon.min, 'max': beacon.max} if was_ignored else {'min': beacon.min, 'max': beacon.max, 'ignored': true} -%}
-                      {%- else -%}
-                        {%- set toggled = {'rssi': beacon.rssi} if was_ignored else {'rssi': beacon.rssi, 'ignored': true} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: toggled}) -%}
-                    {%- else -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                {%- endfor -%}
-                {{ {'fingerprints': ns.fp_list} }}
-
-          # Write updated fingerprints
-          - action: script.bt_write_fingerprints
-            data:
-              fingerprints_json: "{{ updated_fingerprints }}"
-
-          # Log the action
-          - action: system_log.write
-            data:
-              message: "Toggled beacon {{ beacon_mac }} ignored status for location {{ location_name }}"
-              level: debug
-
-  bt_beacon_toggle_all_locations_ignored:
-    alias: "BT: Toggle beacon ignored at all locations"
-    description: "Toggle beacon locally ignored across ALL locations (tap action in all-beacons table)"
-    fields:
-      mac:
-        description: "Beacon MAC address"
-        example: "AA:BB:CC:DD:EE:FF"
-    sequence:
-      - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
-          beacon_mac: "{{ mac | upper }}"
-
-      - variables:
-          updated_fingerprints: |
-            {%- set ns = namespace(fp_list=[], has_any_active=false) -%}
-            {# Phase A: determine toggle direction #}
-            {%- for fp in current_fingerprints -%}
-              {%- for mac, beacon in fp.beacons.items() -%}
-                {%- if mac | upper == beacon_mac and not beacon.get('ignored', false) -%}
-                  {%- set ns.has_any_active = true -%}
-                {%- endif -%}
-              {%- endfor -%}
-            {%- endfor -%}
-            {# Phase B: apply transformation #}
-            {%- for fp in current_fingerprints -%}
-              {%- set ns2 = namespace(beacons={}) -%}
-              {%- for mac, beacon in fp.beacons.items() -%}
-                {%- set was_ignored = beacon.get('ignored', false) -%}
-                {%- if mac | upper == beacon_mac -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set toggled = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if ns.has_any_active else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set toggled = {'rssi': beacon.rssi, 'ignored': true} if ns.has_any_active else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({mac: toggled}) -%}
-                {%- else -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-            {%- endfor -%}
-            {{ {'fingerprints': ns.fp_list} }}
-
-      - action: script.bt_write_fingerprints
-        data:
-          fingerprints_json: "{{ updated_fingerprints }}"
-
-      - action: system_log.write
-        data:
-          message: "Toggled beacon {{ beacon_mac }} locally ignored across ALL locations"
-          level: debug
-
-  bt_beacon_remove_from_fingerprint:
-    alias: "BT: Remove beacon from fingerprint"
-    description: "Remove beacon from fingerprint for a specific location (double-tap action)"
-    fields:
       location_index:
-        description: "Location index"
+        description: "Location index. Omit to toggle the beacon at every location."
         example: "0"
-      mac:
-        description: "Beacon MAC address to remove"
-        example: "AA:BB:CC:DD:EE:FF"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
-          location_idx: "{{ location_index | int(-1) }}"
+          scoped: "{{ location_index is defined }}"
+          location_idx: "{{ location_index | default(-1) | int(-1) }}"
           beacon_mac: "{{ mac | upper }}"
-          location_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else 'unknown' }}"
 
-      - if: "{{ location_idx >= 0 }}"
+      - variables:
+          scope_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else ('every location' if not scoped else 'unknown') }}"
+
+      # An index that was supplied but cannot be used is a caller error, not a request to act
+      # everywhere - treating it as "all locations" would silently widen the edit.
+      - if: "{{ location_idx >= 0 or not scoped }}"
         then:
-          # Process fingerprints and remove beacon from this location
-          - variables:
-              updated_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- set ns2 = namespace(beacons={}) -%}
-                  {%- for mac, beacon in fp.beacons.items() -%}
-                    {%- if not (fp.loc | int == location_idx and mac | upper == beacon_mac) -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                {%- endfor -%}
-                {{ {'fingerprints': ns.fp_list} }}
-
-          # Write updated fingerprints
           - action: script.bt_write_fingerprints
             data:
-              fingerprints_json: "{{ updated_fingerprints }}"
+              operation: toggle_ignored
+              location_index: "{{ location_idx }}"
+              mac: "{{ beacon_mac }}"
+            response_variable: write_result
 
-          # Log the action
+          # A refused write must not be reported as a success. The notification already explains it.
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - stop: "write refused"
+
           - action: system_log.write
             data:
-              message: "Removed beacon {{ beacon_mac }} from fingerprint for location {{ location_name }}"
+              message: >-
+                {{ 'Toggled beacon ' ~ beacon_mac ~ ' locally ignored at ' ~ scope_name
+                   if write_result.changed | default(true)
+                   else 'Beacon ' ~ beacon_mac ~ ' is not in the fingerprint at ' ~ scope_name ~ ' - nothing changed' }}
               level: debug
+        else:
+          # Doing nothing quietly is what makes a caller mistake hard to find. The writer logs the
+          # same class of error for itself.
+          - action: system_log.write
+            data:
+              message: "BT: toggle_ignored got an unusable location_index ({{ location_index }}) for beacon {{ beacon_mac }} - nothing changed"
+              level: error
 
-  bt_beacon_remove_from_all_fingerprints:
-    alias: "BT: Remove beacon from all fingerprints"
-    description: "Remove beacon from ALL location fingerprints (double-tap action in all-beacons table)"
+  bt_beacon_remove_from_fingerprints:
+    alias: "BT: Remove beacon from fingerprints"
+    description: "Remove a beacon from one location's fingerprint, or from every location when location_index is omitted."
+    mode: queued
+    max: 25
     fields:
       mac:
         description: "Beacon MAC address to remove"
         example: "AA:BB:CC:DD:EE:FF"
+      location_index:
+        description: "Location index. Omit to remove the beacon from every location."
+        example: "0"
     sequence:
       - variables:
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
+          scoped: "{{ location_index is defined }}"
+          location_idx: "{{ location_index | default(-1) | int(-1) }}"
           beacon_mac: "{{ mac | upper }}"
 
       - variables:
-          updated_fingerprints: |
-            {%- set ns = namespace(fp_list=[]) -%}
-            {%- for fp in current_fingerprints -%}
-              {%- set ns2 = namespace(beacons={}) -%}
-              {%- for mac, beacon in fp.beacons.items() -%}
-                {%- if mac | upper != beacon_mac -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-            {%- endfor -%}
-            {{ {'fingerprints': ns.fp_list} }}
+          scope_name: "{{ locations_list[location_idx] if location_idx >= 0 and location_idx < locations_list | length else ('every location' if not scoped else 'unknown') }}"
 
-      - action: script.bt_write_fingerprints
-        data:
-          fingerprints_json: "{{ updated_fingerprints }}"
+      # Same guard as the toggle: a supplied-but-unusable index must not escalate to all locations.
+      - if: "{{ location_idx >= 0 or not scoped }}"
+        then:
+          - action: script.bt_write_fingerprints
+            data:
+              operation: remove_beacon
+              location_index: "{{ location_idx }}"
+              mac: "{{ beacon_mac }}"
+            response_variable: write_result
 
-      - action: system_log.write
-        data:
-          message: "Removed beacon {{ beacon_mac }} from all location fingerprints"
-          level: debug
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - stop: "write refused"
+
+          - action: system_log.write
+            data:
+              message: >-
+                {{ 'Removed beacon ' ~ beacon_mac ~ ' from the fingerprint at ' ~ scope_name
+                   if write_result.changed | default(true)
+                   else 'Beacon ' ~ beacon_mac ~ ' was not in the fingerprint at ' ~ scope_name ~ ' - nothing changed' }}
+              level: debug
+        else:
+          # Same as the toggle: a supplied index that cannot be used is a caller error worth naming.
+          - action: system_log.write
+            data:
+              message: "BT: remove_from_fingerprints got an unusable location_index ({{ location_index }}) for beacon {{ beacon_mac }} - nothing changed"
+              level: error
 
   bt_beacon_toggle_global_ignored:
     alias: "BT: Toggle beacon globally ignored"
+    mode: queued
+    max: 25
     description: "Toggle beacon in global ignored list (hold/double-tap action)"
     fields:
       mac:
@@ -811,7 +724,21 @@ script:
       - variables:
           beacon_mac: "{{ mac | upper }}"
           # Read current ignored list from sensor attribute (file-backed)
-          current_list: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
+          current_list_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') }}"
+          current_list: "{{ current_list_raw or [] }}"
+
+      # This script rebuilds the whole ignore list from the sensor, so an unreadable sensor would write
+      # a list holding only this one MAC over however many the file really has. The persistor's count
+      # guard covers fingerprints only - an ignore list empties legitimately when the last beacon is
+      # restored - so the check belongs here, at the one script that writes this file.
+      # `is none` is the unreadable case; a genuinely empty list reads as [] and is written normally.
+      - if: "{{ current_list_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_ignored_beacons has no 'ignored' attribute - global ignore of {{ beacon_mac }} not attempted, the list on disk is left alone"
+              level: error
+          - stop: "ignore list unreadable"
 
       # Check if MAC is already in the list
       - variables:
@@ -826,6 +753,16 @@ script:
         data:
           data_type: ignored
           json_content: "{{ updated_list }}"
+          # Restoring a beacon removes it from the list, which is the one routine shrink the persistor
+          # cannot tell apart from a rebuild off a sensor that could not read the file.
+          allow_shrink: "{{ is_ignored }}"
+        response_variable: write_result
+
+      # Stop before the log and before touching fingerprints: if the ignore list did not change,
+      # stripping the beacon from every fingerprint would leave the two files disagreeing.
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
 
       # Log the action
       - action: system_log.write
@@ -836,29 +773,25 @@ script:
       # When adding to global ignore, also remove from all fingerprints
       - if: "{{ not is_ignored }}"
         then:
-          - variables:
-              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
-          - variables:
-              cleaned_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- set ns2 = namespace(beacons={}) -%}
-                  {%- for mac, beacon in fp.beacons.items() -%}
-                    {%- if mac | upper != beacon_mac -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                {%- endfor -%}
-                {{ {'fingerprints': ns.fp_list} }}
           - action: script.bt_write_fingerprints
             data:
-              fingerprints_json: "{{ cleaned_fingerprints }}"
+              operation: remove_beacon
+              mac: "{{ beacon_mac }}"
+            response_variable: write_result
+
+          # Being the last step, this cannot report a false success - but a refusal here leaves the two
+          # files disagreeing: the beacon is on the ignore list, which succeeded, and still in the
+          # fingerprints, which did not. The ignore list write cannot be rolled back, so say plainly
+          # what is inconsistent and what repairs it.
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - action: system_log.write
+                data:
+                  message: >-
+                    BT: {{ beacon_mac }} was added to the global ignore list but could not be removed
+                    from the fingerprints - the two files now disagree. Repair bt_fingerprints.json,
+                    then hold the beacon twice to re-run the removal.
+                  level: error
 
   bt_calculate_location_scores:
     alias: "BT: Calculate location scores"
@@ -891,6 +824,9 @@ script:
       persist_scores: "{{ persist_scores | default(true) }}"
       # Context for logging (latest scan or fingerprint number)
       scan_context: "{{ scan_context | default('Latest scan') }}"
+      # `default(none)` deliberately, not `or []`: none is the wanted value when the sensor has no
+      # locations, and the consumer below tests `if locations_map` before indexing, falling back to the
+      # numeric index for a name. Leave this one alone when sweeping for inert `| default(...)` guards.
       locations_map: "{{ state_attr('sensor.bt_location_array', 'locations') | default(none) }}"
       raw_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
       fingerprints_parsed: |
@@ -944,6 +880,8 @@ script:
 
   bt_capture_fingerprint:
     alias: "BT: Capture fingerprint"
+    mode: queued
+    max: 25
     description: "Capture current RSSI values as fingerprint for location"
     fields:
       location_index:
@@ -957,13 +895,13 @@ script:
           # Get all detected beacons from latest scan (full device list from file sensor)
           raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           # Get weak signal threshold, global ignored list, and ghost signal toggle
-          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+          weak_signal_threshold: "{{ states('input_number.bt_weak_signal_threshold') | int(-95) }}"
           global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
           # Seeds the width of a new min/max entry, matching what the two reset paths use.
-          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          rssi_tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
           location: "{{ state_attr('sensor.bt_location_array', 'locations')[location_index | int] | default('unknown') }}"
 
       - variables:
@@ -994,53 +932,36 @@ script:
                   {%- set ns.pairs = ns.pairs + [device.mac ~ '=' ~ device.rssi ~ ' (' ~ (device.name | default('unknown')) ~ ')'] -%}
                 {%- endfor -%}
                 {{ ns.pairs | join('\n') }}
-              # Build beacons dict for new fingerprint entry
-              new_fp_beacons: |
-                {%- set ns = namespace(beacons={}) -%}
-                {%- for device in scan -%}
-                  {%- set ns.beacons = ns.beacons | combine({device.mac | upper: {"rssi": device.rssi}}) -%}
-                {%- endfor -%}
-                {{ ns.beacons }}
-
+          # A capture replaces the location outright from the scan, so nothing is read from the
+          # existing database here.
           - variables:
-              # Read current fingerprints from sensor attribute (file-backed, no 255-char limit)
-              current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
-              # Filter out any existing entry for this location and append new one
-              updated_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- if fp.loc | int != location_index | int -%}
-                    {%- set ns2 = namespace(beacons={}) -%}
-                    {%- for mac, beacon in fp.beacons.items() -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                    {%- endfor -%}
-                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {%- set ns2 = namespace(beacons={}) -%}
+              captured_beacons: |
+                {%- set ns = namespace(beacons={}) -%}
                 {%- for device in scan -%}
                   {%- if minmax_mode -%}
                     {# Seeded ±tolerance rather than collapsed to a point: min/max matching is strict,
                        so a point matches only on exact RSSI equality and a freshly captured location
                        would find nothing until several merges had widened it. The same width the
                        beacon and location reset paths use. Merges narrow or widen it from here. #}
-                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'min': device.rssi - rssi_tolerance, 'max': device.rssi + rssi_tolerance}}) -%}
+                    {%- set ns.beacons = ns.beacons | combine({device.mac | upper: {'min': device.rssi - rssi_tolerance, 'max': device.rssi + rssi_tolerance}}) -%}
                   {%- else -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({device.mac | upper: {'rssi': device.rssi}}) -%}
+                    {%- set ns.beacons = ns.beacons | combine({device.mac | upper: {'rssi': device.rssi}}) -%}
                   {%- endif -%}
                 {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': location_index | int, 'beacons': ns2.beacons}] -%}
-                {{ {'fingerprints': ns.fp_list} }}
+                {{ ns.beacons }}
 
-          # Write updated fingerprints
           - action: script.bt_write_fingerprints
             data:
-              fingerprints_json: "{{ updated_fingerprints }}"
+              operation: replace_location
+              location_index: "{{ location_index }}"
+              beacons: "{{ captured_beacons }}"
+            response_variable: write_result
+
+          # Stop before the toast and before recording statistics: readings logged against a
+          # fingerprint that was never written would describe a capture that did not happen.
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - stop: "write refused"
 
           - if:
               - condition: template
@@ -1080,6 +1001,8 @@ script:
 
   bt_merge_fingerprint:
     alias: "BT: Merge fingerprint"
+    mode: queued
+    max: 25
     description: "Merge or update the fingerprint for a location from the latest BT scan"
     fields:
       location_index:
@@ -1095,14 +1018,14 @@ script:
       - variables:
           raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           # Get weak signal threshold, global ignored list, and ghost signal toggle
-          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
+          weak_signal_threshold: "{{ states('input_number.bt_weak_signal_threshold') | int(-95) }}"
           global_ignored_raw: "{{ state_attr('sensor.bt_ignored_beacons', 'ignored') or [] }}"
           global_ignored_list: "{{ global_ignored_raw | map('upper') | list if global_ignored_raw is iterable else [] }}"
           filter_zero_rssi: "{{ states('input_boolean.bt_filter_zero_rssi_signals') | bool(false) }}"
           rssi_only: "{{ rssi_only | default(false) | bool }}"
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
           # Seeds the width of an entry that has no range yet, matching capture and the reset paths.
-          rssi_tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          rssi_tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
 
       - variables:
           # Filter scan: exclude weak signals, globally ignored beacons, and ghost beacons (if toggle is ON)
@@ -1193,30 +1116,19 @@ script:
                 {%- endfor -%}
                 {{ ns.merged }}
 
-          - variables:
-              # Update fingerprints: remove old entry for this location, add merged entry
-              updated_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- if fp.loc | int != location_index | int -%}
-                    {%- set ns2 = namespace(beacons={}) -%}
-                    {%- for mac, beacon in fp.beacons.items() -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                    {%- endfor -%}
-                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': location_index | int, 'beacons': merged_beacons}] -%}
-                {{ {'fingerprints': ns.fp_list} }}
-
+          # `merged_beacons` already carries `ignored` per entry, and replace_location takes the dict
+          # verbatim.
           - action: script.bt_write_fingerprints
             data:
-              fingerprints_json: "{{ updated_fingerprints }}"
+              operation: replace_location
+              location_index: "{{ location_index }}"
+              beacons: "{{ merged_beacons }}"
+            response_variable: write_result
+
+          # Stop before the toast and before recording statistics, as capture does.
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - stop: "write refused"
 
           - variables:
               locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
@@ -1275,6 +1187,8 @@ script:
 
   bt_beacon_reset_minmax:
     alias: "BT: Reset beacon min/max"
+    mode: queued
+    max: 25
     description: "Reset a single beacon entry from current scan: mean mode writes scan RSSI; min/max mode writes [scan−tol, scan+tol]. No-op if beacon absent from scan."
     fields:
       location_index:
@@ -1289,71 +1203,69 @@ script:
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           mac_upper: "{{ mac | upper }}"
-          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
+          current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          current_fingerprints: "{{ current_fingerprints_raw or [] }}"
 
       - variables:
-          updated_fingerprints: |
-            {%- set ns_scan = namespace(rssi=none) -%}
+          scan_rssi: |
+            {%- set ns = namespace(rssi=none) -%}
             {%- for device in scan_devices -%}
               {%- if device.mac | upper == mac_upper -%}
-                {%- set ns_scan.rssi = device.rssi -%}
+                {%- set ns.rssi = device.rssi -%}
               {%- endif -%}
             {%- endfor -%}
-            {%- set scan_rssi = ns_scan.rssi -%}
-            {%- set ns = namespace(fp_list=[]) -%}
-            {%- for fp in current_fingerprints -%}
-              {%- if fp.loc | int != location_index | int -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for mac, beacon in fp.beacons.items() -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({mac: beacon_dict}) -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-              {%- else -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for m, beacon in fp.beacons.items() -%}
-                  {%- if m | upper != mac_upper -%}
-                    {%- if 'min' in beacon -%}
-                      {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                    {%- else -%}
-                      {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                    {%- endif -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
-                  {%- else -%}
-                    {%- set was_ignored = beacon.get('ignored', false) -%}
-                    {%- if scan_rssi is not none -%}
-                      {%- if minmax_mode -%}
-                        {# Min/max mode, beacon in scan: set range to scan ± tolerance #}
-                        {%- set reset_beacon = {'min': scan_rssi | int - tolerance, 'max': scan_rssi | int + tolerance} -%}
-                      {%- else -%}
-                        {# Mean mode, beacon in scan: collapse to current scan RSSI #}
-                        {%- set reset_beacon = {'rssi': scan_rssi | int} -%}
-                      {%- endif -%}
-                    {%- else -%}
-                      {# Beacon absent from scan: no-op #}
-                      {%- set reset_beacon = beacon -%}
-                    {%- endif -%}
-                    {%- if was_ignored -%}
-                      {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
-                    {%- endif -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({m: reset_beacon}) -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-              {%- endif -%}
+            {{ ns.rssi }}
+          in_fingerprint: |
+            {%- set ns = namespace(found=false) -%}
+            {%- for fp in current_fingerprints if fp.loc | int == location_index | int -%}
+              {%- for m in (fp.beacons or {}) if m | upper == mac_upper -%}
+                {%- set ns.found = true -%}
+              {%- endfor -%}
             {%- endfor -%}
-            {{ {'fingerprints': ns.fp_list} }}
+            {{ ns.found }}
 
+      # An unreadable database is not an absent beacon, and the remedies differ. Without this the guard
+      # below reports "not in the fingerprint" at debug level, which is both wrong and quiet, and the
+      # writer's own unreadable-database error is never reached because no write is attempted.
+      - if: "{{ current_fingerprints_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - reset of {{ mac_upper }} not attempted, the database on disk is left alone"
+              level: error
+          - stop: "fingerprint database unreadable"
+
+      # Two ways there is nothing to reset, and both would otherwise reach the toast and log below,
+      # which say the beacon was reset. `set_beacon` only replaces an entry that is already there, so
+      # a beacon missing from this location's fingerprint is a silent no-op rather than an addition.
+      - if: "{{ scan_rssi is none or not in_fingerprint | bool }}"
+        then:
+          - action: system_log.write
+            data:
+              message: >-
+                Beacon {{ mac_upper }} is not in
+                {{ 'the latest scan' if scan_rssi is none else 'the fingerprint at location ' ~ location_index }}
+                - nothing to reset
+              level: debug
+          - stop: "nothing to reset"
+
+      # The writer carries any existing `ignored` flag across.
       - action: script.bt_write_fingerprints
         data:
-          fingerprints_json: "{{ updated_fingerprints }}"
+          operation: set_beacon
+          location_index: "{{ location_index }}"
+          mac: "{{ mac_upper }}"
+          beacon: >-
+            {{ {'min': scan_rssi | int - tolerance, 'max': scan_rssi | int + tolerance}
+               if minmax_mode else {'rssi': scan_rssi | int} }}
+        response_variable: write_result
+
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
 
       - variables:
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
@@ -1544,7 +1456,7 @@ script:
       - variables:
           # Stands in for a malformed context string. Reads the live helper rather than a literal,
           # so a suggested range is the same width as every other seeding path.
-          tolerance_default: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          tolerance_default: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
 
       - variables:
           ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
@@ -1586,6 +1498,9 @@ script:
   bt_beacon_range_editor_save:
     alias: "BT: Save range editor values to fingerprint"
     description: "Reads min/max from helpers and writes directly to fingerprint. Preserves beacon format: min/max entries stay as min/max; mean entries save as rssi=midpoint. Swaps min/max if inverted."
+    # `single` on purpose, where the other mutators are `queued`. Its inputs are two helpers filled by
+    # the popup, so a queued second run would re-read whatever the helpers hold by then and write the
+    # same values twice. One Save press is one write; a dropped double-press is the wanted behaviour.
     mode: single
     fields:
       browser_id:
@@ -1594,60 +1509,79 @@ script:
     sequence:
       - variables:
           ctx: "{{ states('input_text.bt_range_editor_context').split('|') }}"
+          new_min_raw: "{{ states('input_number.bt_range_editor_min') | int(none) }}"
+          new_max_raw: "{{ states('input_number.bt_range_editor_max') | int(none) }}"
+
+      # The popup fills all three of these before it opens, so reaching Save without them means the
+      # save fired on its own - after a restart, before state restore, or from a stale dashboard. Bare
+      # `| int` raised there ("int got invalid input ''"), which surfaces as a red error and no hint of
+      # what to do; an empty context also makes ctx[1] an index error.
+      - if: "{{ ctx | length < 2 or ctx[0] | int(-1) < 0 or not ctx[1]
+                or new_min_raw is none or new_max_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: range editor was asked to save with no usable popup state (context '{{ states('input_text.bt_range_editor_context') }}', min {{ states('input_number.bt_range_editor_min') }}, max {{ states('input_number.bt_range_editor_max') }}) - nothing saved"
+              level: error
+          - stop: "range editor state unusable"
+
+      - variables:
           location_index: "{{ ctx[0] | int }}"
           mac_upper: "{{ ctx[1] | upper }}"
-          new_min_raw: "{{ states('input_number.bt_range_editor_min') | int }}"
-          new_max_raw: "{{ states('input_number.bt_range_editor_max') | int }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          current_fingerprints: "{{ current_fingerprints_raw or [] }}"
 
       - variables:
           new_min: "{{ [new_min_raw, new_max_raw] | min }}"
           new_max: "{{ [new_min_raw, new_max_raw] | max }}"
 
+      # The existing entry decides the format written back: a range stays a range, a mean entry
+      # takes the midpoint. Only the format is read here - the writer preserves `ignored`.
       - variables:
-          updated_fingerprints: |
-            {%- set ns = namespace(fp_list=[]) -%}
-            {%- for fp in current_fingerprints -%}
-              {%- if fp.loc | int != location_index -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for m, beacon in fp.beacons.items() -%}
-                  {%- if 'min' in beacon -%}
-                    {%- set bd = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                  {%- else -%}
-                    {%- set bd = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                  {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-              {%- else -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for m, beacon in fp.beacons.items() -%}
-                  {%- if m | upper != mac_upper -%}
-                    {%- if 'min' in beacon -%}
-                      {%- set bd = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                    {%- else -%}
-                      {%- set bd = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                    {%- endif -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
-                  {%- else -%}
-                    {%- set was_ignored = beacon.get('ignored', false) -%}
-                    {%- if 'min' in beacon -%}
-                      {%- set bd = {'min': new_min | int, 'max': new_max | int, 'ignored': true} if was_ignored else {'min': new_min | int, 'max': new_max | int} -%}
-                    {%- else -%}
-                      {%- set mid = ((new_min + new_max) / 2) | round | int -%}
-                      {%- set bd = {'rssi': mid, 'ignored': true} if was_ignored else {'rssi': mid} -%}
-                    {%- endif -%}
-                    {%- set ns2.beacons = ns2.beacons | combine({m: bd}) -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-              {%- endif -%}
+          existing: |
+            {%- set ns = namespace(b={}) -%}
+            {%- for fp in current_fingerprints if fp.loc | int == location_index -%}
+              {%- for m, beacon in (fp.beacons or {}).items() if m | upper == mac_upper -%}
+                {%- set ns.b = beacon -%}
+              {%- endfor -%}
             {%- endfor -%}
-            {{ {'fingerprints': ns.fp_list} }}
+            {{ ns.b }}
+
+      # An unreadable database reads as "beacon absent" to the guard below, and this script stops before
+      # browser_mod.close_popup, so the popup would sit open with nothing said anywhere. Name the cause.
+      - if: "{{ current_fingerprints_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - range editor save for {{ mac_upper }} not attempted, the database on disk is left alone"
+              level: error
+          - stop: "fingerprint database unreadable"
+
+      # A beacon absent from this location's fingerprint has nothing to save into: set_beacon replaces
+      # an entry, it never adds one, so the write would succeed as a no-op while the popup closed as
+      # though the values had been stored. Same guard as reset_minmax and beacon_merge.
+      - if: "{{ existing | length == 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "Beacon {{ mac_upper }} is not in the fingerprint at location {{ location_index }} - nothing to save"
+              level: debug
+          - stop: "beacon absent from this fingerprint"
 
       - action: script.bt_write_fingerprints
         data:
-          fingerprints_json: "{{ updated_fingerprints }}"
+          operation: set_beacon
+          location_index: "{{ location_index }}"
+          mac: "{{ mac_upper }}"
+          beacon: >-
+            {{ {'min': new_min | int, 'max': new_max | int} if 'min' in existing
+               else {'rssi': ((new_min + new_max) / 2) | round | int} }}
+        response_variable: write_result
+
+      # Leave the popup open on a refused write, so the values are still there to retry.
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
 
       - action: browser_mod.close_popup
         data:
@@ -1655,6 +1589,8 @@ script:
 
   bt_beacon_merge:
     alias: "BT: Merge beacon data"
+    mode: queued
+    max: 25
     description: "Merge a single beacon from the current scan into its fingerprint entry (expand min/max or update running mean)"
     fields:
       location_index:
@@ -1669,7 +1605,8 @@ script:
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          current_fingerprints: "{{ current_fingerprints_raw or [] }}"
           mac_upper: "{{ mac | upper }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
 
@@ -1687,55 +1624,53 @@ script:
           - condition: template
             value_template: "{{ scan_rssi is not none }}"
         then:
+          # A range widens only if the scan falls outside it; a mean entry moves halfway towards the
+          # scan. Both need the old value, so it is read here; the writer preserves `ignored`.
           - variables:
-              updated_fingerprints: |
-                {%- set ns = namespace(fp_list=[]) -%}
-                {%- for fp in current_fingerprints -%}
-                  {%- if fp.loc | int != location_index | int -%}
-                    {%- set ns2 = namespace(beacons={}) -%}
-                    {%- for m, beacon in fp.beacons.items() -%}
-                      {%- if 'min' in beacon -%}
-                        {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if beacon.get('ignored', false) else {'min': beacon.min, 'max': beacon.max} -%}
-                      {%- else -%}
-                        {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if beacon.get('ignored', false) else {'rssi': beacon.rssi} -%}
-                      {%- endif -%}
-                      {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
-                    {%- endfor -%}
-                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                  {%- else -%}
-                    {%- set ns2 = namespace(beacons={}) -%}
-                    {%- for m, beacon in fp.beacons.items() -%}
-                      {%- set was_ignored = beacon.get('ignored', false) -%}
-                      {%- if m | upper != mac_upper -%}
-                        {%- if 'min' in beacon -%}
-                          {%- set beacon_dict = {'min': beacon.min, 'max': beacon.max, 'ignored': true} if was_ignored else {'min': beacon.min, 'max': beacon.max} -%}
-                        {%- else -%}
-                          {%- set beacon_dict = {'rssi': beacon.rssi, 'ignored': true} if was_ignored else {'rssi': beacon.rssi} -%}
-                        {%- endif -%}
-                        {%- set ns2.beacons = ns2.beacons | combine({m: beacon_dict}) -%}
-                      {%- else -%}
-                        {%- if 'min' in beacon -%}
-                          {%- set new_min = [beacon.min, scan_rssi | int] | min -%}
-                          {%- set new_max = [beacon.max, scan_rssi | int] | max -%}
-                          {%- set merged = {'min': new_min, 'max': new_max} -%}
-                        {%- else -%}
-                          {%- set avg_rssi = ((beacon.rssi + scan_rssi | int) / 2) | round | int -%}
-                          {%- set merged = {'rssi': avg_rssi} -%}
-                        {%- endif -%}
-                        {%- if was_ignored -%}
-                          {%- set merged = merged | combine({'ignored': true}) -%}
-                        {%- endif -%}
-                        {%- set ns2.beacons = ns2.beacons | combine({m: merged}) -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-                  {%- endif -%}
+              existing: |
+                {%- set ns = namespace(b={}) -%}
+                {%- for fp in current_fingerprints if fp.loc | int == location_index | int -%}
+                  {%- for m, beacon in (fp.beacons or {}).items() if m | upper == mac_upper -%}
+                    {%- set ns.b = beacon -%}
+                  {%- endfor -%}
                 {%- endfor -%}
-                {{ {'fingerprints': ns.fp_list} }}
+                {{ ns.b }}
+
+          # An unreadable database reads as "beacon absent" to the guard below, at debug level and with
+          # the wrong cause. Name it before concluding anything about the beacon.
+          - if: "{{ current_fingerprints_raw is none }}"
+            then:
+              - action: system_log.write
+                data:
+                  message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - merge of {{ mac_upper }} not attempted, the database on disk is left alone"
+                  level: error
+              - stop: "fingerprint database unreadable"
+
+          # A beacon in the scan but not in this location's fingerprint has nothing to merge into, so
+          # no write is issued. Both branches below read the existing entry, so without this the mean
+          # branch would dereference a missing `rssi` and the run would fail.
+          - if: "{{ existing | length == 0 }}"
+            then:
+              - action: system_log.write
+                data:
+                  message: "Beacon {{ mac_upper }} is not in the fingerprint at location {{ location_index }} - nothing to merge"
+                  level: debug
+              - stop: "beacon absent from this fingerprint"
 
           - action: script.bt_write_fingerprints
             data:
-              fingerprints_json: "{{ updated_fingerprints }}"
+              operation: set_beacon
+              location_index: "{{ location_index }}"
+              mac: "{{ mac_upper }}"
+              beacon: >-
+                {{ {'min': [existing.min, scan_rssi | int] | min, 'max': [existing.max, scan_rssi | int] | max}
+                   if 'min' in existing
+                   else {'rssi': ((existing.rssi + scan_rssi | int) / 2) | round | int} }}
+            response_variable: write_result
+
+          - if: "{{ not (write_result.ok | default(true)) }}"
+            then:
+              - stop: "write refused"
 
           - variables:
               locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
@@ -1759,6 +1694,8 @@ script:
 
   bt_beacon_reset_all:
     alias: "BT: Reset all beacons"
+    mode: queued
+    max: 25
     description: "Reset all beacons for a location. Min/max mode: P10/P90 if ≥10 samples, else midpoint±tolerance. Mean mode: current scan RSSI if present, else unchanged."
     fields:
       location_index:
@@ -1770,8 +1707,9 @@ script:
     sequence:
       - variables:
           minmax_mode: "{{ states('input_boolean.bt_fingerprint_minmax_mode') | bool(false) }}"
-          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
-          current_fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
+          tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
+          current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          current_fingerprints: "{{ current_fingerprints_raw or [] }}"
           scan_devices: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
 
@@ -1783,59 +1721,82 @@ script:
             {%- endfor -%}
             {{ ns.map }}
 
+      # Only this location's beacons are rebuilt. `replace_location` takes the dict verbatim, so the
+      # `ignored` flag is carried across here rather than by the writer.
       - variables:
-          updated_fingerprints: |
-            {%- set ns = namespace(fp_list=[]) -%}
+          reset_beacons: |
             {%- set loc_stats_ns = namespace(beacons={}) -%}
-            {%- for entry in all_stats -%}
-              {%- if entry.loc | int == location_index | int -%}
-                {%- set loc_stats_ns.beacons = entry.beacons -%}
-              {%- endif -%}
+            {%- for entry in all_stats if entry.loc | int == location_index | int -%}
+              {%- set loc_stats_ns.beacons = entry.beacons -%}
             {%- endfor -%}
             {%- set loc_stats_map = loc_stats_ns.beacons -%}
-            {%- for fp in current_fingerprints -%}
-              {%- if fp.loc | int != location_index | int -%}
-                {%- set ns.fp_list = ns.fp_list + [fp] -%}
-              {%- else -%}
-                {%- set ns2 = namespace(beacons={}) -%}
-                {%- for m, beacon in fp.beacons.items() -%}
-                  {%- set mac_upper = m | upper -%}
-                  {%- set was_ignored = beacon.get('ignored', false) -%}
-                  {%- if minmax_mode -%}
-                    {%- set readings = loc_stats_map.get(mac_upper, []) -%}
-                    {%- set ns_rv = namespace(vals=[]) -%}
-                    {%- for r in readings -%}{%- if r[0] is not none -%}{%- set ns_rv.vals = ns_rv.vals + [r[0]] -%}{%- endif -%}{%- endfor -%}
-                    {%- set s_count = ns_rv.vals | length -%}
-                    {%- if s_count >= 10 -%}
-                      {%- set sorted_vals = ns_rv.vals | sort -%}
-                      {%- set p10 = sorted_vals[(s_count * 0.1) | int] | int -%}
-                      {%- set p90 = sorted_vals[(s_count * 0.9) | int] | int -%}
-                      {%- set reset_beacon = {'min': p10, 'max': p90} -%}
-                    {%- else -%}
-                      {%- set mid = ((beacon.min + beacon.max) / 2) | round | int if 'min' in beacon else beacon.rssi | int -%}
-                      {%- set reset_beacon = {'min': mid - tolerance, 'max': mid + tolerance} -%}
-                    {%- endif -%}
+            {%- set ns2 = namespace(beacons={}) -%}
+            {%- for fp in current_fingerprints if fp.loc | int == location_index | int -%}
+              {%- for m, beacon in (fp.beacons or {}).items() -%}
+                {%- set mac_upper = m | upper -%}
+                {%- set was_ignored = beacon.get('ignored', false) -%}
+                {%- if minmax_mode -%}
+                  {%- set readings = loc_stats_map.get(mac_upper, []) -%}
+                  {%- set ns_rv = namespace(vals=[]) -%}
+                  {%- for r in readings -%}{%- if r[0] is not none -%}{%- set ns_rv.vals = ns_rv.vals + [r[0]] -%}{%- endif -%}{%- endfor -%}
+                  {%- set s_count = ns_rv.vals | length -%}
+                  {%- if s_count >= 10 -%}
+                    {%- set sorted_vals = ns_rv.vals | sort -%}
+                    {%- set p10 = sorted_vals[(s_count * 0.1) | int] | int -%}
+                    {%- set p90 = sorted_vals[(s_count * 0.9) | int] | int -%}
+                    {%- set reset_beacon = {'min': p10, 'max': p90} -%}
                   {%- else -%}
-                    {# Mean mode: scan RSSI if present, else leave unchanged #}
-                    {%- if mac_upper in scan_map -%}
-                      {%- set reset_beacon = {'rssi': scan_map[mac_upper] | int} -%}
-                    {%- else -%}
-                      {%- set reset_beacon = beacon -%}
-                    {%- endif -%}
+                    {%- set mid = ((beacon.min + beacon.max) / 2) | round | int if 'min' in beacon else beacon.rssi | int -%}
+                    {%- set reset_beacon = {'min': mid - tolerance, 'max': mid + tolerance} -%}
                   {%- endif -%}
-                  {%- if was_ignored -%}
-                    {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
+                {%- else -%}
+                  {# Mean mode: scan RSSI if present, else leave unchanged #}
+                  {%- if mac_upper in scan_map -%}
+                    {%- set reset_beacon = {'rssi': scan_map[mac_upper] | int} -%}
+                  {%- else -%}
+                    {%- set reset_beacon = beacon -%}
                   {%- endif -%}
-                  {%- set ns2.beacons = ns2.beacons | combine({m: reset_beacon}) -%}
-                {%- endfor -%}
-                {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
-              {%- endif -%}
+                {%- endif -%}
+                {%- if was_ignored -%}
+                  {%- set reset_beacon = reset_beacon | combine({'ignored': true}) -%}
+                {%- endif -%}
+                {%- set ns2.beacons = ns2.beacons | combine({m: reset_beacon}) -%}
+              {%- endfor -%}
             {%- endfor -%}
-            {{ {'fingerprints': ns.fp_list} }}
+            {{ ns2.beacons }}
+
+      # An unreadable database looks exactly like a location with no fingerprint to the guard below, and
+      # that guard is quiet and names the wrong cause. Separate the two before deciding.
+      - if: "{{ current_fingerprints_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - reset-all at location {{ location_index }} not attempted, the database on disk is left alone"
+              level: error
+          - stop: "fingerprint database unreadable"
+
+      # A location with no fingerprint yet has nothing to reset. Stop here rather than falling through
+      # to a "Reset 0 beacons" toast and a statistics entry for a reset that did not happen - the same
+      # early stop bt_beacon_reset_minmax and bt_beacon_merge use.
+      - if: "{{ reset_beacons | length == 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "No fingerprint at location {{ location_index }} - nothing to reset"
+              level: debug
+          - stop: "no fingerprint at this location"
 
       - action: script.bt_write_fingerprints
         data:
-          fingerprints_json: "{{ updated_fingerprints }}"
+          operation: replace_location
+          location_index: "{{ location_index }}"
+          beacons: "{{ reset_beacons }}"
+        response_variable: write_result
+
+      # Stop before the toast and before recording statistics, as capture and merge do.
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
 
       - variables:
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
@@ -1865,6 +1826,8 @@ script:
 
   bt_record_merge_statistics:
     alias: "BT: Record merge statistics"
+    mode: queued
+    max: 25
     description: "Append current scan RSSI readings for a location to bt_statistics.json (called after capture/merge/reset)"
     fields:
       location_index:
@@ -1875,7 +1838,19 @@ script:
           current_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
           raw_scan: "{{ state_attr('sensor.bt_latest_scan_full', 'devices') or [] }}"
           global_ignored: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
+          current_fingerprints_raw: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
           ts: "{{ now().timestamp() | int }}"
+
+      # Every beacon not in the fingerprint database is dropped from the statistics below, so an
+      # unreadable database silently empties this location's readings - and the persistor cannot catch
+      # it, because the entry count is unchanged and only its contents were lost.
+      - if: "{{ current_fingerprints_raw is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - statistics for location {{ location_index }} not recorded, the file on disk is left alone"
+              level: error
+          - stop: "fingerprint database unreadable"
 
       - variables:
           scan_map: |
@@ -1889,7 +1864,7 @@ script:
             {{ ns.map }}
           fp_mac_set: |
             {%- set ns = namespace(macs=[]) -%}
-            {%- set fingerprints = state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] -%}
+            {%- set fingerprints = current_fingerprints_raw or [] -%}
             {%- for fp in fingerprints -%}
               {%- if fp.loc | int == location_index | int -%}
                 {%- for mac in fp.beacons.keys() -%}
@@ -1942,6 +1917,11 @@ script:
         data:
           data_type: statistics
           json_content: "{{ updated_statistics }}"
+        response_variable: write_result
+
+      - if: "{{ not (write_result.ok | default(true)) }}"
+        then:
+          - stop: "write refused"
 
       - action: system_log.write
         data:
@@ -1966,8 +1946,8 @@ script:
           # for the tolerance that minimum is 0 — an exact-match requirement that finds
           # nothing. Pressing this once is what makes a fresh install work.
           defaults:
-            input_number.bt_location_detection_rssi_tolerance: 5
-            input_number.bt_location_detection_weak_signal_threshold: -95
+            input_number.bt_rssi_tolerance: 5
+            input_number.bt_weak_signal_threshold: -95
 
       - repeat:
           for_each: "{{ defaults | dictsort }}"
@@ -2008,10 +1988,10 @@ script:
           locations_list: "{{ state_attr('sensor.bt_location_array', 'locations') or [] }}"
           fingerprints: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') or [] }}"
           global_list: "{{ (state_attr('sensor.bt_ignored_beacons', 'ignored') or []) | map('upper') | list }}"
-          weak_signal_threshold: "{{ states('input_number.bt_location_detection_weak_signal_threshold') | int(-95) }}"
-          tolerance: "{{ states('input_number.bt_location_detection_rssi_tolerance') | int(5) }}"
+          weak_signal_threshold: "{{ states('input_number.bt_weak_signal_threshold') | int(-95) }}"
+          tolerance: "{{ states('input_number.bt_rssi_tolerance') | int(5) }}"
           all_stats: "{{ state_attr('sensor.bt_merge_statistics', 'statistics') or [] }}"
-          names_raw: "{{ state_attr('sensor.bt_device_names', 'devices_by_mac') | default('{}') }}"
+          names_raw: "{{ state_attr('sensor.bt_device_names', 'devices_by_mac') or '{}' }}"
 
       - variables:
           validation_report: |
@@ -2182,14 +2162,20 @@ script:
 
   bt_persist_write:
     alias: "BT: Write data file"
-    description: "Write one of the three JSON data files and refresh the sensor that reads it. Reports a refused write and aborts the caller."
+    description: "Write one of the three JSON data files and refresh the sensor that reads it. Notifies on a refused write and returns {'ok': false} for the caller to act on."
     # The persistor refuses to overwrite a target that exists but does not parse, and exits 1.
     # Without checking that, the sensor re-reads the unchanged file and the dashboard redraws
     # identically, so a refused edit looks exactly like a successful one - and the file needs
     # manual repair before any further write can land. A persistent notification waits until
     # acknowledged, unlike a popup, which only reaches a dashboard someone is already looking at.
-    # `error: true` propagates the failure to the caller, so it cannot go on to log success or
-    # show a confirmation toast for a write that did not happen.
+    # Returns {'ok': true|false}. Callers must check it and stop on false: a caller using
+    # `action: script.…` waits for this script but carries on when it fails, so nothing else prevents
+    # it logging success and toasting over a write that never landed.
+    #
+    # Deliberately not `stop … error: true`: Home Assistant rejects a response on an error stop
+    # ("not allowed to add a response to an error stop action"), so the choice is a raised error or a
+    # checkable outcome, never both. The outcome wins, because the error never aborted callers anyway -
+    # it only marked this run failed. The ERROR line it used to contribute is written explicitly below.
     mode: queued
     max: 25
     fields:
@@ -2198,6 +2184,9 @@ script:
         example: "fingerprints"
       json_content:
         description: "Complete document for that file"
+      allow_shrink:
+        description: "Set only when removing entries is the intent. The persistor refuses a write holding fewer entries than the file already does without it."
+        example: "true"
     sequence:
       - variables:
           targets:
@@ -2211,55 +2200,243 @@ script:
               cmd: shell_command.bt_statistics_write
               sensor: sensor.bt_merge_statistics
 
+      # The fingerprints and ignored commands read `allow_shrink`; the statistics one ignores it.
       - action: "{{ targets[data_type].cmd }}"
         data:
           json_content: "{{ json_content }}"
-        response_variable: write_result
+          allow_shrink: "{{ allow_shrink | default(false) | bool(false) }}"
+        response_variable: shell_result
 
-      - if: "{{ write_result.returncode != 0 }}"
+      - if: "{{ shell_result.returncode != 0 }}"
         then:
           - action: persistent_notification.create
             data:
               notification_id: "bt_write_failed_{{ data_type }}"
               title: "Triangulation: write failed"
               message: >-
-                **bt_{{ data_type }}.json** was not written. The file needs manual repair before
-                anything can be written to it again — until then every edit is discarded silently.
-                {% if write_result.stderr %}
+                **bt_{{ data_type }}.json** was not written — the persistor refused it. Until the
+                reason below is resolved, every edit to this file is discarded silently.
+                {% if shell_result.stderr %}
 
-                `{{ write_result.stderr | trim }}`{% endif %}
-          # `stop` does not render templates, so the file name lives in the notification only.
+                `{{ shell_result.stderr | trim }}`{% endif %}
+          - action: system_log.write
+            data:
+              message: "BT: refused to write bt_{{ data_type }}.json - {{ shell_result.stderr | trim }}"
+              level: error
+          - variables:
+              write_result:
+                ok: false
+          # `stop` does not render templates, so the file name lives in the notification and log only.
           - stop: "Data file write refused"
-            error: true
+            response_variable: write_result
 
       - action: homeassistant.update_entity
         target:
           entity_id: "{{ targets[data_type].sensor }}"
 
+      # A successful write means the file parses again, so clear any earlier refusal notice for it.
+      # That notice says every edit is being discarded silently, which stops being true the moment a
+      # write lands; left alone it outlives the condition it describes. Dismissing an id that was
+      # never raised does nothing, so this needs no guard.
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "bt_write_failed_{{ data_type }}"
+
+      - variables:
+          write_result:
+            ok: true
+      - stop: "written"
+        response_variable: write_result
+
   bt_write_fingerprints:
     alias: "BT: Write fingerprints to file"
-    description: "Write fingerprints JSON string to file and refresh sensor. Single write path for all fingerprint writers."
+    description: "Apply one mutation to the fingerprint database and write it. Callers pass what to change, not a rebuilt document."
+    # This script reads the database itself, so a caller describes its edit instead of rebuilding the
+    # whole document from its own earlier read. Two scripts that both read before either writes used to
+    # produce a lost update - the second write replaced the first wholesale, and nothing detected it
+    # because the file stayed valid. `mode: queued` completes read-mutate-write-refresh for one caller
+    # before the next begins, so the next one reads the result of the previous write.
+    #
+    # Entries the mutation does not touch are carried over as they are, locations included, so this
+    # script needs to know only about the `ignored` flag and never about `rssi`/`min`/`max`. Adding a
+    # field to a beacon requires no change here.
+    mode: queued
+    max: 25
     fields:
-      fingerprints_json:
-        description: "Fingerprints as JSON string (already serialized)"
+      operation:
+        description: "set_beacon | remove_beacon | toggle_ignored | replace_location | clear"
+        example: "set_beacon"
+      location_index:
+        description: "Location index. Omit on remove_beacon and toggle_ignored to act on every location."
+        example: "0"
+      mac:
+        description: "Beacon MAC, for set_beacon, remove_beacon and toggle_ignored"
+        example: "AA:BB:CC:DD:EE:FF"
+      beacon:
+        description: "New entry for set_beacon, e.g. {'rssi': -70} or {'min': -75, 'max': -65}. An existing 'ignored' flag is preserved."
+      beacons:
+        description: "Complete beacons dict for replace_location"
     sequence:
+      - variables:
+          # Read raw, with no `or []` fallback: a missing attribute means the database could not be
+          # read, which is not the same as a database holding no fingerprints. An empty list here would
+          # rebuild the document from nothing, and the persistor accepts that - its guard refuses a
+          # target that does not parse, and a file it never managed to read still parses fine.
+          current: "{{ state_attr('sensor.bt_fingerprint_database_file', 'fingerprints') }}"
+          op: "{{ operation | default('') }}"
+          target_mac: "{{ mac | default('') | upper }}"
+          # `| int(-1)` turns an absent or non-numeric index into -1, which means "every location" -
+          # but only for the two verbs that have an every-location meaning.
+          target_loc: "{{ location_index | default(-1) | int(-1) }}"
+
+      # Every verb except `clear` carries the untouched part of the document across from `current`, so
+      # an unreadable sensor would replace a healthy file with an empty database. `none` is the
+      # unreadable case and is refused; a database that genuinely holds nothing reads as `[]` and is
+      # written normally. `clear` writes an empty document on purpose and needs no source to do it.
+      - if: "{{ op != 'clear' and current is none }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: sensor.bt_fingerprint_database_file has no 'fingerprints' attribute - {{ op }} not written, the database on disk is left alone"
+              level: error
+          - variables:
+              write_result:
+                ok: false
+          - stop: "fingerprint database unreadable"
+            response_variable: write_result
+
+      # `set_beacon` and `replace_location` act on exactly one location, so -1 is not a wider scope for
+      # them, it is a caller error. Left unguarded, `replace_location` appends a `{'loc': -1}` entry
+      # that readers resolve through `locations[-1]` - the *last* location, so it masquerades as a real
+      # one - and `set_beacon` writes the beacon into every location. This is the same escalation the
+      # scoped mutators guard against; the writer applies the rule to itself rather than trusting them.
+      - if: "{{ op in ['set_beacon', 'replace_location'] and target_loc < 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "BT: {{ op }} needs a location index, got {{ location_index | default('none') }} - nothing written"
+              level: error
+          - variables:
+              write_result:
+                ok: false
+          - stop: "location_index required"
+            response_variable: write_result
+
+      - variables:
+          # Toggle direction. Scoped to one location it flips that entry; across all locations any
+          # still-active entry means "ignore everywhere", so a mixed set collapses to fully ignored
+          # rather than inverting each entry independently.
+          turn_on_ignored: |
+            {%- set ns = namespace(active=false) -%}
+            {# `or []` because `clear` reaches this line with an unreadable database, which is the one
+               case the guard above lets through. #}
+            {%- for fp in (current or []) if target_loc < 0 or fp.loc | int == target_loc -%}
+              {%- for m, b in (fp.beacons or {}).items() -%}
+                {%- if m | upper == target_mac and not b.get('ignored', false) -%}
+                  {%- set ns.active = true -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.active }}
+
+      - variables:
+          mutated: |
+            {%- if op == 'clear' -%}
+              {{ {'fingerprints': []} }}
+            {%- else -%}
+              {%- set ns = namespace(fp_list=[]) -%}
+              {%- for fp in current -%}
+                {%- if op == 'replace_location' and fp.loc | int == target_loc -%}
+                  {# dropped here; the replacement is appended after the loop #}
+                {%- elif target_loc >= 0 and fp.loc | int != target_loc -%}
+                  {%- set ns.fp_list = ns.fp_list + [fp] -%}
+                {%- else -%}
+                  {%- set ns2 = namespace(beacons={}) -%}
+                  {%- for m, b in (fp.beacons or {}).items() -%}
+                    {%- if m | upper != target_mac -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({m: b}) -%}
+                    {%- elif op == 'set_beacon' -%}
+                      {%- set kept = (beacon | combine({'ignored': true})) if b.get('ignored', false) else beacon -%}
+                      {%- set ns2.beacons = ns2.beacons | combine({m: kept}) -%}
+                    {%- elif op == 'toggle_ignored' -%}
+                      {%- if turn_on_ignored | bool -%}
+                        {%- set ns2.beacons = ns2.beacons | combine({m: b | combine({'ignored': true})}) -%}
+                      {%- else -%}
+                        {# Drop the flag by rebuilding without that key: Jinja cannot remove one. #}
+                        {%- set ns3 = namespace(kept={}) -%}
+                        {%- for k, v in b.items() if k != 'ignored' -%}
+                          {%- set ns3.kept = ns3.kept | combine({k: v}) -%}
+                        {%- endfor -%}
+                        {%- set ns2.beacons = ns2.beacons | combine({m: ns3.kept}) -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                    {# remove_beacon: the matching entry is simply not carried over #}
+                  {%- endfor -%}
+                  {%- set ns.fp_list = ns.fp_list + [{'loc': fp.loc, 'beacons': ns2.beacons}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if op == 'replace_location' -%}
+                {%- set ns.fp_list = ns.fp_list + [{'loc': target_loc, 'beacons': beacons}] -%}
+              {%- endif -%}
+              {{ {'fingerprints': ns.fp_list} }}
+            {%- endif -%}
+
+      # A mutation that changes nothing - toggling a beacon at a location it is not in, removing one
+      # that was never there - still serialised the whole document, replaced the file and refreshed the
+      # sensor, and the caller then logged the edit as done. Compare first: an identical document is not
+      # worth a write, and `changed` lets the caller say what actually happened.
+      #
+      # `current and` is load-bearing: a mutation off an EMPTY read also "changes nothing", but that is
+      # the stale-sensor case, not a no-op. Skipping there would swallow the persistor's shrink refusal
+      # and its notification - the only signal that the sensor is stale and the file needs a refresh.
+      # An empty read therefore always goes to the persistor, which accepts it on a genuine first run
+      # and refuses it when the file holds locations.
+      #
+      # Sorted because `replace_location` appends its rebuilt entry at the end while the persistor sorts
+      # by `loc`, so an unsorted comparison would call an identical document changed.
+      - if: "{{ current
+                and (mutated.fingerprints | sort(attribute='loc')) == (current | sort(attribute='loc')) }}"
+        then:
+          - variables:
+              write_result:
+                ok: true
+                changed: false
+          - stop: "nothing to change"
+            response_variable: write_result
+
       - action: script.bt_persist_write
         data:
           data_type: fingerprints
-          json_content: "{{ fingerprints_json }}"
+          json_content: "{{ mutated }}"
+          # `clear` is the only verb that removes locations on purpose. Every other document holding
+          # fewer than the file does is a rebuild from a database nobody could read, and is refused.
+          allow_shrink: "{{ op == 'clear' }}"
+        response_variable: persist_result
+
+      - variables:
+          write_result: "{{ persist_result | combine({'changed': persist_result.ok | default(true)}) }}"
+
+      # Relayed so callers can check one script's result rather than two layers'.
+      - stop: "written"
+        response_variable: write_result
 
   bt_clear_fingerprints:
     alias: "BT: Clear fingerprints"
+    mode: queued
+    max: 25
     description: "Clear BT fingerprints database and refresh sensor"
     sequence:
       - action: script.bt_write_fingerprints
         data:
-          fingerprints_json:
-            fingerprints: []
+          operation: clear
 
   bt_clear_statistics:
     alias: "BT: Clear statistics"
     description: "Clear all scan history statistics and refresh sensor"
+    # `single` on purpose, where the writers are `queued`: this is the one script that writes a data
+    # file without going through script.bt_persist_write, and its payload is a fixed literal. Two
+    # concurrent clears would write the same bytes, so dropping the second loses nothing.
+    mode: single
     sequence:
       - action: shell_command.bt_statistics_clear
 
@@ -2277,34 +2454,25 @@ automation:
   - alias: 'BT Calibration - Update Confusion Matrix'
     id: bt_confusion_matrix_update
     description: "Recalculate confusion matrix when fingerprints, locations, or thresholds change"
-    trigger:
-      - platform: state
+    triggers:
+      - trigger: state
         entity_id:
           - sensor.bt_fingerprint_database_file
           - sensor.bt_location_array
-          - input_number.bt_location_detection_rssi_tolerance
-          - input_number.bt_location_detection_weak_signal_threshold
-    action:
+          - input_number.bt_rssi_tolerance
+          - input_number.bt_weak_signal_threshold
+    actions:
       - delay: "00:00:05"
       - action: script.bt_generate_confusion_matrix
     mode: restart
 
-  - alias: 'BT Calibration - Capture Fingerprint Button'
-    id: bt_calibration_capture_fingerprint
-    description: "Capture BT fingerprint when button pressed in calibration UI"
-    trigger:
-      - trigger: state
-        entity_id: input_button.bt_capture_fingerprint
-    action:
-      - action: script.bt_capture_fingerprint
-
   - alias: 'BT Fingerprints - Load from File on Startup'
     id: bt_fingerprints_load_on_startup
     description: "Ensure BT fingerprint sensor is refreshed at Home Assistant startup"
-    trigger:
+    triggers:
       - trigger: homeassistant
         event: start
-    action:
+    actions:
       - action: homeassistant.update_entity
         target:
           entity_id: sensor.bt_fingerprint_database_file
@@ -2312,7 +2480,7 @@ automation:
   - alias: 'BT Location Scores - Update on Fingerprint or Ignore Changes'
     id: bt_location_scores_update_on_changes
     description: "Automatically run algorithm to update location scores when fingerprints or ignores change"
-    trigger:
+    triggers:
       - trigger: state
         entity_id:
           - sensor.bt_fingerprint_database_file
@@ -2320,25 +2488,25 @@ automation:
           - input_boolean.bt_distance_weighted_scoring
     # NOTE: Timing issue - sensors may not be ready immediately after YAML reload
     # Condition checks all three sensors are valid to avoid errors during initialization
-    condition:
+    conditions:
       - condition: template
         value_template: "{{ states('sensor.bt_fingerprint_database_file') is not none and states('sensor.bt_ignored_beacons') is not none and state_attr('sensor.bt_latest_scan_full', 'devices') is not none }}"
-    action:
+    actions:
       - action: script.bt_calculate_location_scores
 
   - alias: 'BT Phone Charger - Detect Location'
     id: bt_phone_charger_detect_location
     description: "Trigger on updated BT scan sensor, analyze filtered signals, detect and store charger location"
-    trigger:
+    triggers:
       # Trigger on sensor state change (timestamp updates on every webhook post)
       # Pipeline: webhook → sensor.bt_latest_scan_full (filters) → this automation (acts on filtered data)
       # This ensures filtering logic lives in one place only (the sensor), eliminating duplication
       - trigger: state
         entity_id: sensor.bt_latest_scan_full
-    condition:
+    conditions:
       - condition: template
         value_template: "{{ trigger.to_state is not none and trigger.to_state.state not in ['unknown', 'unavailable'] }}"
-    action:
+    actions:
       # Log the already-filtered device data from the sensor
       - action: system_log.write
         data:
@@ -2358,16 +2526,18 @@ automation:
   - alias: 'BT Phone Charger - Clear Location'
     id: bt_phone_charger_clear_location
     description: "Receive power-disconnect event from Tasker, clear charger location for specific device"
-    trigger:
+    triggers:
       - trigger: webhook
         webhook_id: phone_charger_disconnect
         local_only: false
         # Triggered by Tasker when phone is removed from charger (power source disconnected)
         # Webhook receives JSON: {"browser_id": "peers_mobil", "event": "power_disconnected"}
-    action:
+    actions:
       # Remove only the disconnected device's entry from the location mapping
       - variables:
-          current_mapping: "{{ states('input_text.bt_device_charger_locations') | default('{}') | from_json({}) }}"
+          # `from_json({})` is the whole guard: states() returns the string 'unknown' rather than an
+          # undefined value, so a `default` filter here could never fire.
+          current_mapping: "{{ states('input_text.bt_device_charger_locations') | from_json({}) }}"
           transform_pattern: "{{ state_attr('sensor.dashboard_logic_config', 'browser_id_transform_pattern') }}"
           regex_matches: "{{ trigger.json.browser_id | regex_findall(transform_pattern, ignorecase=True) }}"
           device_id: "{{ regex_matches[0] if regex_matches | length > 0 else trigger.json.browser_id }}"

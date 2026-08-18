@@ -262,7 +262,7 @@ template:
       # -------------------------------------------------------
       # Maps player short names (kitchen, patio, etc.) to their IP addresses
       # Built from sensor.musiccast_media_players matched entries
-      # Access via: state_attr('sensor.musiccast_player_ips', 'by_entity') | default({})
+      # Access via: state_attr('sensor.musiccast_player_ips', 'by_entity') or {}
       # Example: player_ips.get('kitchen', 'unknown')
       - name: musiccast_player_ips
         unique_id: musiccast_player_ips

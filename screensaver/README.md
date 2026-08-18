@@ -177,8 +177,12 @@ sensor you configure yourself:
 ### `screensaver_settings.yaml` (Generic)
 Ships as-is:
 - **`input_select.screensaver_locale`** — date and alarm-time format; see *Locale Configuration*
+- **`sensor.screensaver_display_config`** — how the browser the display runs in maps to that device's
+  alarm and battery sensors; see *Device-Specific Sensors*. Where the Triangulation package is also
+  installed, the browser-id pattern follows the one defined there so there is only one to maintain.
 
-**You should NOT need to edit this file**, beyond adding a locale to the options list.
+**You should NOT need to edit this file**, beyond adding a locale to the options list and, if your
+Companion App sensors are named differently, the two replacement attributes.
 
 ### `sensor.time` (configured by you, not shipped)
 The clock reads `states['sensor.time']`. It comes from the built-in `time_date` platform, which is
@@ -209,7 +213,7 @@ worked example from one real house, not a self-contained feature:
 |---|---|---|
 | `script.musiccast_scenario_toggle`, `script.musiccast_scenario_mixer`, `script.musiccast_adjust_volume` | MusicCast | the three tap gestures |
 | `sensor.musiccast_scenarios`, `input_text.musiccast_active_scenario` | MusicCast | deciding which scenario a tap applies to |
-| `input_text.bt_device_charger_locations`, `sensor.dashboard_logic_config` | Triangulation | routing the tap to the room the device is charging in |
+| `input_text.bt_device_charger_locations` | Triangulation | routing the tap to the room the device is charging in. Only the mapping: the browser-id pattern that keys it comes from this package's own `sensor.screensaver_display_config`, which follows the triangulation value when that package is installed |
 
 The gestures in `dashboards/screensaver.yaml` call three local wrapper scripts —
 `script.screensaver_tap`, `script.screensaver_double_tap` and `script.screensaver_hold`
@@ -1296,7 +1300,7 @@ Open Home Assistant on the specific tablet or phone you wish to configure:
      - Tablets: `kitchen_tablet`, `living_room_tablet`
      - Phones running FKB: Use the suffix `_fkb` to distinguish from the Companion App (e.g., `phone_fkb`, `bedroom_phone_fkb`)
    - These IDs are permanent and used to identify which device is running the screensaver, enabling device-specific sensor mapping (alarm data, battery, etc.)
-     The FKB browser ID is transformed to a regular entity id using the customizable `sensor.dashboard_logic_config`. 
+     The FKB browser ID is transformed to a regular entity id using the customizable `sensor.screensaver_display_config`. 
 4. **Register:** Toggle **"Register"** to **ON**. This creates the device and associated entities (sensor, light, media_player) in Home Assistant.
 
 **For Kiosk Mode (Phone Screensaver):**
@@ -1349,20 +1353,20 @@ The screensaver uses JavaScript to dynamically map the correct Home Assistant se
 1. JavaScript reads the device's Browser ID from Browser Mod's localStorage (e.g., `phone_fkb`, `kitchen_tablet`)
 2. The dashboard dynamically constructs the sensor entity name based on a pattern: `sensor.{browser_id}_next_alarm`
 3. For example:
-   - Phone with ID `phone_fkb` → queries `sensor.phone_fkb_next_alarm`
+   - Phone with ID `phone_fkb` → queries `sensor.phone_next_alarm` (the pattern strips the `_fkb` suffix)
    - Tablet with ID `kitchen_tablet` → queries `sensor.kitchen_tablet_next_alarm`
 4. This pattern allows each device to display its own alarm data without requiring separate dashboard configurations
 
 **Setup requirement:**
 - Ensure the Home Assistant Companion App on your device exposes a `next_alarm` sensor with the device's Browser ID in the entity name
 - The entity should be named: `sensor.{your_browser_id}_next_alarm`
-- Example: If your Browser ID is `bedroom_phone_fkb`, enable the "Next Alarm" sensor in Companion App settings, and it will be available as `sensor.bedroom_phone_fkb_next_alarm`
+- Example: If your Browser ID is `bedroom_phone_fkb`, enable the "Next Alarm" sensor in Companion App settings, and it will be available as `sensor.bedroom_phone_next_alarm` — the Companion App names its sensors after the device, and the browser-id pattern strips the kiosk suffix to match
 
 **Extended to battery charge:**
 
 The same pattern drives the battery charge level, which shares the top-right field with the charger location (rendered as `location:84%`). The Browser ID is transformed to `sensor.{device_id}_battery_level`, and the value is shown as a percentage (e.g. `67%`).
 
-- Replacement attribute: `battery_level_replacement: "sensor.$1_battery_level"` on `sensor.dashboard_logic_config` (alongside `alarm_id_replacement`)
+- Replacement attribute: `battery_level_replacement: "sensor.$1_battery_level"` on `sensor.screensaver_display_config` (alongside `alarm_id_replacement`)
 - Example: Browser ID `peers_mobil_fkb` → `sensor.peers_mobil_battery_level`
 - **Setup:** enable the "Battery Level" sensor in the Companion App so `sensor.{your_browser_id}_battery_level` exists; otherwise only the location (or nothing) is shown
 - Location and charge fall back independently: `location:84%` (both), `84%` (no charger location — e.g. launched manually off-charger), `location` (no battery sensor)
