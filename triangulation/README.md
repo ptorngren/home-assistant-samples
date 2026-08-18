@@ -924,6 +924,14 @@ To verify fingerprints are working:
 
 Fingerprint quality improves iteratively. The process has four phases:
 
+💡 **Before you start, if two locations share a wall or a room:** most of the work below is spent
+teaching the algorithm to tell near-identical RF environments apart. **One cheap BLE beacon placed at
+one of the two locations removes that problem instead of tuning around it** — the beacon is strong at
+its own location and weak everywhere else, which is exactly the discrimination the fingerprints are
+struggling to find. Adjacent rooms, or a charger near a bed, are the usual cases. See
+**Dedicated Discriminator Beacons: ESP32-C3 Deployment** near the end of this README for what to buy,
+how to flash it and where to put it.
+
 **Phase 1 — Initial capture**
 Long-press each location heading to capture all beacons from scratch. Don't aim for perfection yet — you just need a starting point. Repeat for every location.
 
