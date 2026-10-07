@@ -55,7 +55,7 @@ Either way, a popup with an **Undo** button appears on any open dashboard afterw
 
 A pause or stop you make yourself is never overridden. The package distinguishes a change made through Home Assistant — the dashboard, an automation, a script — from one the device made on its own, and only acts on the latter.
 
-If Auto-Recovery is off, or a player can't be recovered, the scenario clears and the dashboard shows no active scenario. To get it back:
+If Auto-Recovery is off, or a player was reached and still could not be rejoined, the scenario clears and the dashboard shows no active scenario. A player that is merely **out of contact** is the exception: it is never attempted, so it does not count as a failure and the scenario stays set. That matters — the scenario is the record of which players belong together, and clearing it would stop the package noticing the absence at all. Nothing needs to poll: the player answering again is itself the event that re-runs the check. To get it back:
 - **Single-tap the scenario** — restores it: rejoins the dropped players and keeps the source playing, with no new preset. Double-tap instead for a fresh randomized start.
 - **Tap a dropped player** in the Players view — relinks just that one player to the still-playing master.
 
@@ -580,7 +580,7 @@ So after plugging a player back in, rebooting it, or restoring its network, expe
 
 A Yamaha Net Radio preset doesn't store a stream URL. It stores a reference into the internet-radio directory, plus a label captured when you saved the favorite. If the broadcaster re-points that channel — or the directory reassigns it — the preset plays a different station under the old name, and nothing in the API reports the change. Seen in practice: a preset labelled "1.FM - Slow Jamz" that plays "1.FM - 90s RnB" on every attempt, manual taps included, on every device holding that favorite.
 
-The package detects this after playback settles by comparing the master's reported station against the caption, and shows **the station that is actually streaming**, with a warning in the log naming both. Because the corrected caption no longer matches any stored preset label, no row in the preset list is highlighted — which is honest: what's playing genuinely isn't the preset's label. To fix it at source, re-save the favorite on the device from the current directory entry, then refresh the preset cache (tap the **Media Players** header in Settings). If the station has disappeared from the directory entirely, replace the preset or exclude it from randomization.
+The package detects this after playback settles by comparing the master's reported station against the caption, and shows **the station that is actually streaming**, with a warning in the log naming both. Because the corrected caption no longer matches any stored preset label, no row in the preset list is highlighted — which is honest: what's playing genuinely isn't the preset's label. To fix it at source, re-save the favorite on the device from the current directory entry. The next scenario activation picks the new label up; tap the **Media Players** header in Settings to refresh the preset cache immediately. If the station has disappeared from the directory entirely, replace the preset or exclude it from randomization.
 
 </details>
 
@@ -589,7 +589,7 @@ The package detects this after playback settles by comparing the master's report
 
 A favorite is recalled by slot number, and for Spotify that slot behaves as a fixed pointer to a playlist. The pointer can stop resolving while the playlist itself is perfectly healthy, and the failure is silent: the device accepts the recall, selects the Spotify input, stops whatever was playing, and never starts. Nothing reports an error — the scenario just goes quiet.
 
-**Re-saving the favorite fixes it.** Re-save it from a live source in the MusicCast app, then refresh the preset cache (tap the **Media Players** header in Settings). A slot that would not start at all recalls normally afterwards, usually within a second.
+**Re-saving the favorite fixes it.** Re-save it from a live source in the MusicCast app; the next scenario activation refreshes the preset cache, or tap the **Media Players** header in Settings to do it at once. A slot that would not start at all recalls normally afterwards, usually within a second.
 
 ⚠️ **Why the pointer stops resolving is not established.** The likeliest explanation is that the playlist it refers to was retired, replaced, or re-created, so the reference saved at the time no longer points at anything — that would also explain the playlist still playing when started from the Spotify app, since that starts the current one. But nothing in the API can confirm it: preset metadata carries no Spotify identity, so there is no stored reference to inspect, and re-saving repairs a changed reference and a corrupted entry equally well. Treat the cause as a working theory and the remedy as reliable.
 
@@ -632,7 +632,7 @@ MusicCast devices are Spotify Connect receivers — that is how Spotify content 
 
 Spotify content is therefore used exactly like every other source — saved as a favorite in the MusicCast app, then played by slot. Starting a chosen playlist from Home Assistant would mean transferring a Spotify Connect session to the player, which is a different mechanism from the preset playback this package is built on.
 
-To add new Spotify content, save it as a favorite in the MusicCast app and then refresh the preset cache (tap the **Media Players** header in Settings). It behaves like any other preset from that point on.
+To add new Spotify content, save it as a favorite in the MusicCast app. It appears in the preset list once the cache is rebuilt — at the next scenario activation, or immediately if you tap the **Media Players** header in Settings — and behaves like any other preset from that point on.
 
 </details>
 
@@ -682,7 +682,7 @@ Switching between scenarios is unaffected either way, because the outgoing scena
 <details>
 <summary><strong>Re-saving favorites on a device leaves the dashboard showing the old list</strong></summary>
 
-Presets are cached. If you add, remove or re-save favorites in the MusicCast app, the dashboard's preset list, the Now Playing highlight and manual preset taps keep reading the cached copy until you refresh it by tapping the **Media Players** header in Settings.
+Presets are cached. If you add, remove or re-save favorites in the MusicCast app, the dashboard's preset list, the Now Playing highlight and manual preset taps read the cached copy until it is rebuilt. Two things rebuild it: activating any scenario, which refreshes the cache for every player once playback has settled, and tapping the **Media Players** header in Settings, which does it immediately. So the old list can persist until the next scenario starts — tap the header if you want it sooner.
 
 Randomization is unaffected — it fetches the list live, so a randomized scenario plays the correct favorite while the dashboard may still show the old one.
 
@@ -772,7 +772,7 @@ This usually means the favorite has gone invalid — a stored Spotify reference 
 **Fix:**
 1. Try the scenario again — a stream can simply fail to start once
 2. If it fails again, play the favorite from the MusicCast app to confirm
-3. Re-save it from a live source in the app, then tap the **Media Players** header card in Settings so the cached preset list picks up the change
+3. Re-save it from a live source in the app. The next scenario activation refreshes the cached preset list; tap the **Media Players** header card in Settings to pick the change up straight away
 
 </details>
 
@@ -884,7 +884,7 @@ All files are plain text and human-readable, but are managed by the system and m
 | `sensor.musiccast_scenarios_labels` | sensor | Scenario metadata: names and icons (from `scenarios.json`) |
 | `sensor.musiccast_scenarios` | sensor | Scenario group config: master player and members (from CSV files) |
 | `sensor.musiccast_media_players` | sensor | Discovered player → IP mappings (from `media_players.csv`) |
-| `sensor.musiccast_media_player_presets` | sensor | Presets for all players (fetched on demand) |
+| `sensor.musiccast_media_player_presets` | sensor | Presets for all players (fetched on demand, and after each scenario activation) |
 | `group.musiccast_players` | group | All active (non-excluded) MusicCast players |
 | `sensor.musiccast_current_master` | sensor | The master player currently in charge — the active scenario's, or the live group's when no scenario is set. Empty when nothing is grouped |
 | `input_text.musiccast_last_scenario` | input_text | The scenario that was last active. Survives the scenario being cleared, which is what makes tap-to-restore possible |

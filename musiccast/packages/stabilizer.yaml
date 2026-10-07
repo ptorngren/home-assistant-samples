@@ -665,20 +665,50 @@ script:
                | rejectattr('state', 'in', ['unavailable', 'unknown'])
                | map(attribute='entity_id') | list }}
           capped: "{{ missing | select('in', capped_ids) | list }}"
+      - variables:
+          # The third outcome the allowed/capped split leaves nameless: missing, under the
+          # cap, and out of contact. It is never attempted, and being absent is not a
+          # failure — so it must not count as one anywhere below.
+          unreachable: "{{ missing | reject('in', capped_ids) | reject('in', allowed) | list }}"
       - if:
           - "{{ allowed | length == 0 }}"
         then:
+          - variables:
+              capped_note: "{{ (capped | join(', ') ~ ' hit the ' ~ max_attempts ~ '-attempt cap') if capped | length else '' }}"
+              contact_note: "{{ (unreachable | join(', ') ~ ' out of contact') if unreachable | length else '' }}"
+          - variables:
+              why: "{{ [capped_note, contact_note] | select | join('; ') }}"
           - action: system_log.write
             data:
-              message: "MusicCast: Rejoin skipped for {{ scenario }} — all missing {{ capped }} hit the {{ max_attempts }}-attempt cap"
+              message: "MusicCast: nothing to rejoin for {{ scenario }} — {{ why }}"
               level: warning
               logger: musiccast
-          # Auto path: cap exhausted means the members are genuinely still missing.
+          # Giving up on a player leaves a room silent, so it is reported the same way a
+          # failed retry is — a persistent notification rather than a log line nobody reads.
+          # Tapping the scenario is the way out: a manual call caps nobody, so the player
+          # gets a fresh attempt. Shares the notification_id with the retry failure below,
+          # since both say the same thing about the same players.
           - if:
-              - "{{ clear_on_fail | default(false) }}"
+              - "{{ not manual and capped | length > 0 }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: musiccast_rejoin_failed
+                  title: "MusicCast: couldn't rejoin"
+                  message: >-
+                    **{{ capped | map('state_attr', 'friendly_name') | list | join(', ') }}**
+                    could not be rejoined to **{{ scenario }}** after {{ max_attempts }}
+                    attempts and {{ 'is' if capped | length == 1 else 'are' }} no longer
+                    playing. Tap the scenario to try again.
+          # Out of contact is not a reason to clear, it is a reason to wait: the player was
+          # never attempted, so the scenario stays set and the comparison runs again when it
+          # answers — the same treatment the master gets above. A cap-exhausted member is a
+          # real failure, and the auto path still clears on that.
+          - if:
+              - "{{ clear_on_fail | default(false) and capped | length > 0 }}"
             then:
               - action: script.musiccast_clear_scenario
-          - stop: "All missing capped"
+          - stop: "Nothing rejoinable"
       - action: system_log.write
         data:
           message: "MusicCast: Rejoin {{ scenario }} — missing {{ missing }}, joining {{ allowed }}{{ ' (capped ' ~ capped ~ ')' if capped | length else '' }}"
@@ -777,12 +807,31 @@ script:
                     **{{ succeeded | map('state_attr', 'friendly_name') | list | join(', ') }}**
                     dropped out of **{{ scenario }}** and {{ 'was' if succeeded | length == 1 else 'were' }}
                     rejoined automatically.
+      # Re-run the missing test against the final group, then narrow it to the players that
+      # were reachable and are still absent. That set is what both the notice and the
+      # teardown key on: a player out of contact was never attempted, comes back on its
+      # own, and re-triggers the comparison when it does.
+      - variables:
+          final_missing: "{{ expected | reject('in', (gm_final + [master]) | unique | sort) | list }}"
+      - variables:
+          still_failed: "{{ final_missing | reject('in', unreachable) | list }}"
       - if:
-          - "{{ retry_failed | length > 0 }}"
+          - "{{ unreachable | length > 0 }}"
         then:
           - action: system_log.write
             data:
-              message: "MusicCast: Rejoin FAILED after retry for {{ retry_failed }} (scenario {{ scenario }})"
+              message: >-
+                MusicCast: {{ unreachable }} out of contact, so {{ scenario }} is left set —
+                clearing it would stop drop detection noticing them at all. This retries by
+                itself when they answer again.
+              level: warning
+              logger: musiccast
+      - if:
+          - "{{ still_failed | length > 0 }}"
+        then:
+          - action: system_log.write
+            data:
+              message: "MusicCast: {{ still_failed }} still missing from {{ scenario }} after the rejoin"
               level: warning
               logger: musiccast
           # A failure is reported as a persistent notification, not a popup. A popup only
@@ -800,15 +849,11 @@ script:
                   notification_id: musiccast_rejoin_failed
                   title: "MusicCast: couldn't rejoin"
                   message: >-
-                    **{{ retry_failed | map('state_attr', 'friendly_name') | list | join(', ') }}**
-                    could not be rejoined to **{{ scenario }}** and {{ 'is' if retry_failed | length == 1 else 'are' }}
+                    **{{ still_failed | map('state_attr', 'friendly_name') | list | join(', ') }}**
+                    could not be rejoined to **{{ scenario }}** and {{ 'is' if still_failed | length == 1 else 'are' }}
                     no longer playing. Tap the scenario to try again.
-      # Auto path: re-run the missing test against the final group; clear the
-      # scenario (as the detect branch always did) only if members remain missing.
-      - variables:
-          final_missing: "{{ expected | reject('in', (gm_final + [master]) | unique | sort) | list }}"
       - if:
-          - "{{ (clear_on_fail | default(false)) and final_missing | length > 0 }}"
+          - "{{ (clear_on_fail | default(false)) and still_failed | length > 0 }}"
         then:
           - action: script.musiccast_clear_scenario
   # Undo an automatic rejoin (called by the auto-recovery popup's Undo button):

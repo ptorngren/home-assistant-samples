@@ -88,16 +88,20 @@ decluttering_templates:
           {%- for mac, data in mac_locs_data.items() -%}
             {%- set ns_overlap.mac_loc_count = ns_overlap.mac_loc_count | combine({mac: data.locs | length}) -%}
           {%- endfor -%}
-          {# Pre-pass 1: collect unique locations with scores #}
-          {%- set ns_locs = namespace(list=[], seen=[]) -%}
-          {%- for fp in fingerprints_raw -%}
-            {%- set location_index = fp.loc -%}
-            {%- set location_name = locations_list[location_index] if location_index >= 0 and location_index < locations_list | length else (location_index | string) -%}
-            {%- if location_index >= 0 and location_index not in ns_locs.seen -%}
-              {%- set ns_locs.seen = ns_locs.seen + [location_index] -%}
+          {# Pre-pass 1: one entry per location in the location list, which defines the locations.
+             Fingerprints only supply content and score. A fingerprint whose index is outside the
+             list is not shown: that state only exists until the location-map repair re-keys or
+             drops it, and the stale-map notification is up meanwhile. #}
+          {%- set fp_locs = fingerprints_raw | map(attribute='loc') | list -%}
+          {%- set ns_locs = namespace(list=[], empty=[]) -%}
+          {%- for location_index in range(locations_list | length) -%}
+            {%- set location_name = locations_list[location_index] -%}
+            {%- if location_index in fp_locs -%}
               {%- set loc_data = scores.get(location_name, {}) -%}
               {%- set loc_score = loc_data.get('total_score', -1) | float -%}
               {%- set ns_locs.list = ns_locs.list + [{'index': location_index, 'name': location_name, 'score': loc_score}] -%}
+            {%- else -%}
+              {%- set ns_locs.empty = ns_locs.empty + [{'index': location_index, 'name': location_name}] -%}
             {%- endif -%}
           {%- endfor -%}
           {%- set sorted_locs = ns_locs.list | sort(attribute='score', reverse=true) -%}
@@ -318,6 +322,47 @@ decluttering_templates:
                   }
                 }},
               {%- endfor -%}
+          {%- endfor -%}
+          {# Locations without a fingerprint come last. The only gesture is hold → capture: the
+             header's tap and double-tap update or merge an existing fingerprint, and there is
+             none yet. #}
+          {%- for loc in ns_locs.empty -%}
+            {{
+              {
+                "type": "custom:button-card",
+                "layout": "vertical",
+                "show_icon": false,
+                "show_name": true,
+                "name": loc.name ~ " — no fingerprint, hold to capture",
+                "tap_action": {"action": "none"},
+                "double_tap_action": {"action": "none"},
+                "hold_action": {
+                  "action": "perform-action",
+                  "perform_action": "script.bt_capture_fingerprint",
+                  "data": {
+                    "location_index": loc.index,
+                    "browser_id": "[[[ return window.browser_mod?.browserID || ''; ]]]"
+                  }
+                },
+                "styles": {
+                  "card": [
+                    {"height": "24px"},
+                    {"padding": "8px"},
+                    {"border": "none"},
+                    {"box-shadow": "none"},
+                    {"background": color_location_header_bg},
+                    {"margin-top": "8px"},
+                    {"align-items": "start"}
+                  ],
+                  "name": [
+                    {"font-size": "12px"},
+                    {"font-weight": "bold"},
+                    {"color": "var(--primary-text-color)"},
+                    {"justify-self": "start"}
+                  ]
+                }
+              }
+            }},
           {%- endfor -%}
 
   scan_list_template:
@@ -1373,6 +1418,7 @@ views:
                - **Tap location heading** to update RSSI values for existing beacons
                - **Double-tap location heading** to merge (add new beacons + update RSSI)
                - **Hold location heading** to capture from scratch (replace entire fingerprint)
+               - A new location appears last, with no beacons; **hold its heading** to make the first capture
           5. Repeat for all locations
           6. Over time, revisit locations and refine fingerprints
 

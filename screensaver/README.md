@@ -348,7 +348,7 @@ Two Tasker profiles work together to implement charging-conditional activation:
 **Trigger:**
 - Event: Display → Display Off
 - Condition: State → Power → Wireless (charging state)
-- *Optional:* Condition: State → Net → WiFi Connected (restrict to home — see [Restricting Activation to Home WiFi](#restricting-activation-to-home-wifi-phones-that-also-charge-away) below)
+- *Optional:* Condition: State → Net → WiFi Connected (restrict to home — included in `docs/tasker-mobile.xml`; delete it if you don't want it, see [Restricting Activation to Home WiFi](#restricting-activation-to-home-wifi-phones-that-also-charge-away) below)
 
 **Entry Task:** Calls a master "Docked" task that orchestrates both screensaver launch and Bluetooth scanning asynchronously. The master task executes:
 1. **UI Task (Start FKB):** Standard priority → launches screensaver immediately
@@ -434,6 +434,50 @@ The fix is to add a **home-WiFi condition** to Profile 1 so it only ever activat
 
 **Testing gotcha:** a State profile only becomes *active* on a context **transition** to true. If you create or edit this profile while the phone is already docked on home WiFi, both states are already true, the profile stays inactive, and the exit will never fire — a test right then falsely fails. Undock and redock once after any context edit, then test.
 
+### Car Screen: a Clock While Charging in the Car (optional)
+
+With the home-WiFi gating, docking the phone in the car shows nothing. The Car Screen fills that gap: a separate, self-contained web page showing **time, date, and a one-line summary of today's weather** where you are, plus the home time in a small footer when you're in another time zone. It shows no home data.
+
+**Why a weather line on the phone:** most car systems can show a forecast, but only by taking over the car's display, which you want to keep on navigation. The phone shows it without giving up the map.
+
+**How it works:**
+- The page is `docs/car-screen.html`. Copy it to `<config>/www/car-screen/car-screen.html`; Home Assistant then serves it at `/local/car-screen/car-screen.html`.
+- `/local/` is served **without a login**, so the page holds no secrets, and it must be reached over your **remote URL** (Nabu Casa or your own domain), because the phone is on mobile data in the car.
+- The network is needed only to load it. After that, the clock runs offline. Weather comes straight from [Open-Meteo](https://open-meteo.com/) (free, no key), refreshed every 30 minutes; if it can't be fetched, the last forecast stays with its age shown. The clock never depends on it.
+- Date and time follow the phone's language; the page adds no wording of its own.
+- URL parameter `home=<time zone>` (an IANA name such as `Europe/Stockholm`) turns on the home-time footer, shown only when the phone's time zone differs.
+
+**Fully Kiosk:** turn on **Web Content Settings → Enable Geolocation Access** (off by default, needs **Fully Kiosk PLUS**). Without it the page never asks for the location and shows no weather line. The clock still works.
+
+**Tasker — profile "Car Screen"** (included in `docs/tasker-mobile.xml`):
+
+**Type:** State profile
+
+**Contexts:**
+- State → Power → **Wireless**
+- State → Net → **WiFi Connected**, your home SSID pattern, **Invert** ticked (not at home)
+- State → **Application** → your launcher (the app that draws the home screen). The export uses Nova Launcher; replace it with yours. If the launcher appears twice in the list, tick both.
+
+**Entry Task "Car Screen Open":**
+```
+1. Wait 20 seconds
+2. Stop  If %PACTIVE !~ *Car Screen*
+3. Browse URL: https://[YOUR_HA_EXTERNAL_HOST]/local/car-screen/car-screen.html?home=[YOUR_HOME_TIME_ZONE]&v=%TIMES
+   App: Fully Kiosk Browser
+```
+
+**Why each part:**
+- **Launcher context instead of Display Off:** the clock only opens when the home screen is in front, so it never covers an app you're using, such as Maps. The home screensaver waits for Display Off instead, but in the car that doesn't work: with **Android Auto** connected, the phone's screen goes black without counting as off, so Display Off never fires.
+- **Choosing per docking:** dock with the home screen showing to get the clock; dock with the screen black to get nothing. Pressing the power button after a black docking brings the clock up if the phone is unlocked.
+- **Wait and re-check:** at home, a brief WiFi drop while the phone sits on the home screen on a charger would make the "not at home" context true for a moment. Tasker doesn't stop a running entry task when its profile goes inactive, so the task waits, then stops unless a profile named *Car Screen…* is still active. In the car the profile stays active and the page opens 20 seconds after docking.
+- **`!~` and the asterisks:** `%PACTIVE` lists every active profile, so the check has to be "contains", which Tasker writes as a `~` match with `*` wildcards (`!~` = does not match). Tasker's "neq" compares the whole text and won't work.
+- **`&v=%TIMES`:** Home Assistant tells browsers to cache `/local/` files for 31 days. The changing value makes every docking fetch the current version of the page.
+
+**Behaviour to know:**
+- The check is the profile name: keep *Car Screen* in it if you rename the profile.
+- Charging wirelessly anywhere away from home WiFi (a hotel, a friend's house) shows the clock too.
+- After you leave the clock for the home screen while docked, it returns 20 seconds later unless you open another app.
+
 ### Fully Kiosk Configuration for Mobile
 
 **FKB Settings (OnePlus 13 as example):**
@@ -485,11 +529,14 @@ Two separate Tasker exports are provided for device-specific configurations:
   4. Choose `tasker-mobile.xml`
   5. Review all imported profiles and tasks
 - **Includes:**
-  - **"Charging" profile:** Detects wireless charging state (triggers BT scan and screensaver launch)
-  - **"Display Off => FKB" profile:** Display timeout handling and Fully Kiosk management
+  - **"Display Off => FKB + BT Scan" profile (Profile 1):** launches the screensaver and the BT scan when the display times out while wireless-charging on home WiFi, through the **"Docked"** task
+  - **"Charging" profile (Profile 2):** wireless-charging state; its exit runs "Charger Disconnected"
+  - **"Home WiFi Exit Handler" profile (Profile 3):** docked on home WiFi; its exit runs "Charger Disconnected"
+  - **"Car Screen" profile and "Car Screen Open" task:** the optional [Car Screen](#car-screen-a-clock-while-charging-in-the-car-optional); delete both if you don't want it
   - **"Charger Disconnected" task:** Explicit exit process management - stops BT scan, clears FKB, sends power-disconnect webhook to HA
   - **"BT Scan" task:** Performs Bluetooth scan of anchor devices, builds JSON payload, sends to HA webhook (unless interrupted by Task Stop when device removed from charger)
-- **Not included (optional, add manually):** the home-WiFi additions for phones that also charge away from home — the WiFi Connected gating context on the launch profile and the "Home WiFi Exit Handler" profile (Profile 3). Both are quick to add in Tasker's UI; see "Restricting Activation to Home WiFi" and "Profile 3" above.
+  - **"Start FKB" task:** launches Fully Kiosk
+- **Home-WiFi gating is included:** the WiFi Connected context on Profile 1, and Profile 3. If the phone never charges away from home, you can delete the WiFi context from Profile 1 and delete Profile 3; see "Restricting Activation to Home WiFi" and "Profile 3" above.
 - **Charger Location Detection Features (Multi-Device Support):**
   - Automatically detects which charger location the device is placed on via Bluetooth anchor triangulation
   - Sends `browser_id` parameter to HA for device-specific location storage
@@ -497,6 +544,10 @@ Two separate Tasker exports are provided for device-specific configurations:
   - Automatically clears location when device removed from charger
 - **Configuration required before importing:**
   - Replace `[YOUR_HA_IP]` with your actual Home Assistant IP address in all HTTP POST actions
+  - Replace `[YOUR_DEVICE_ID]` (in both JavaScriptlet actions) with the phone's device ID: its Browser ID without the Fully Kiosk suffix (e.g. `my_phone`, not `my_phone_fkb`)
+  - Replace `[YOUR_HOME_SSID]` (three WiFi contexts) with your home SSID or pattern, e.g. `HomeNet-*`
+  - Replace `[YOUR_REMOTE_ADMIN_PASSWORD]` with your Fully Kiosk Remote Admin password
+  - Car Screen only: replace `[YOUR_HA_EXTERNAL_HOST]` with your remote host name and `[YOUR_HOME_TIME_ZONE]` with your IANA time zone (e.g. `Europe/Stockholm`), and the launcher in the "Car Screen" profile with yours
   - Verify your Home Assistant instance is accessible from the phone on the local network
   - FKB Remote Admin password must match the password set in Fully Kiosk settings
 - **Exit process (undocking):**
@@ -908,7 +959,7 @@ Landscape / wide screens are supported (see **"Desktop / Landscape Display"**). 
 
 If Android's Screen saver (Daydream) is set to start **while charging**, it silently breaks the screensaver launch on that device: at the display timeout the dream starts *instead of* the screen turning off, so Tasker's **Display Off event never fires** and the launch profile never runs. Docking the phone (especially with the screen already off) then shows the system clock/photos screen saver instead of the dashboard.
 
-**Turn the Screen saver feature off entirely** (the master toggle at the top of its settings page). Note that some skins — OxygenOS on OnePlus among them — offer no "Never" choice under "When to start", only charging variants, so the master toggle is the only safe setting. If you want a clock while charging *away* from home (e.g. in a car), don't use auto-start — have a Tasker profile enable the feature only there: contexts *Power → Wireless* + *WiFi Connected [your home SSID] inverted*, entry task setting the secure setting `screensaver_enabled` to 1 (exit task back to 0) via **Custom Setting** — requires a one-time ADB grant of `WRITE_SECURE_SETTINGS` to Tasker. (On ROMs that allow manually started dreams, the built-in **Display → Daydream** action is a simpler no-ADB alternative.) The home flow stays untouched either way.
+**Turn the Screen saver feature off entirely** (the master toggle at the top of its settings page). Note that some skins — OxygenOS on OnePlus among them — offer no "Never" choice under "When to start", only charging variants, so the master toggle is the only safe setting. If you want a clock while charging *away* from home (e.g. in a car), don't use auto-start — have a Tasker profile enable the feature only there: contexts *Power → Wireless* + *WiFi Connected [your home SSID] inverted*, entry task setting the secure setting `screensaver_enabled` to 1 (exit task back to 0) via **Custom Setting** — requires a one-time ADB grant of `WRITE_SECURE_SETTINGS` to Tasker. (On ROMs that allow manually started dreams, the built-in **Display → Daydream** action is a simpler no-ADB alternative.) The home flow stays untouched either way. The [Car Screen](#car-screen-a-clock-while-charging-in-the-car-optional) is the alternative that needs neither.
 
 Related: the Always-On Display is a conflict-free alternative for away-charging (at home, Tasker intercepts the timeout before AOD matters) — but note the AOD is portrait-only and never rotates.
 

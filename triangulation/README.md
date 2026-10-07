@@ -895,7 +895,7 @@ For each location where you want to detect presence:
 1. Place your phone at the location (let it sit 5+ seconds to stabilize signals)
 2. Wait for auto-trigger (if using Tasker power trigger) or trigger the scan manually
 3. In the **Fingerprint Details** section of the dashboard
-4. Locate the location heading for the current location (e.g., "OFFICE", "KITCHEN", etc.)
+4. Locate the location heading for the current location (e.g., "OFFICE", "KITCHEN", etc.). Every location in your location list has a heading; a location that has no fingerprint yet appears last as `NAME — no fingerprint, hold to capture`, and **hold** is the only gesture there — use it for the first capture.
 5. Interact with the location heading:
    - **Tap** — Merge existing: updates existing fingerprint beacons from the current scan (no new beacons added); also records the scan to statistics. In mean mode: running mean. In min/max mode: expands bounds.
    - **Double-tap** — Merge all: same as Tap (including statistics update), but also adds new beacons found in the scan that aren't yet in the fingerprint.
@@ -907,7 +907,7 @@ Repeat for all configured locations.
 
 ### Step 3: Verify Detection via Fingerprint Details
 
-The **Fingerprint Details** section is your main verification tool. Locations are sorted by match score — the best-matching location appears at the top. Each location heading shows a **live match score** (e.g., `OFFICE 5/9 • 58%`):
+The **Fingerprint Details** section is your main verification tool. Its headings come from the location list, not from the stored fingerprints. Locations are sorted by match score — the best-matching location appears at the top — and locations without a fingerprint come last. A fingerprint whose location is no longer in the list is not shown; the *location map changed* notification and its repair take care of it. Each location heading shows a **live match score** (e.g., `OFFICE 5/9 • 58%`):
 - **Matched count** (5/9): How many beacons from the fingerprint are in the latest scan
 - **Confidence %** (58%): Quality of the match (higher = more reliable detection)
 
@@ -1203,6 +1203,7 @@ If any step fails, check the Troubleshooting section below.
 | Match scores always low (<30%) even after capture | Beacon volatility or poor signal quality | Review "All Active Beacons" table; globally ignore volatile beacons; recapture when signals are stable |
 | Different locations score similarly (ambiguous) | Overlapping beacons with similar RSSI across rooms | Use Review tab "Location Cross-Reference Matrix" to identify overlapping pairs; locally ignore overlapping beacons |
 | Location detection works some days, fails other days | Environmental Bluetooth interference (neighbors, devices turning on/off) | Increase RSSI Match Tolerance; ignore temporarily unstable beacons; retest at different times of day |
+| Right after editing *Location Names*, pressing *Restore Locations* or changing the data files: a location shows empty or under its old name, a new name is missing, or a *location map changed* notification appears | Cards and notifications reflect the last scan, scored against the list as it stood then | Dock the phone to take a fresh scan. If the Repair tile is still showing afterwards, the mismatch is real |
 
 ---
 

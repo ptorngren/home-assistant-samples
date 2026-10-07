@@ -581,6 +581,17 @@ script:
         target:
           entity_id: input_boolean.musiccast_scenario_updating
 
+      # 10. The dashboard's preset lists and musiccast_play_preset_by_index read
+      # sensor.musiccast_media_player_presets, and its scan_interval is a day (see POLLING
+      # in media_players.yaml), so a favorite re-saved in the MusicCast app stays stale
+      # there until a network scan. An activation is the one thing that happens often and
+      # has just proved the devices are awake, so it is where the cache is worth rebuilding.
+      # Last in the script, after both guards are down and playback has settled, so the
+      # second or two it takes is off the critical path.
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.musiccast_media_player_presets
+
   # Toggle scenario on/off
   # ----------------------
   musiccast_scenario_toggle:
