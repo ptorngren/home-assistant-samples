@@ -116,15 +116,7 @@ command_line:
   - sensor:
       name: "MusicCast Excluded Players"
       unique_id: musiccast_excluded_players
-      command: |
-        python3 -c "
-        import json
-        try:
-            lines = [l.strip() for l in open('/config/packages/musiccast/data/media_players.exclude') if l.strip() and not l.startswith('#')]
-        except FileNotFoundError:
-            lines = []
-        print(json.dumps({'excluded': lines}))
-        "
+      command: 'python3 /config/packages/musiccast/excluded_players_reader.py'
       json_attributes:
         - excluded
       value_template: "{{ value_json.excluded | length }}"
@@ -135,18 +127,7 @@ command_line:
   - sensor:
       name: "MusicCast Scenarios"
       unique_id: musiccast_scenarios
-      command: |
-        python3 -c "
-        import glob, json, os
-        result = {}
-        for f in sorted(glob.glob('/config/packages/musiccast/data/scenario_*.csv')):
-            name = os.path.basename(f).replace('scenario_', '').replace('.csv', '')
-            lines = [l.strip() for l in open(f) if l.strip() and ':' in l]
-            if lines:
-                players = [l.split(':')[0] for l in lines]
-                result[name] = {'master': players[0], 'players': players}
-        print(json.dumps({'scenarios': result}))
-        "
+      command: 'python3 /config/packages/musiccast/scenarios_reader.py'
       json_attributes:
         - scenarios
       value_template: "{{ value_json.scenarios | length }}"
@@ -157,13 +138,7 @@ command_line:
   - sensor:
       name: "MusicCast Scenarios Labels"
       unique_id: musiccast_scenarios_labels
-      command: |
-        python3 -c "
-        import json, os
-        path = '/config/packages/musiccast/data/scenarios.json'
-        data = json.load(open(path)) if os.path.exists(path) else {'scenarios': {}}
-        print(json.dumps(data))
-        "
+      command: 'python3 /config/packages/musiccast/scenarios_labels_reader.py'
       json_attributes:
         - scenarios
       value_template: "{{ value_json.scenarios | length }}"

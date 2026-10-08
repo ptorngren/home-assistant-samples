@@ -42,9 +42,9 @@ shell_command:
 # is reorganised or a script moves to another file. A per-script block travels with its
 # script. Any change to a code belongs in all of them, and in the dashboard — see below.
 #
-# Two places keep a bare literal, each marked where it sits: the randomization-locks
-# sensor, whose Python runs inside a shell string, and the field descriptions on
-# musiccast_set_favorite_state, which are prose.
+# Two places outside these blocks name a code too: randomization_locks_reader.py (the
+# randomization-locks sensor), which defines CODE_LOCKED itself, and the field descriptions
+# on musiccast_set_favorite_state, which are prose.
 #
 # ⚠️  KEEP IN SYNC with dashboards/musiccast.yaml, which defines the same codes as its own
 #     anchors at the top of that file. A YAML anchor cannot be referenced from another
@@ -1459,25 +1459,7 @@ command_line:
   - sensor:
       name: "MusicCast Randomization Locks"
       unique_id: musiccast_randomization_locks
-      command: |
-        python3 -c "
-        import glob, json, os
-        result = {}
-        for f in sorted(glob.glob('/config/packages/musiccast/data/presets_*.csv')):
-            scenario = os.path.basename(f).replace('presets_', '').replace('.csv', '')
-            lock_num = 0
-            try:
-                for line in open(f):
-                    parts = line.strip().split(',')
-                    if len(parts) == 2 and parts[1].strip() == 'L':   # code_locked — see the header; a shell string takes no variable
-                        lock_num = int(parts[0].strip())
-                        break
-            except Exception:
-                pass
-            if lock_num:
-                result[scenario] = lock_num
-        print(json.dumps({'locks': result}))
-        "
+      command: 'python3 /config/packages/musiccast/randomization_locks_reader.py'
       json_attributes:
         - locks
       value_template: "{{ value_json.locks | length }}"
