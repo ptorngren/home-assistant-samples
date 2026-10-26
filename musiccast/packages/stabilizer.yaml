@@ -25,7 +25,7 @@
 #   - musiccast_set_source and musiccast_clear_scenario are called from the recovery
 #     paths but are the single writers of the playing-source state.
 #
-# What is here: the two detectors (playback stopped, silent members), the five
+# What is here: the detectors (playback stopped, silent members, offline players), the five
 # recovery scripts, the Stability settings, and the diagnostics
 # (musiccast_log_transport_state, musiccast_release_stuck_guard).
 # ================================================================
@@ -129,6 +129,16 @@ input_number:
     max: 60
     step: 5
     unit_of_measurement: s
+  # How long a player of the active scenario must be out of contact before it is reported.
+  # The notice answers "why is this room silent?" while someone is listening; an offline
+  # player does not come back by itself, so there is nothing to wait out. 0 = never report.
+  musiccast_offline_timeout:
+    name: "MusicCast Report Offline Player After"
+    min: 0
+    max: 60
+    step: 5
+    unit_of_measurement: s
+    icon: mdi:lan-disconnect
 
 input_boolean:
   # Master enable for dropout auto-recovery. Off = the "expected member missing"
@@ -501,6 +511,106 @@ automation:
       # playing — cannot re-enter it. The attempt cap lives in the script, so a master
       # that will not come back is given up on there rather than here.
       - action: script.musiccast_restart_master_stream
+
+  # Report players the active scenario cannot reach
+  # -----------------------------------------------
+  # A player Home Assistant cannot see at all — unplugged, or off the network — is skipped
+  # by every recovery path: there is nothing to rejoin onto or resume, and the scenario is
+  # kept so the player is picked up again when it answers. That leaves a silent room and
+  # only a log line, so this raises a notification, and withdraws it once every player of
+  # the scenario is back or the scenario has ended.
+  #
+  # Information, not recovery: it ignores Auto-recover and changes nothing on the players.
+  # Every run rewrites the one notice, so it always names the players offline right now.
+  - id: musiccast_detect_offline_members
+    alias: "MusicCast: Detect offline players"
+    description: "Report scenario players Home Assistant cannot reach, and withdraw the report when they are back."
+    mode: queued
+    max: 10
+    variables:
+      blank_states: ['', 'None', 'unknown', 'unavailable']
+    triggers:
+      # A player out of contact for longer than a blip.
+      # NOTE: input_number states are float strings ("60.0") — float before int, or
+      # the int filter silently falls back to the default.
+      - trigger: state
+        entity_id: !include data/media_players.include
+        to: 'unavailable'
+        for: "{{ states('input_number.musiccast_offline_timeout') | float(5) | int }}"
+      # A player answering again, which may let the notice go.
+      - trigger: state
+        entity_id: !include data/media_players.include
+        from: 'unavailable'
+      # A scenario starting or ending. A player already offline when the scenario starts
+      # changes no state of its own, so the player triggers above never see it.
+      - trigger: state
+        entity_id: input_text.musiccast_active_scenario
+    actions:
+      - variables:
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          waited: "{{ states('input_number.musiccast_offline_timeout') | float(5) | int }}"
+      # 0 switches the report off. A notice already showing is withdrawn too, since nothing
+      # would ever clear it otherwise.
+      - if:
+          - "{{ waited == 0 }}"
+        then:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: musiccast_player_offline
+          - stop: "Offline report switched off"
+      - variables:
+          sc: >-
+            {{ (state_attr('sensor.musiccast_scenarios', 'scenarios') or {}).get(scenario, {})
+               if scenario not in blank_states else {} }}
+          # The scenario's display name, so the message reads the way the dashboard does.
+          label: >-
+            {{ (state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {})
+               .get(scenario, {}).get('name', scenario) }}
+      - variables:
+          master: "{{ sc.get('master', '') }}"
+          # Out of contact for at least the wait. last_changed is the moment a player went
+          # unavailable, so one that was already offline when the scenario started is
+          # reported at once rather than after a second wait.
+          offline: >-
+            {{ expand((sc.get('players', []) + ([sc.get('master')] if sc.get('master') else [])) | unique | list)
+               | selectattr('state', 'eq', 'unavailable')
+               | selectattr('last_changed', 'le', now() - timedelta(seconds=waited))
+               | map(attribute='entity_id') | list }}
+      - if:
+          - "{{ offline | length == 0 }}"
+        then:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: musiccast_player_offline
+          - stop: "No scenario player offline"
+      - variables:
+          master_name: "{{ state_attr(master, 'friendly_name') or master }}"
+          member_names: >-
+            {%- set ns = namespace(n=[]) -%}
+            {%- for p in offline if p != master -%}
+              {%- set ns.n = ns.n + [state_attr(p, 'friendly_name') or p] -%}
+            {%- endfor -%}
+            {{ ns.n }}
+      - action: persistent_notification.create
+        data:
+          notification_id: musiccast_player_offline
+          title: "MusicCast: {{ 'player' if offline | length == 1 else 'players' }} offline"
+          message: >-
+            {% if master in offline -%}
+            **{{ master_name }}**, the master of **{{ label }}**, is out of contact, so the
+            whole scenario is silent.
+            {% endif -%}
+            {% if member_names | length > 0 -%}
+            **{{ member_names | join(', ') }}** {{ 'is' if member_names | length == 1 else 'are' }}
+            out of contact, so **{{ label }}** plays without {{ 'it' if member_names | length == 1 else 'them' }}.
+            {% endif -%}
+            Check power and network. A player that answers again rejoins by itself, and this
+            notice then clears.
+      - action: system_log.write
+        data:
+          message: "MusicCast: {{ scenario }} has players out of contact for {{ waited }} s or more: {{ offline | join(', ') }}"
+          level: warning
+          logger: musiccast
 
   # Diagnostic: log every transport-state change on a MusicCast player
   # -------------------------------------------------------------------
@@ -1316,6 +1426,7 @@ script:
             # as a failed one, and far short of the 180 s above: this decides when to speak,
             # not when a flag is safe to clear.
             input_number.musiccast_activation_timeout: 60
+            input_number.musiccast_offline_timeout: 5
             # 0 = no cap. A ceiling is a property of one house's speakers and neighbours,
             # so the package ships without one rather than guessing a percentage.
             input_number.musiccast_max_volume: 0

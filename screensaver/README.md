@@ -194,10 +194,11 @@ Contains sensors and automations specific to your setup that you will adapt:
 - **Weather sensor** — Reads your weather entity and maps conditions to local language (currently: Swedish translations)
 - **Humidity & Wind sensors** — Read from local weather stations
 - **Tap action scripts** — Define what happens when you tap/double-tap/hold the screensaver:
-  - Single tap: Randomize music in the detected scenario
-  - Double tap: Toggle scenario (on/off)
+  - Single tap: Start, stop or switch to the detected scenario
+  - Double tap: Re-randomize the scenario that is playing, wherever the device is docked
   - Hold: Show volume control popup
 - **Battery management** — Keeps kitchen tablet battery between 20-80% (currently: hardcoded for `koksplatta`)
+- **Location automations** — React when the phone is docked at a known location, for example by starting music in that room or opening a web page on the phone
 
 **You MUST adapt this file for your setup:**
 1. **Temperature sensors:** Replace entity IDs to match your local sensors
@@ -205,6 +206,7 @@ Contains sensors and automations specific to your setup that you will adapt:
 3. **Humidity & wind sensors:** Update to your local weather station entities
 4. **Tap actions:** Modify scenario names, time thresholds, and device mappings to match your setup — **or remove them; they require two other packages, see below**
 5. **Battery automation:** Customize or remove if not using kitchen tablet
+6. **Location automations:** Adapt the location names and the phone's entity to your setup, or remove them
 
 ⚠️ **The shipped tap actions depend on the MusicCast and Triangulation packages.** They are the
 worked example from one real house, not a self-contained feature:
@@ -375,8 +377,13 @@ By using asynchronous execution, the screensaver appears the moment the phone to
 2. Go Home
 3. HTTP Request: http://localhost:2323/?cmd=exitApp&password=YOUR_PASSWORD
    (Continue Task After Error: ON — fails silently if Fully Kiosk isn't running)
-4. Send the phone_charger_disconnect webhook (clears the stored charger location in HA)
+4. Send the phone_charger_disconnect webhook to the local URL (clears the stored charger location in HA)
+   (Timeout: 5 seconds, Continue Task After Error: ON)
+5. If %err is set: Wait 5 seconds, then send the same webhook to the remote URL
+   (Continue Task After Error: OFF — a second failure shows Tasker's error notification)
 ```
+
+**Why local first, then remote:** at home the first request reaches HA directly, without depending on the remote-access relay. Away from home, or when Profile 3 below fires because home WiFi has just dropped, the local URL is unreachable; the retry then goes out over the remote host once mobile data is up.
 
 **Purpose:** When the phone is removed from the wireless charger, the exit task cleanly shuts down Fully Kiosk and clears the HA-side charger location. As a consequence, the home screen or lock screen automatically appears. Keep this task **named** — Profile 3 below reuses it.
 
@@ -547,7 +554,8 @@ Two separate Tasker exports are provided for device-specific configurations:
   - Replace `[YOUR_DEVICE_ID]` (in both JavaScriptlet actions) with the phone's device ID: its Browser ID without the Fully Kiosk suffix (e.g. `my_phone`, not `my_phone_fkb`)
   - Replace `[YOUR_HOME_SSID]` (three WiFi contexts) with your home SSID or pattern, e.g. `HomeNet-*`
   - Replace `[YOUR_REMOTE_ADMIN_PASSWORD]` with your Fully Kiosk Remote Admin password
-  - Car Screen only: replace `[YOUR_HA_EXTERNAL_HOST]` with your remote host name and `[YOUR_HOME_TIME_ZONE]` with your IANA time zone (e.g. `Europe/Stockholm`), and the launcher in the "Car Screen" profile with yours
+  - Replace `[YOUR_HA_EXTERNAL_HOST]` (the disconnect-webhook retry and the Car Screen URL) with your remote host name
+  - Car Screen only: replace `[YOUR_HOME_TIME_ZONE]` with your IANA time zone (e.g. `Europe/Stockholm`), and the launcher in the "Car Screen" profile with yours
   - Verify your Home Assistant instance is accessible from the phone on the local network
   - FKB Remote Admin password must match the password set in Fully Kiosk settings
 - **Exit process (undocking):**
@@ -758,7 +766,7 @@ The switch is driven by a CSS `@media (min-aspect-ratio: …)` query, so it refl
 1. Open the kiosk URL in any browser: `https://your-ha-url/dashboard-screensaver/home?kiosk`
 2. Press **F11** for full-screen. Combined with `panel: true` and `?kiosk`, you get an edge-to-edge display with no browser or HA chrome.
 
-Device-specific fields degrade gracefully on a PC: the **alarm**, **charger location** and **battery** fields simply stay blank when there's no Companion App / charger / battery sensor for that browser — no errors. (Tap/double-tap/hold still fire the configured scripts, but with no charger location they generally do nothing on a desktop.)
+Device-specific fields degrade gracefully on a PC: the **alarm**, **charger location** and **battery** fields simply stay blank when there's no Companion App / charger / battery sensor for that browser — no errors. (Tap/double-tap/hold still fire the configured scripts. With no charger location, tap and hold generally do nothing on a desktop; double-tap still re-randomizes whatever scenario is playing.)
 
 **Tuning the breakpoint**
 

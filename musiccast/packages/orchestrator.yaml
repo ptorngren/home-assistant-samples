@@ -1473,6 +1473,32 @@ script:
         target:
           entity_id: input_boolean.musiccast_scenario_updating
 
+  # Unlink and power off every reachable player, and clear the active scenario
+  # ----------------------------------------------------
+  # All Off plus an unlink: every player ends alone and in standby. The guard keeps
+  # the unlinks from reading as dropouts, which auto-recover would otherwise rejoin.
+  # Players are unlinked while still powered on, then switched off. Unreachable players
+  # are skipped by both steps and keep whatever group they last reported.
+  musiccast_all_off_unlinked:
+    alias: "MusicCast: All Off Unlinked"
+    mode: restart
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
+      - action: script.musiccast_clear_scenario
+
+      - action: script.musiccast_unlink_all
+        continue_on_error: true
+
+      - action: script.musiccast_power_off_all
+        continue_on_error: true
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.musiccast_scenario_updating
+
   # Toggle link for single player (Dynamic Master)
   # --------------------------------------------
   musiccast_toggle_link:

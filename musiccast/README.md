@@ -74,6 +74,7 @@ The **Recovery** labels drop the word *recovery* because the card supplies it: *
 - **Wait at most** — a ceiling on the waits that watch for devices to confirm a group or power change, not a delay. Operations return as soon as the devices report, and only spend this when one is slow or gone. It applies per wait, so a script with two waits can spend it twice in the worst case.
 - **Drop scenario lock after** — a safety net rather than a timing parameter. While the package is rebuilding a group it raises a lock that stands down drop detection, the volume sync and the caption check; if the script holding it dies part-way the lock would otherwise stay up silently and the package would stop noticing faults. This releases it and logs a warning. It must exceed the longest scenario rebuild your house performs — raise it if it ever fires during a real activation.
 - **Report failure after** — how long a scenario may be starting, or shutting down, before the package reports that it has failed. A device refusing a group call stops the activation where it stands, and everything that would otherwise report a problem runs later in the same script, so the failure is silent by construction: powered-on players, no music, and nothing said. This watches from outside the scripts and raises a notification naming the scenario. It only reports — clearing the lock is the setting above — so it is much the shorter of the two, and it must still outlast a legitimate rebuild.
+- **Report offline player after** — how long a player of the playing scenario may be out of Home Assistant's reach (unplugged, or off the network) before a notification names it. It answers the first question in a silent room — "why is there no sound?" — since an offline player does not come back by itself and nothing can rejoin it. The player rejoins by itself once its power or network is fixed, and the notification then clears. It only reports, so it applies with Auto-recover off too. 0 = never report.
 - **Debug logging** — diagnostic logging, off in normal use. Worth turning on when investigating why a scenario misbehaved: auto-recovery heals some faults within seconds, so the only trace of an incident can otherwise be the single line saying it was fixed.
 
 and two more that are deliberately **not** recovery settings:
@@ -508,7 +509,7 @@ The Players view sorts alphabetically but not locale-aware. Swedish characters �
 
 Long-pressing a player tile in the Players view unlinks it and powers it off, and ends the scenario. That is deliberate on both counts: the package raises its guard for the duration, so the unlink is *not* mistaken for a device dropping out and auto-recovery leaves it alone, and it then clears the scenario itself. Without the clear, the scenario would still list the player it no longer has, and the next group event would rejoin it.
 
-Only the player you held is powered off. Hold a member and the other rooms play on; hold the **master** and they stay powered on but fall silent, having lost the source they were following — to switch everything off, tap the Scenarios header in Now Playing, or toggle the scenario off.
+Only the player you held is powered off. Hold a member and the other rooms play on; hold the **master** and they stay powered on but fall silent, having lost the source they were following — to switch everything off, tap the Scenarios header in Now Playing (hold it to unlink them as well), or toggle the scenario off.
 
 For scenario management, use single-tap to link/unlink players while keeping the scenario active; reserve long-press for when you intentionally want to remove a player from playback entirely.
 
@@ -718,12 +719,21 @@ A trailing space in the device name in the MusicCast app causes the HA integrati
 
 The scenario's master player could not be reached, so nothing was started. The message names the player and the state Home Assistant sees it in (`unavailable` or `unknown`). A master must be reachable to host the group at all, so the activation stops rather than failing partway through.
 
-Members are treated differently: an unreachable *member* is skipped with a warning in the log and the scenario starts without it.
+Members are treated differently: an unreachable *member* is skipped with a warning in the log and the scenario starts without it — see *"player offline"* below.
 
 **Fix:**
 1. Check the player is powered and on the network — try it in the MusicCast app
 2. If the app reaches it but HA does not, reload the MusicCast integration
 3. If its IP has changed, re-run the network scan (Discovery view)
+
+</details>
+
+<details>
+<summary><strong>Notification: "MusicCast: player offline"</strong></summary>
+
+A player of the playing scenario has been out of contact for **Report offline player after** or longer, so its room is silent. Nothing can rejoin a player Home Assistant cannot reach; the scenario keeps playing without it. If the named player is the master, the whole scenario is silent.
+
+**Fix:** check the player's power and network. When it answers again it rejoins by itself and the notification clears — no tap needed. If the MusicCast app reaches it but Home Assistant does not, reload the MusicCast integration.
 
 </details>
 
@@ -895,6 +905,7 @@ All files are plain text and human-readable, but are managed by the system and m
 | `input_number.musiccast_activation_settle` | input_number | "Trust players after" — how long after playback starts before a player's own reports are believed again |
 | `input_number.musiccast_scenario_guard_timeout` | input_number | "Drop scenario lock after" — how long `input_boolean.musiccast_scenario_updating` may stay raised before it is cleared automatically and a warning logged. A safety net for a script that stopped part-way, not a timing parameter: it must exceed the longest scenario rebuild your house performs, so raise it if it ever fires during a real activation |
 | `input_number.musiccast_activation_timeout` | input_number | "Report failure after" — how long an activation or teardown may run before it is reported as failed. Reports only; the lock is cleared by the setting above, which is why this one is much shorter |
+| `input_number.musiccast_offline_timeout` | input_number | "Report offline player after" — how long a player of the active scenario may be out of contact before a notification names it (0 = never). Reports only |
 | `input_text.musiccast_activation_target` | input_text | The scenario an activation is trying to start, written before any device is touched. The only record of the target while an activation is in flight, and what lets a failure name the scenario rather than a flag |
 | `input_text.musiccast_recovery_attempts` | input_text | Per-player count of consecutive failed recoveries, as JSON. Cleared when a player recovers or a scenario is activated |
 

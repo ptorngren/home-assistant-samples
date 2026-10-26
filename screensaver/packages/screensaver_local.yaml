@@ -107,12 +107,61 @@ template:
              [states('sensor.relax_vindmatare_wind_direction')] | default('') }}
 
 # ------------------------------------------------------------------
+# REST SENSORS
+# ------------------------------------------------------------------
+
+rest:
+  # On while Cantabile Performer's web server on the studio laptop answers;
+  # unavailable when it does not. The address is the remote's page from
+  # input_text.screensaver_musikrum_studio_url without its #fragment. Checked on
+  # demand by the Musikrum automation while the phone is docked there, so the
+  # regular poll is only daily.
+  - resource_template: "{{ states('input_text.screensaver_musikrum_studio_url').split('#')[0] }}"
+    timeout: 3
+    scan_interval: 86400
+    binary_sensor:
+      - name: "Cantabile körs"
+        unique_id: screensaver_cantabile_kors
+        value_template: "{{ true }}"
+
+# ------------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------------
+
+input_text:
+  # No initial values below, so a value set from the UI survives restarts.
+
+  # Cantabile remote opened in the phone's Fully when it is put on the Musikrum
+  # charger; also the address checked to see whether Cantabile is running.
+  # The host must resolve from Home Assistant, so use the full name
+  # (e.g. laptop.localdomain). Empty: nothing opens.
+  screensaver_musikrum_studio_url:
+    name: "Screensaver Musikrum: Studio URL"
+    max: 255
+    icon: mdi:web
+
+# ------------------------------------------------------------------
+# REST COMMANDS
+# ------------------------------------------------------------------
+
+rest_command:
+  # Makes Fully on the phone load its own Start URL (the screensaver), through
+  # Fully's Remote Admin at the phone's current Wi-Fi address. Requires Remote
+  # Admin from Local Network in Fully, and answers only while Fully is running.
+  # The caller passes the Remote Admin password as `password`.
+  screensaver_fully_load_start_url:
+    url: >-
+      http://{{ states('sensor.peers_mobil_wi_fi_ip_address') }}:2323/?cmd=loadStartURL&type=json&password={{ password | urlencode }}
+    timeout: 5
+
+# ------------------------------------------------------------------
 # SCRIPTS
 # ------------------------------------------------------------------
 
 # Screensaver tap action scripts for the dashboard
 # screensaver_resolve_scenario: Shared logic for resolving browser_id to target scenario (location + time-based)
-# screensaver_tap/double_tap/hold: Tap action handlers that call the shared resolver and execute specific actions
+# screensaver_tap/hold: Tap action handlers that call the shared resolver and execute specific actions
+# screensaver_double_tap: Re-randomizes the active scenario; needs no resolver
 script:
   screensaver_resolve_scenario:
     alias: "Screensaver: Resolve scenario"
@@ -227,41 +276,16 @@ script:
 
   screensaver_double_tap:
     alias: "Screensaver: Handle double tap"
-    description: "Randomize scenario via browser_id and location IF a scenario is active"
+    description: "Re-randomize the active scenario, whichever device or location the tap comes from"
+    # Re-randomizing only changes what an already-playing scenario plays - it never starts
+    # music - so it acts on whatever is active, without resolving this device's own scenario.
     sequence:
-      - action: script.screensaver_resolve_scenario
+      - condition: template
+        value_template: "{{ states('input_text.musiccast_active_scenario') not in ['', 'None', 'unknown', 'unavailable'] }}"
+      - action: script.musiccast_scenario_mixer
         data:
-          browser_id: "{{ browser_id }}"
-        response_variable: resolved
-      - variables:
-          blank_states: ['', 'None', 'unknown', 'unavailable']
-      - choose:
-          # This device's own scenario is the one playing: re-randomize it.
-          - conditions:
-              - condition: template
-                value_template: "{{ resolved.target_scenario != 'unknown' }}"
-              - condition: template
-                value_template: "{{ states('input_text.musiccast_active_scenario') == resolved.target_scenario }}"
-            sequence:
-              - action: script.musiccast_scenario_mixer
-                data:
-                  scenario: "{{ resolved.target_scenario }}"
-                  force_randomize: true
-
-          # Nothing resolved, so which scenario belongs to this device cannot be checked.
-          # Re-randomizing only changes what an already-playing scenario plays — it never
-          # starts music — so it stays available and acts on whatever is active.
-          - conditions:
-              - condition: template
-                value_template: "{{ resolved.target_scenario == 'unknown' }}"
-              - condition: template
-                value_template: "{{ states('input_text.musiccast_active_scenario') not in blank_states }}"
-            sequence:
-              - action: script.musiccast_scenario_mixer
-                data:
-                  scenario: "{{ states('input_text.musiccast_active_scenario') }}"
-                  force_randomize: true
-        default: []
+          scenario: "{{ states('input_text.musiccast_active_scenario') }}"
+          force_randomize: true
 
   screensaver_hold:
     alias: "Screensaver: Handle hold"
@@ -406,3 +430,70 @@ automation:
         data:
           scenario: garage
     mode: single
+
+  # Show the Cantabile Performer web remote on the phone when it is put on the
+  # Musikrum charger at the keyboards. Cantabile runs on the studio laptop; its
+  # built-in web server answers on port 35007, and UniFi DNS resolves the laptop's
+  # name. The remote's page comes from input_text.screensaver_musikrum_studio_url.
+  # The phone's Fully is not in HA's Fully Kiosk
+  # integration, so the page is opened through a Companion app command that hands
+  # the URL to Fully. While the phone stays on the charger, binary_sensor.cantabile_kors
+  # is rechecked every 15 s: when Cantabile starts answering the remote opens, and
+  # when it stops (Cantabile closed, laptop off) Fully goes back to its own Start
+  # URL, the screensaver, through rest_command.screensaver_fully_load_start_url.
+  - alias: 'Screensaver: Musikrum -> Cantabile-fjärrkontroll'
+    id: screensaver_musikrum_cantabile_remote
+    description: Open the Cantabile web remote in Fully when the phone is detected on the Musikrum charger
+    triggers:
+      - trigger: state
+        entity_id: input_text.bt_device_charger_locations
+    conditions:
+      # Fire only when the phone's location NEWLY became 'musikrum'
+      - condition: template
+        value_template: >
+          {% set device = 'peers_mobil' %}
+          {% set old_map = (trigger.from_state.state if trigger.from_state else '{}') | from_json({}) %}
+          {% set new_map = (trigger.to_state.state if trigger.to_state else '{}') | from_json({}) %}
+          {{ new_map.get(device, '') == 'musikrum' and old_map.get(device, '') != 'musikrum' }}
+    actions:
+      - variables:
+          url: "{{ states('input_text.screensaver_musikrum_studio_url') | trim }}"
+      - repeat:
+          while:
+            - condition: template
+              value_template: >
+                {{ (states('input_text.bt_device_charger_locations') | from_json({})).get('peers_mobil', '') == 'musikrum' }}
+          sequence:
+            # The screensaver is showing when the phone is docked, so the first
+            # pass counts Cantabile as down until checked
+            - variables:
+                was_up: "{{ not repeat.first and is_state('binary_sensor.cantabile_kors', 'on') }}"
+            - action: homeassistant.update_entity
+              target:
+                entity_id: binary_sensor.cantabile_kors
+              continue_on_error: true
+            - variables:
+                is_up: "{{ is_state('binary_sensor.cantabile_kors', 'on') }}"
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ is_up and not was_up and url != '' }}"
+                  sequence:
+                    - action: notify.mobile_app_peers_mobil
+                      data:
+                        message: command_activity
+                        data:
+                          intent_action: android.intent.action.VIEW
+                          intent_uri: "{{ url }}"
+                          intent_package_name: de.ozerov.fully
+                - conditions:
+                    - condition: template
+                      value_template: "{{ was_up and not is_up }}"
+                  sequence:
+                    - action: rest_command.screensaver_fully_load_start_url
+                      data:
+                        password: !secret peers_mobil_fully_remote_admin_password
+                      continue_on_error: true
+            - delay:
+                seconds: 15
+    mode: restart
