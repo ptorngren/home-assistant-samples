@@ -238,7 +238,7 @@ automation:
       # T3: patio lights turned on while the door is open and music is playing.
       # No delay — turning the lights on is a deliberate act, not a door swing.
       - trigger: state
-        entity_id: light.pp_u1_altan
+        entity_id: light.ppu1_altanbelysning
         to: 'on'
     conditions:
       # 0 = overlay DISABLED entirely (blocks T2 as well, not just the door delay)
@@ -269,7 +269,7 @@ automation:
           {% set threshold = states('input_number.altanmusik_temp_threshold') | float(0) %}
           {{ threshold == 0
              or states('sensor.relax_baksidan_temperature') | float(-99) >= threshold
-             or is_state('light.pp_u1_altan', 'on') }}
+             or is_state('light.ppu1_altanbelysning', 'on') }}
     actions:
       # Block feedback loops while restructuring the group (same guard as musiccast_toggle_link)
       - action: input_boolean.turn_on

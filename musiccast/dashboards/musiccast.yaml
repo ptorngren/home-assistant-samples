@@ -60,6 +60,7 @@ decluttering_templates:
         idle_bg: *idle_bg
         disabled_fg: *disabled_fg
         disabled_bg: *disabled_bg
+        idle_border: *idle_border
         # Members of this player's group that are real rooms. group.musiccast_players
         # excludes stereo-pair slaves, which a master keeps enrolled after its last real
         # member leaves — counting those would render a master of nothing.
@@ -454,9 +455,9 @@ button_card_templates:
       haptic: heavy
 
   # Admin scenario button — same visual design as scenario_button, different actions:
-  #   tap         → rename (prompt for new name)
-  #   double-tap  → change icon (prompt for mdi icon)
-  #   long press  → delete (no confirm in v1)
+  #   tap         → scenario editor (name, icon, master)
+  #   double-tap  → move one step later (last wraps to first)
+  #   long press  → delete (with confirmation)
   # Variables: scenario_id, scenario_name, scenario_icon (all passed directly from auto-entities)
   # -------------------------------------------------------
   admin_scenario_button:
@@ -557,6 +558,14 @@ button_card_templates:
             const masterEntityId = sc[variables.scenario_id]?.master || '';
             return states[masterEntityId]?.attributes?.friendly_name || '';
           ]]]
+      haptic: light
+
+    double_tap_action:
+      action: perform-action
+      perform_action: script.musiccast_scenario_move
+      data:
+        scenario: '[[[ return variables.scenario_id; ]]]'
+        direction: later
       haptic: light
 
     hold_action:
@@ -831,7 +840,8 @@ views:
           template: >
             {% set meta = state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {} %}
             {% set ns = namespace(cards=[]) %}
-            {% for sc_id, data in meta.items() %}
+            {% for sc_id in state_attr('sensor.musiccast_scenarios_labels', 'order') or [] if sc_id in meta %}
+              {% set data = meta[sc_id] %}
               {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'scenario_button',
                   'entity': 'input_text.musiccast_active_scenario', 'icon': data.icon,
                   'variables': {'scenario': data.name, 'scenario_id': sc_id}}] %}
@@ -1057,25 +1067,18 @@ views:
             filter:
               include:
                 - group: group.musiccast_players
+                  # auto-entities hands every state update straight to the tile, and
+                  # button-card's triggers_update redraws it in place. The tile must not
+                  # be recreated on player updates: a playing master reports position
+                  # once a second, and a recreated element loses a long-press (~500 ms)
+                  # in progress. A config-template-card wrapper fails both ways — it
+                  # forwards state only when one of its watched entities changes, and
+                  # watching the player recreates the tile.
                   options:
-                    type: custom:config-template-card
-                    # Deliberately NOT watching the player itself. Every entity listed here
-                    # rebuilds the card, and a rebuild destroys the element under your
-                    # finger: a master reports position and title once a second while it
-                    # plays, so its tile was recreated every second and a long-press —
-                    # which needs ~500 ms on one element — never survived. Members on MC
-                    # Link report nothing, which is why holding them always worked.
-                    # The tile's live appearance does not need this: button-card's
-                    # triggers_update re-renders the card's contents in place.
-                    entities:
-                      - input_text.musiccast_active_scenario
-                      - sensor.musiccast_scenarios
-                      - input_boolean.musiccast_scenario_updating
-                    card:
-                      type: custom:decluttering-card
-                      template: musiccast_player_tile
-                      variables:
-                        - entity: this.entity_id
+                    type: custom:decluttering-card
+                    template: musiccast_player_tile
+                    variables:
+                      - entity: this.entity_id
             sort:
               method: friendly_name
             card:
@@ -1274,7 +1277,7 @@ views:
         show_label: true
         label: |
           [[[
-            return 'Tap to create a new scenario<br>Scenario: tap=edit, hold=delete';
+            return 'Tap to create a new scenario<br>Scenario: tap=edit, double-tap=move later, hold=delete';
           ]]]
         styles:
           card:
@@ -1326,7 +1329,8 @@ views:
           template: >
             {% set meta = state_attr('sensor.musiccast_scenarios_labels', 'scenarios') or {} %}
             {% set ns = namespace(cards=[]) %}
-            {% for sc_id, data in meta.items() %}
+            {% for sc_id in state_attr('sensor.musiccast_scenarios_labels', 'order') or [] if sc_id in meta %}
+              {% set data = meta[sc_id] %}
               {% set ns.cards = ns.cards + [{'type': 'custom:button-card', 'template': 'admin_scenario_button',
                   'entity': 'input_text.musiccast_active_scenario', 'icon': data.icon,
                   'variables': {'scenario_id': sc_id, 'scenario_name': data.name, 'scenario_icon': data.icon}}] %}
@@ -1830,6 +1834,7 @@ views:
           **Scenarios section:**
           - **Tap header:** Create a new scenario (name, icon, master player).
           - **Tap scenario tile:** Edit name, icon, or master player.
+          - **Double-tap scenario tile:** Move it one step later; the last tile moves to the front.
           - **Hold scenario tile:** Delete scenario.
 
           **Media Players section:**

@@ -5,8 +5,9 @@
 # Companion to orchestrator.yaml (scenario logic)
 #
 # ----------------------------------------------------------------
-# POLLING — why every command_line sensor here says scan_interval: 86400
+# POLLING — why every command_line sensor in this package says scan_interval: 86400
 # ----------------------------------------------------------------
+# Covers the sensors below and the scenario sensors in orchestrator.yaml.
 # Each of these sensors reads a file this package writes, and every writer refreshes the
 # sensor it affects with homeassistant.update_entity, which works whatever the interval
 # is. Polling therefore only ever re-runs a command against an unchanged file. For the
@@ -123,30 +124,6 @@ command_line:
       scan_interval: 86400   # effectively never — see POLLING at the top of this file
       # Reads media_players.exclude and exposes the list for dashboard styling
       # Access via: state_attr('sensor.musiccast_excluded_players', 'excluded')
-
-  - sensor:
-      name: "MusicCast Scenarios"
-      unique_id: musiccast_scenarios
-      command: 'python3 /config/packages/musiccast/scenarios_reader.py'
-      json_attributes:
-        - scenarios
-      value_template: "{{ value_json.scenarios | length }}"
-      scan_interval: 86400   # effectively never — see POLLING at the top of this file
-      # Reads all scenario_*.csv files — first line = master, rest = members+master (all players)
-      # Access: state_attr('sensor.musiccast_scenarios', 'scenarios').get(scenario, {})
-
-  - sensor:
-      name: "MusicCast Scenarios Labels"
-      unique_id: musiccast_scenarios_labels
-      command: 'python3 /config/packages/musiccast/scenarios_labels_reader.py'
-      json_attributes:
-        - scenarios
-      value_template: "{{ value_json.scenarios | length }}"
-      scan_interval: 86400   # effectively never — see POLLING at the top of this file
-      # Reads scenarios.json — display names + icons keyed by scenario_id
-      # No file yet means no scenarios: the empty map keeps the shape the value_template and
-      # json_attributes expect, so the sensor reports 0 instead of failing every update
-      # Access: state_attr('sensor.musiccast_scenarios_labels', 'scenarios').get(scenario_id, {})
 
   - sensor:
       name: "MusicCast Media Players"

@@ -41,6 +41,8 @@ mkdir -p "$BASE_DIR"
 #   create <id> <name> <icon>   add or replace an entry
 #   delete <id>                 remove an entry
 #   set    <id> <field=value>   update one field of an existing entry
+#   move   <id> earlier|later   swap an entry with its neighbour; at either end it
+#                               wraps to the other end. Entry order is tile order.
 #
 # Values are passed as separate arguments rather than assembled into JSON by the
 # shell, so a quote or a brace in a scenario name cannot corrupt the document.
@@ -73,6 +75,19 @@ elif op == "set":
     field, _, new = value.partition("=")
     if sid in scenarios:
         scenarios[sid][field] = new
+elif op == "move":
+    keys = list(scenarios)
+    if sid in keys:
+        i = keys.index(sid)
+        last = len(keys) - 1
+        if value == "earlier" and i == 0:
+            keys.append(keys.pop(0))
+        elif value == "later" and i == last:
+            keys.insert(0, keys.pop())
+        else:
+            j = i - 1 if value == "earlier" else i + 1
+            keys[i], keys[j] = keys[j], keys[i]
+        data["scenarios"] = {k: scenarios[k] for k in keys}
 else:
     print(f"Error: unknown op {op}", file=sys.stderr)
     sys.exit(1)
@@ -263,8 +278,22 @@ except Exception as e:
         meta_write set "$SCENARIO_ID" "icon=${NEW_ICON}"
         ;;
 
+    move)
+        # move <scenario_id> earlier|later
+        # Changes the scenario's position in scenarios.json, which sets the tile order
+        SCENARIO_ID="$2"
+        DIRECTION="$3"
+
+        if [ "$DIRECTION" != "earlier" ] && [ "$DIRECTION" != "later" ]; then
+            echo "Error: move direction must be 'earlier' or 'later', got '${DIRECTION}'" >&2
+            exit 1
+        fi
+
+        meta_write move "$SCENARIO_ID" "$DIRECTION"
+        ;;
+
     *)
-        echo "Usage: $0 {read|write|players|create|delete|rename|set_icon|set_master} <args>"
+        echo "Usage: $0 {read|write|players|create|delete|rename|set_icon|set_master|move} <args>"
         exit 1
         ;;
 esac

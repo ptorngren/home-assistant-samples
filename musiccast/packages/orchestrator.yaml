@@ -33,6 +33,40 @@ shell_command:
   musiccast_scenario_rename: 'bash /config/packages/musiccast/scenario_persistor.sh rename "{{ scenario }}" "{{ new_name | base64_encode }}"'
   musiccast_scenario_set_icon: 'bash /config/packages/musiccast/scenario_persistor.sh set_icon "{{ scenario }}" "{{ icon | base64_encode }}"'
   musiccast_scenario_set_master: 'bash /config/packages/musiccast/scenario_persistor.sh set_master "{{ scenario }}" "{{ master }}"'
+  # direction: earlier | later — one step in tile order, wrapping at either end
+  musiccast_scenario_move: 'bash /config/packages/musiccast/scenario_persistor.sh move "{{ scenario }}" "{{ direction }}"'
+
+# ================================================================
+# COMMAND LINE SENSORS — scenario definitions
+# ================================================================
+# Read the files scenario_persistor.sh writes; musiccast_refresh_scenario_sensors
+# refreshes both after every admin operation.
+
+command_line:
+  - sensor:
+      name: "MusicCast Scenarios"
+      unique_id: musiccast_scenarios
+      command: 'python3 /config/packages/musiccast/scenarios_reader.py'
+      json_attributes:
+        - scenarios
+      value_template: "{{ value_json.scenarios | length }}"
+      scan_interval: 86400   # effectively never — see POLLING at the top of media_players.yaml
+      # Reads all scenario_*.csv files — first line = master, rest = members+master (all players)
+      # Access: state_attr('sensor.musiccast_scenarios', 'scenarios').get(scenario, {})
+
+  - sensor:
+      name: "MusicCast Scenarios Labels"
+      unique_id: musiccast_scenarios_labels
+      command: 'python3 /config/packages/musiccast/scenarios_labels_reader.py'
+      json_attributes:
+        - scenarios
+        - order
+      value_template: "{{ value_json.scenarios | length }}"
+      scan_interval: 86400   # effectively never — see POLLING at the top of media_players.yaml
+      # Reads scenarios.json — display names + icons keyed by scenario_id
+      # No file yet means no scenarios: the empty map keeps the shape the value_template and
+      # json_attributes expect, so the sensor reports 0 instead of failing every update
+      # Access: state_attr('sensor.musiccast_scenarios_labels', 'scenarios').get(scenario_id, {})
 
 # ================================================================
 # HELPERS
@@ -1298,6 +1332,23 @@ script:
         data:
           scenario: "{{ scenario }}"
           master: "{{ master }}"
+      - action: script.musiccast_refresh_scenario_sensors
+
+  musiccast_scenario_move:
+    alias: "MusicCast Admin: Move scenario"
+    # queued: each double-tap on a Settings tile is one step, so a quick second one must
+    # run after the first rather than be dropped.
+    mode: queued
+    fields:
+      scenario:
+        description: "Scenario ID"
+      direction:
+        description: "earlier or later — one step in tile order, wrapping at either end"
+    sequence:
+      - action: shell_command.musiccast_scenario_move
+        data:
+          scenario: "{{ scenario }}"
+          direction: "{{ direction }}"
       - action: script.musiccast_refresh_scenario_sensors
 
   musiccast_scenario_delete:

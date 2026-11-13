@@ -199,7 +199,8 @@ decluttering_templates:
         # Weather description
         climate: |
           [[[
-            return states['sensor.screensaver_display_weather']?.state ?? '';
+            const weather = states['sensor.screensaver_display_weather']?.state;
+            return (weather && weather !== 'unavailable' && weather !== 'unknown') ? weather : '';
           ]]]
         
         # Humidity and wind with middle dot separator

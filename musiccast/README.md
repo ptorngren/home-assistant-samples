@@ -37,7 +37,7 @@ A Home Assistant package for multi-room audio using Yamaha MusicCast native favo
 
 **Players** — Link or unlink players to the active scenario. Linked players follow the master; unlinking leaves the player on and playing by itself. Hold to unlink *and* power it off. Changes take effect immediately without restarting the scenario.
 
-**Settings** — Scenario and preset management. Create, edit, or delete scenarios. See which presets are loaded on each player, including empty slots. Duplicate presets are highlighted. Also holds the **Stability** controls (see below).
+**Settings** — Scenario and preset management. Create, edit, reorder, or delete scenarios (double-tap a scenario here to move it one step later; the last one wraps to the front). See which presets are loaded on each player, including empty slots. Duplicate presets are highlighted. Also holds the **Stability** controls (see below).
 
 **Discovery** — Network scan to resolve player IP addresses. Run once after initial setup and after adding new devices.
 
@@ -821,13 +821,13 @@ Spotify works the same way: the devices are Spotify Connect receivers, so Spotif
 
 The package is split across four YAML files by concern:
 
-**`orchestrator.yaml`** — Scenario management and transport control: create, edit and delete scenarios; link and unlink individual players; tear a group down; capture and restore volumes; scripts backing the scenario editor; automations for detecting manual player changes.
+**`orchestrator.yaml`** — Scenario management and transport control: create, edit, reorder and delete scenarios; expose scenario config (master, members, names, icons); link and unlink individual players; tear a group down; capture and restore volumes; scripts backing the scenario editor; automations for detecting manual player changes.
 
 **`mixer.yaml`** — Playback engine and scenario activation: `musiccast_scenario_toggle` and `musiccast_scenario_link` — the two entry points at the top of the Data Flow diagram — plus fetching presets from devices, applying randomization logic (lock/exclude), selecting and playing a preset, and tracking the active scenario's now-playing state.
 
 **`stabilizer.yaml`** — Keeping a playing scenario playing: the detectors that notice a player has dropped out or fallen silent, the recovery scripts they call, their Undo counterparts, the Stability settings that tune them, and the two diagnostics. Separate because it answers to faults rather than to you — nothing in it is triggered by pressing anything. The file boundary is not a dependency boundary, and the file's header says which parts it depends on: scenario detection, the shared guard and the playing-source writers stay in `orchestrator.yaml`.
 
-**`media_players.yaml`** — Discovery and configuration: expose all MusicCast players and their IPs, expose scenario group config (master and members), fetch and cache preset lists, network scan.
+**`media_players.yaml`** — Discovery and configuration: expose all MusicCast players and their IPs, fetch and cache preset lists, network scan.
 
 Alongside them sits one file that is yours, not the package's:
 
